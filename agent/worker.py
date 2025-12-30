@@ -1,0 +1,731 @@
+"""
+LiveKit Voice Agent Worker - V2 Entry Point.
+
+This module implements the main LiveKit worker that handles inbound and outbound calls.
+It uses the modular v2/agent components for:
+- Pipeline (TTS/LLM configuration)
+- Config (VAD/STT settings)
+- Tool Builder (agent tools)
+- Instruction Builder (prompt assembly)
+- Cleanup Handler (post-call cleanup)
+
+Key Features:
+- Multi-provider TTS support (Cartesia, Google, Gemini, ElevenLabs, Rime, SmallestAI)
+- Multi-provider LLM support (Gemini, Groq, OpenAI)
+- Real-time call recording and transcription
+- Silence detection and automatic hangup
+- Background audio (office ambience, typing sounds)
+- Post-call analysis and storage
+- Configurable voice personalities and instructions
+"""
+
+import asyncio
+import json
+import logging
+import os
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable, Sequence
+
+from dotenv import load_dotenv
+from livekit import agents, api
+from livekit.agents import (
+    Agent,
+    AgentSession,
+    RoomInputOptions,
+    BackgroundAudioPlayer,
+    AudioConfig,
+    BuiltinAudioClip,
+    MetricsCollectedEvent,
+    RunContext,
+)
+from livekit.agents.llm import function_tool
+from livekit.agents import StopResponse
+from livekit.plugins import deepgram, silero
+
+# Import V2 modular components
+from agent.config import PipelineConfig, get_config
+from agent.pipeline import (
+    build_tts_engine,
+    resolve_llm_configuration,
+    create_llm_instance,
+    derive_stt_language,
+)
+from agent.tool_builder import ToolConfig, get_enabled_tools, attach_tools
+from agent.instruction_builder import build_instructions_async
+from agent.cleanup_handler import CleanupContext, cleanup_and_save
+
+# Storage (v2 internal)
+from db.storage.calls import CallStorage
+from db.storage.agents import AgentStorage
+
+# Recording and transcription (v2 internal)
+from call_recorder import CallRecorder
+from transcription_tracker import attach_transcription_tracker
+
+# Utilities (v2 internal)
+from utils.usage_tracker import UsageCollector, is_component_tracking_enabled
+from utils.logger_config import configure_non_blocking_logging, stop_logging
+
+# Load environment variables
+load_dotenv()
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+
+_log_listener = configure_non_blocking_logging()
+logger = logging.getLogger(__name__)
+
+# Agent version
+AGENT_VERSION = os.getenv("AGENT_VERSION", "2.0.0")
+
+# Max concurrent calls
+_MAX_CONCURRENT_CALLS = int(os.getenv("MAX_CONCURRENT_CALLS", "1"))
+_call_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CALLS)
+
+
+# =============================================================================
+# WORKER LOAD MANAGEMENT
+# =============================================================================
+
+def calculate_worker_load(worker: Any) -> float:
+    """
+    Calculate worker load to control job distribution.
+    
+    Returns a value between 0.0 and 1.0 based on active jobs vs max capacity.
+    When load >= 1.0, the worker rejects new jobs.
+    """
+    active_jobs = len(worker.active_jobs) if hasattr(worker, 'active_jobs') else 0
+    if _MAX_CONCURRENT_CALLS <= 0:
+        return 1.0 if active_jobs > 0 else 0.0
+    return active_jobs / _MAX_CONCURRENT_CALLS
+
+
+# =============================================================================
+# SILENCE DETECTION AND MONITORING
+# =============================================================================
+
+@dataclass(frozen=True)
+class SilenceMilestone:
+    """Represents a milestone during silence detection."""
+    seconds: float
+    callback: Callable[[float], Awaitable[None] | None]
+    label: str = ""
+
+
+class SilenceMonitor:
+    """
+    Monitors user silence after agent speech and triggers actions.
+    
+    Tracks periods of silence after the agent finishes speaking. Can trigger
+    warnings and automatic hangup after prolonged silence.
+    """
+
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float,
+        on_timeout: Callable[[], Awaitable[None] | None],
+        logger: logging.Logger,
+        milestones: Sequence[SilenceMilestone] | None = None,
+    ) -> None:
+        self._timeout = max(timeout_seconds, 1.0)
+        self._on_timeout = on_timeout
+        self._logger = logger
+        self._timer_task: asyncio.Task | None = None
+        self._enabled = True
+        self._triggered = False
+        self._milestones = tuple(
+            sorted(
+                (m for m in (milestones or []) if m.seconds > 0.0),
+                key=lambda item: item.seconds,
+            )
+        )
+        self._milestones_fired: set[int] = set()
+        self._remaining: float | None = None
+        self._elapsed: float = 0.0
+        self._last_start: float | None = None
+        self._pending_callbacks: set[asyncio.Task] = set()
+
+    def notify_agent_started(self) -> None:
+        """Pause silence monitoring when agent starts speaking."""
+        if not self._enabled:
+            return
+        self._pause_timer()
+
+    def notify_agent_completed(self) -> None:
+        """Resume silence monitoring after agent finishes speaking."""
+        if not self._enabled:
+            return
+        self._triggered = False
+        if self._remaining is None or self._remaining <= 0.0:
+            self._remaining = self._timeout
+            self._elapsed = 0.0
+            self._milestones_fired.clear()
+        self._start_timer()
+
+    def notify_user_activity(self) -> None:
+        """Reset silence monitoring when user speaks."""
+        if not self._enabled:
+            return
+        self._triggered = False
+        self._cancel_pending_callbacks()
+        self._reset_state()
+        self._cancel_timer()
+
+    def disable(self) -> None:
+        """Permanently disable silence monitoring."""
+        if not self._enabled:
+            return
+        self._enabled = False
+        self._triggered = True
+        self._cancel_pending_callbacks()
+        self._reset_state()
+        self._cancel_timer()
+
+    def _start_timer(self) -> None:
+        self._cancel_timer()
+        if not self._enabled:
+            return
+        if self._remaining is None:
+            self._remaining = self._timeout
+            self._elapsed = 0.0
+            self._milestones_fired.clear()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._last_start = loop.time()
+        self._timer_task = loop.create_task(self._await_timeout())
+
+    def _pause_timer(self) -> None:
+        if self._timer_task is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None and self._last_start is not None:
+            elapsed = max(0.0, loop.time() - self._last_start)
+            self._elapsed += elapsed
+            self._remaining = max(self._timeout - self._elapsed, 0.0)
+        self._last_start = None
+        self._cancel_timer()
+
+    def _reset_state(self) -> None:
+        self._remaining = None
+        self._elapsed = 0.0
+        self._last_start = None
+        self._milestones_fired.clear()
+
+    def _cancel_pending_callbacks(self) -> None:
+        for task in tuple(self._pending_callbacks):
+            if not task.done():
+                task.cancel()
+
+    def _cancel_timer(self) -> None:
+        if self._timer_task is None:
+            return
+        task = self._timer_task
+        self._timer_task = None
+        if not task.done():
+            task.cancel()
+
+    async def _await_timeout(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+            while (
+                self._enabled
+                and not self._triggered
+                and self._remaining is not None
+                and self._remaining > 0.0
+            ):
+                next_wait = self._remaining
+                for idx, milestone in enumerate(self._milestones):
+                    if idx in self._milestones_fired:
+                        continue
+                    remaining_to_milestone = milestone.seconds - self._elapsed
+                    if remaining_to_milestone <= 0.0:
+                        self._milestones_fired.add(idx)
+                        continue
+                    next_wait = min(next_wait, remaining_to_milestone)
+
+                if self._remaining <= 0.0:
+                    break
+
+                if next_wait <= 0.0:
+                    continue
+
+                await asyncio.sleep(next_wait)
+
+                now = loop.time()
+                if self._last_start is None:
+                    self._last_start = now - next_wait
+
+                elapsed = max(0.0, now - self._last_start)
+                self._elapsed += elapsed
+                self._remaining = max(self._timeout - self._elapsed, 0.0)
+                self._last_start = now
+
+            if (
+                self._enabled
+                and not self._triggered
+                and self._remaining is not None
+                and self._remaining <= 0.0
+            ):
+                self._triggered = True
+                self._logger.info("User silence exceeded %.1fs; triggering hangup", self._timeout)
+                result = self._on_timeout()
+                if asyncio.iscoroutine(result):
+                    await result
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.error("Error during silence timeout handling", exc_info=True)
+        finally:
+            self._timer_task = None
+            self._last_start = None
+
+
+# =============================================================================
+# VOICE ASSISTANT AGENT
+# =============================================================================
+
+class VoiceAssistant(Agent):
+    """
+    Main voice assistant agent that handles conversations.
+    
+    Extends LiveKit's Agent class with custom functionality:
+    - Call recording integration
+    - Transcription tracking
+    - Silence monitoring
+    - Hangup control
+    - Custom instructions and context
+    """
+    
+    GLINKS_ORG_ID = "f6de7991-df4f-43de-9f40-298fcda5f723"
+    
+    def __init__(
+        self,
+        call_recorder=None,
+        job_context=None,
+        *,
+        instructions: str,
+        tools: list | None = None,
+        silence_monitor: SilenceMonitor | None = None,
+        initiating_user_id: str | int | None = None,
+        is_glinks_agent: bool = False,
+        knowledge_base_store_ids: list[str] | None = None,
+    ):
+        self.call_recorder = call_recorder
+        self.job_context = job_context
+        self.silence_monitor = silence_monitor
+        self._is_glinks_agent = is_glinks_agent
+        
+        if isinstance(initiating_user_id, int):
+            self._initiating_user_id: str | None = str(initiating_user_id)
+        elif isinstance(initiating_user_id, str):
+            self._initiating_user_id = initiating_user_id.strip() or None
+        else:
+            self._initiating_user_id = None
+            
+        self._google_workspace = None
+        self._human_invite_pending = False
+        self._human_joined = False
+        self._knowledge_base_store_ids = knowledge_base_store_ids or []
+        
+        # Pass tools from tool_builder to parent Agent
+        super().__init__(instructions=instructions, tools=tools or [])
+
+    @function_tool
+    async def hangup_call(self, reason: str = "call_complete") -> str:
+        """
+        End the current call gracefully.
+        
+        Args:
+            reason: Reason for ending (e.g., "call_complete", "not_interested")
+        
+        Returns:
+            Confirmation message
+        """
+        logger.info(f"Agent hanging up call (reason: {reason})")
+        
+        if self.silence_monitor:
+            self.silence_monitor.disable()
+        
+        if self.job_context and self.job_context.room:
+            try:
+                await self.job_context.api.room.delete_room(
+                    api.DeleteRoomRequest(room=self.job_context.room.name)
+                )
+                logger.info(f"Room {self.job_context.room.name} deleted")
+            except Exception as e:
+                logger.error(f"Error deleting room: {e}")
+        
+        return f"Call ended: {reason}"
+
+    def set_silence_monitor(self, monitor: SilenceMonitor | None) -> None:
+        self.silence_monitor = monitor
+
+
+# =============================================================================
+# MAIN ENTRYPOINT
+# =============================================================================
+
+async def entrypoint(ctx: agents.JobContext):
+    """
+    Main entry point for the LiveKit voice agent.
+    
+    Handles the complete lifecycle of a call:
+    1. Parse job metadata
+    2. Initialize AI services (STT, LLM, TTS)
+    3. Set up call recording and transcription
+    4. Configure silence monitoring
+    5. Connect to LiveKit room
+    6. Start agent session
+    7. Handle call flow
+    8. Clean up on completion
+    """
+    logger.info(f"Agent v{AGENT_VERSION} starting job {getattr(ctx.job, 'id', 'unknown')}")
+    
+    # Acquire call slot
+    await _call_semaphore.acquire()
+    acquired_call_slot = True
+    
+    # Get pipeline config
+    pipeline_config = get_config()
+    
+    # Initialize storage
+    call_storage = CallStorage()
+    agent_storage = AgentStorage()
+    
+    # Parse metadata
+    phone_number = None
+    voice_id = os.getenv("DEFAULT_CARTESIA_VOICE_ID", "95d51f79-c397-46f9-b49a-23763d3eaa2d")
+    job_id = None
+    call_log_id = None
+    call_mode = "inbound"
+    from_number = None
+    to_number = None
+    added_context = None
+    agent_id: int | None = None
+    tts_provider_override = None
+    tts_overrides: dict[str, str] = {}
+    voice_accent = None
+    llm_provider_override = None
+    llm_model_override = None
+    initiating_user_id: str | None = None
+    knowledge_base_store_ids: list[str] = []
+    
+    try:
+        if ctx.job.metadata:
+            dial_info = json.loads(ctx.job.metadata)
+            phone_number = dial_info.get("phone_number")
+            to_number = phone_number
+            job_id = dial_info.get("job_id")
+            call_log_id = dial_info.get("call_log_id")
+            call_mode = dial_info.get("call_mode", "inbound")
+            from_number = dial_info.get("from_number")
+            added_context = dial_info.get("added_context")
+            
+            raw_agent_id = dial_info.get("agent_id")
+            if isinstance(raw_agent_id, (int, str)):
+                try:
+                    agent_id = int(str(raw_agent_id).strip())
+                except (ValueError, TypeError):
+                    pass
+            
+            raw_kb_ids = dial_info.get("knowledge_base_store_ids")
+            if isinstance(raw_kb_ids, list):
+                knowledge_base_store_ids = [s.strip() for s in raw_kb_ids if isinstance(s, str) and s.strip()]
+            
+            voice_id = dial_info.get("voice_id", voice_id)
+            voice_accent = dial_info.get("voice_accent")
+            # Check both tts_provider and voice_provider (call_service uses voice_provider)
+            tts_provider_override = dial_info.get("tts_provider") or dial_info.get("voice_provider")
+            llm_provider_override = dial_info.get("llm_provider")
+            llm_model_override = dial_info.get("llm_model")
+            
+            raw_initiated_by = dial_info.get("initiated_by")
+            if isinstance(raw_initiated_by, (int, str)):
+                initiating_user_id = str(raw_initiated_by).strip() or None
+                
+            logger.info(
+                "Metadata: job_id=%s, call_log_id=%s, agent_id=%s, voice_id=%s",
+                job_id, call_log_id, agent_id, voice_id
+            )
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.warning(f"Failed to parse metadata: {e}")
+    
+    # Connect to room
+    await ctx.connect()
+    
+    # Load agent configuration
+    agent_record = None
+    is_glinks_agent = False
+    system_instructions = ""
+    agent_instructions = ""
+    
+    if agent_id is not None:
+        agent_record = await agent_storage.get_agent_by_id(agent_id)
+        if agent_record:
+            # Column names match the agents.py SELECT query
+            system_instructions = agent_record.get("system_instructions", "") or ""
+            agent_instructions = agent_record.get("agent_instructions", "") or ""
+            
+            # Check if Glinks agent
+            org_id = agent_record.get("organization_id")
+            if org_id and str(org_id) == VoiceAssistant.GLINKS_ORG_ID:
+                is_glinks_agent = True
+    
+    # Phase 4: Get tenant_id for multi-tenancy
+    tenant_id = None
+    if agent_id:
+        tenant_id = await agent_storage.get_agent_tenant_id(agent_id)
+        if tenant_id:
+            logger.debug(f"Resolved tenant_id={tenant_id} for agent_id={agent_id}")
+    # Resolve LLM configuration
+    llm_provider, llm_model = resolve_llm_configuration(
+        llm_provider_override, llm_model_override
+    )
+    
+    # Build TTS engine
+    tts_provider_final = tts_provider_override or os.getenv("TTS_PROVIDER", "cartesia")
+    logger.info(f"TTS provider: {tts_provider_final} (override={tts_provider_override})")
+    tts_engine, tts_details = build_tts_engine(
+        tts_provider_final,
+        default_voice_id=voice_id,
+        overrides=tts_overrides,
+        accent=voice_accent,
+    )
+    logger.info(f"TTS engine built: {tts_details}")
+    
+    # Create LLM instance
+    file_search_stores = [s for s in knowledge_base_store_ids if s.startswith("fileSearchStores/")]
+    llm_instance = create_llm_instance(llm_provider, llm_model, file_search_stores or None)
+    
+    # Build STT
+    stt_language = derive_stt_language(voice_accent, pipeline_config.stt.language)
+    stt_engine = deepgram.STT(
+        model=pipeline_config.stt.model,
+        language=stt_language,
+    )
+    
+    # Build VAD
+    vad = silero.VAD.load(
+        min_silence_duration=pipeline_config.vad.min_silence_duration,
+        min_speech_duration=pipeline_config.vad.min_speech_duration,
+        activation_threshold=pipeline_config.vad.activation_threshold,
+        force_cpu=pipeline_config.vad.force_cpu,
+    )
+    
+    # Create tool config
+    tool_config = ToolConfig()
+    
+    # Build instructions
+    instructions = await build_instructions_async(
+        system_instructions=system_instructions,
+        agent_instructions=agent_instructions,
+        added_context=added_context,
+        direction=call_mode,
+        tool_config=tool_config,
+        tenant_id=None,
+    )
+    
+    # Create call recorder
+    call_recorder = None
+    if os.getenv("ENABLE_RECORDING", "true").lower() == "true" and call_log_id:
+        call_recorder = CallRecorder(
+            room_name=ctx.room.name,
+            call_id=call_log_id,
+            livekit_api=ctx.api,
+        )
+    
+    # Phase 1: Create usage collector for cost tracking
+    usage_collector = None
+    if is_component_tracking_enabled():
+        usage_collector = UsageCollector()
+        usage_collector.set_tts_config(tts_provider_final, voice_id or "unknown")
+        usage_collector.set_llm_config(llm_provider, llm_model)
+        usage_collector.set_stt_config("deepgram", pipeline_config.stt.model)
+        logger.info(
+            "UsageCollector enabled: TTS=%s/%s, LLM=%s/%s, STT=deepgram/%s",
+            tts_provider_final, voice_id, llm_provider, llm_model, pipeline_config.stt.model
+        )
+    else:
+        logger.debug("Component cost tracking disabled (ENABLE_COMPONENT_COST_TRACKING=false)")
+    # Create silence monitor
+    silence_timeout = pipeline_config.silence.silence_timeout_seconds
+
+    async def on_silence_timeout():
+        logger.info("Silence timeout - ending call")
+        if ctx.room:
+            try:
+                await ctx.api.room.delete_room(api.DeleteRoomRequest(room=ctx.room.name))
+            except Exception as e:
+                logger.error(f"Error ending call on timeout: {e}")
+
+    silence_monitor = SilenceMonitor(
+        timeout_seconds=silence_timeout,
+        on_timeout=on_silence_timeout,
+        logger=logger,
+    )
+    
+    # Fetch tools before creating VoiceAssistant
+    tool_config, tool_configs = await get_enabled_tools({}, tenant_id)
+    tool_list = await attach_tools(
+        None,  # Agent not needed here, just building tools
+        tool_config,
+        tool_configs,
+        tenant_id=tenant_id,
+        user_id=initiating_user_id,
+        knowledge_base_store_ids=knowledge_base_store_ids,
+    )
+    logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}")
+    
+    # Create voice assistant with tools
+    voice_assistant = VoiceAssistant(
+        call_recorder=call_recorder,
+        job_context=ctx,
+        instructions=instructions,
+        tools=tool_list,  # Pass dynamic tools
+        silence_monitor=silence_monitor,
+        initiating_user_id=initiating_user_id,
+        is_glinks_agent=is_glinks_agent,
+        knowledge_base_store_ids=knowledge_base_store_ids,
+    )
+    
+    # Create agent session
+    session = AgentSession(
+        llm=llm_instance,
+        tts=tts_engine,
+        stt=stt_engine,
+        vad=vad,
+        min_endpointing_delay=pipeline_config.endpointing.min_endpointing_delay,
+        max_endpointing_delay=pipeline_config.endpointing.max_endpointing_delay,
+    )
+    
+    # Phase 2: Attach usage collector to session for metrics tracking
+    if usage_collector:
+        from utils.usage_tracker import attach_usage_collector
+        attach_usage_collector(session, usage_collector)
+        logger.debug("UsageCollector attached to AgentSession")
+    
+    # Phase 3: Register cleanup callback with full context
+    cleanup_ctx = CleanupContext(
+        call_recorder=call_recorder,
+        call_log_id=call_log_id,
+        tenant_id=tenant_id,  # Phase 4: Now included
+        call_storage=call_storage,
+        silence_monitor=silence_monitor,
+        usage_collector=usage_collector,  # Uses the configured one from Phase 1
+        call_semaphore=_call_semaphore,
+        acquired_call_slot=acquired_call_slot,
+        job_id=job_id,
+    )
+    
+    async def shutdown_callback():
+        logger.info("=" * 60)
+        logger.info("CALL ENDED - Running cleanup_and_save")
+        logger.info("=" * 60)
+        await cleanup_and_save(cleanup_ctx)
+    
+    ctx.add_shutdown_callback(shutdown_callback)
+    
+    # Start recording
+    if call_recorder:
+        await call_recorder.start_recording()
+    
+    # Start session
+    room_input_options = RoomInputOptions()
+    session_start_task = asyncio.create_task(
+        session.start(room=ctx.room, agent=voice_assistant, room_input_options=room_input_options)
+    )
+    
+    try:
+        if call_mode == "outbound" and phone_number:
+            # Outbound call - dial out
+            trunk_id = os.getenv("OUTBOUND_TRUNK_ID")
+            if trunk_id:
+                try:
+                    await ctx.api.sip.create_sip_participant(
+                        api.CreateSIPParticipantRequest(
+                            room_name=ctx.room.name,
+                            sip_trunk_id=trunk_id,
+                            sip_call_to=phone_number,
+                            participant_identity=f"dial-{phone_number}",
+                            wait_until_answered=True,
+                            krisp_enabled=True,
+                        )
+                    )
+                    
+                    await session_start_task
+                    
+                    if call_recorder:
+                        attach_transcription_tracker(session, call_recorder)
+                    
+                    # Outbound greeting - try agent starter prompt, then added_context, then default
+                    greeting = agent_record.get("outbound_starter_prompt", "") if agent_record else ""
+                    if greeting:
+                        logger.info(f"Sending outbound greeting: {greeting[:50]}...")
+                        await session.generate_reply(instructions=greeting)
+                    elif added_context:
+                        # Use added_context as greeting instruction
+                        logger.info(f"Using added_context as greeting: {added_context[:50]}...")
+                        await session.generate_reply(instructions=f"Greet the user. Context: {added_context}")
+                    else:
+                        # Default: just start the conversation
+                        logger.info("No greeting set, starting conversation with default")
+                        await session.generate_reply(instructions="Greet the user warmly and ask how you can help them today.")
+                        
+                except api.TwirpError as e:
+                    logger.error(f"SIP dial error: {e.message}")
+                    if call_log_id:
+                        await call_storage.update_call_status(
+                            call_log_id=call_log_id,
+                            status="failed",
+                            ended_at=datetime.now(timezone.utc)
+                        )
+                    session_start_task.cancel()
+                    ctx.shutdown()
+                    return
+        else:
+            # Inbound call
+            await session_start_task
+            
+            if call_recorder:
+                attach_transcription_tracker(session, call_recorder)
+            
+            greeting = agent_record.get("inbound_starter_prompt", "") if agent_record else ""
+            if greeting:
+                logger.info(f"Sending inbound greeting: {greeting[:50]}...")
+                await session.generate_reply(instructions=greeting)
+                
+    finally:
+        if acquired_call_slot:
+            _call_semaphore.release()
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+if __name__ == "__main__":
+    logger.info(f"Starting LiveKit agent worker - Version {AGENT_VERSION}")
+    logger.info(f"Max concurrent calls: {_MAX_CONCURRENT_CALLS}")
+    
+    try:
+        agents.cli.run_app(
+            agents.WorkerOptions(
+                entrypoint_fnc=entrypoint,
+                agent_name=os.getenv("VOICE_AGENT_NAME", "inbound-agent"),
+                initialize_process_timeout=60.0,
+                shutdown_process_timeout=60.0,
+                load_fnc=calculate_worker_load,
+                load_threshold=1.0,
+                num_idle_processes=0,
+            )
+        )
+    finally:
+        stop_logging()

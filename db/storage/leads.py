@@ -1,0 +1,520 @@
+"""
+Lead Storage Module.
+
+Updated for lad_dev schema (Phase 12):
+- Table: lad_dev.leads
+- ID is UUID (not bigint)
+- Uses first_name/last_name instead of name
+- Uses phone instead of lead_number
+- Uses user_id instead of added_by
+- Added: tenant_id (required), source, email, etc.
+"""
+
+import logging
+from typing import Optional, Dict, Any
+from datetime import datetime
+
+import psycopg2
+from psycopg2.extras import RealDictCursor, Json
+from dotenv import load_dotenv
+
+# Import connection pool manager
+from db.connection_pool import get_raw_connection, return_connection, USE_CONNECTION_POOLING
+# Import centralized DB config (respects USE_LOCAL_DB toggle)
+from db.db_config import get_db_config
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Schema and table constants
+SCHEMA = "lad_dev"
+TABLE = "leads"
+FULL_TABLE = f"{SCHEMA}.{TABLE}"
+
+
+class LeadStorage:
+    """
+    Manages lead data in lad_dev.leads table.
+    
+    Key schema changes from old leads_voiceagent:
+    - id: UUID (was bigint)
+    - tenant_id: Required for multi-tenancy
+    - first_name, last_name: Replaces single 'name' field
+    - phone: Replaces 'lead_number'
+    - user_id: Replaces 'added_by' (now UUID FK)
+    """
+    
+    def __init__(self):
+        """Initialize database connection using centralized config"""
+        self.db_config = get_db_config()
+    
+    def _get_connection(self):
+        """Get raw database connection (must be returned with _return_connection)"""
+        return get_raw_connection(self.db_config)
+    
+    def _return_connection(self, conn):
+        """Return connection to pool if pooling is enabled"""
+        if USE_CONNECTION_POOLING:
+            return_connection(conn, self.db_config)
+    
+    def _split_name(self, full_name: str | None) -> tuple[str | None, str | None]:
+        """
+        Split full name into first and last name.
+        
+        Args:
+            full_name: Full name string
+            
+        Returns:
+            Tuple of (first_name, last_name)
+        """
+        if not full_name:
+            return None, None
+        
+        parts = full_name.strip().split(maxsplit=1)
+        first_name = parts[0] if parts else None
+        last_name = parts[1] if len(parts) > 1 else None
+        return first_name, last_name
+    
+    def _combine_name(self, first_name: str | None, last_name: str | None) -> str | None:
+        """Combine first and last name into full name."""
+        parts = [n for n in [first_name, last_name] if n]
+        return " ".join(parts) if parts else None
+
+    # =========================================================================
+    # READ
+    # =========================================================================
+
+    async def get_lead_by_phone(
+        self,
+        phone_number: str,
+        tenant_id: str | None = None
+    ) -> Optional[Dict]:
+        """
+        Get lead by phone number.
+        
+        Args:
+            phone_number: Phone number to search for
+            tenant_id: Optional tenant ID to scope search
+            
+        Returns:
+            Lead dict if found, None otherwise
+        """
+        conn = None
+        cursor = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            if tenant_id:
+                cursor.execute(
+                    f"""
+                    SELECT id, tenant_id, first_name, last_name, phone, email,
+                           user_id, source, status, notes, custom_fields,
+                           created_at, updated_at
+                    FROM {FULL_TABLE}
+                    WHERE phone = %s AND tenant_id = %s
+                    LIMIT 1
+                    """,
+                    (phone_number, tenant_id)
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT id, tenant_id, first_name, last_name, phone, email,
+                           user_id, source, status, notes, custom_fields,
+                           created_at, updated_at
+                    FROM {FULL_TABLE}
+                    WHERE phone = %s
+                    LIMIT 1
+                    """,
+                    (phone_number,)
+                )
+            
+            result = cursor.fetchone()
+            cursor.close()
+            self._return_connection(conn)
+            
+            if result:
+                lead = dict(result)
+                # Add 'name' field for backwards compatibility
+                lead['name'] = self._combine_name(lead.get('first_name'), lead.get('last_name'))
+                # Add 'lead_number' alias for backwards compatibility
+                lead['lead_number'] = lead.get('phone')
+                logger.info(f"Found existing lead: id={lead['id']}, phone={phone_number}")
+                return lead
+            else:
+                logger.debug(f"No lead found for phone: {phone_number}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting lead by phone {phone_number}: {e}", exc_info=True)
+            if cursor:
+                cursor.close()
+            if conn:
+                self._return_connection(conn)
+            return None
+
+    async def get_lead_by_id(self, lead_id: str) -> Optional[Dict]:
+        """
+        Get lead by UUID.
+        
+        Args:
+            lead_id: UUID of the lead
+            
+        Returns:
+            Lead dict if found, None otherwise
+        """
+        conn = None
+        cursor = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            cursor.execute(
+                f"""
+                SELECT id, tenant_id, first_name, last_name, phone, email,
+                       user_id, source, status, stage, priority, notes,
+                       company_name, title, location, tags, custom_fields,
+                       created_at, updated_at
+                FROM {FULL_TABLE}
+                WHERE id = %s
+                """,
+                (lead_id,)
+            )
+            
+            result = cursor.fetchone()
+            cursor.close()
+            self._return_connection(conn)
+            
+            if result:
+                lead = dict(result)
+                lead['name'] = self._combine_name(lead.get('first_name'), lead.get('last_name'))
+                return lead
+            return None
+                
+        except Exception as e:
+            logger.error(f"Error getting lead by id {lead_id}: {e}", exc_info=True)
+            if cursor:
+                cursor.close()
+            if conn:
+                self._return_connection(conn)
+            return None
+
+    # =========================================================================
+    # CREATE
+    # =========================================================================
+
+    async def create_lead(
+        self,
+        tenant_id: str,
+        phone_number: str,
+        *,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        name: str | None = None,  # For backwards compatibility
+        email: str | None = None,
+        user_id: str | None = None,
+        source: str | None = None,
+        notes: str | None = None,
+    ) -> Optional[Dict]:
+        """
+        Create a new lead.
+        
+        Args:
+            tenant_id: Required tenant UUID
+            phone_number: Phone number for the lead
+            first_name: First name
+            last_name: Last name
+            name: Full name (split into first/last if provided)
+            email: Email address
+            user_id: UUID of user who created
+            source: Lead source (e.g., 'voice_agent', 'manual')
+            notes: Notes
+            
+        Returns:
+            Lead record dict if successful, None otherwise
+        """
+        if not tenant_id:
+            logger.error("tenant_id is required for create_lead")
+            return None
+        
+        # Handle name splitting
+        if name and not first_name:
+            first_name, last_name = self._split_name(name)
+        
+        conn = None
+        cursor = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            cursor.execute(
+                f"""
+                INSERT INTO {FULL_TABLE} 
+                (tenant_id, phone, first_name, last_name, email, user_id, source, notes, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, tenant_id, first_name, last_name, phone, email, user_id, source, notes
+                """,
+                (
+                    tenant_id,
+                    phone_number,
+                    first_name,
+                    last_name,
+                    email,
+                    user_id,
+                    source or 'voice_agent',
+                    notes,
+                    'new'
+                )
+            )
+            
+            result = cursor.fetchone()
+            conn.commit()
+            cursor.close()
+            self._return_connection(conn)
+            
+            if result:
+                lead = dict(result)
+                lead['name'] = self._combine_name(lead.get('first_name'), lead.get('last_name'))
+                lead['lead_number'] = lead.get('phone')
+                logger.info(f"Created new lead: id={lead['id']}, phone={phone_number}")
+                return lead
+            
+            logger.warning(f"No lead returned when creating phone={phone_number}")
+            return None
+            
+        except psycopg2.IntegrityError as e:
+            logger.warning(f"Lead with phone {phone_number} may already exist: {e}")
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.rollback()
+                self._return_connection(conn)
+            # Try to get existing lead
+            return await self.get_lead_by_phone(phone_number, tenant_id)
+            
+        except Exception as e:
+            logger.error(f"Error creating lead for phone {phone_number}: {e}", exc_info=True)
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.rollback()
+                self._return_connection(conn)
+            return None
+
+    async def find_or_create_lead(
+        self,
+        tenant_id: str,
+        phone_number: str,
+        *,
+        name: str | None = None,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        email: str | None = None,
+        user_id: str | None = None,
+        source: str | None = None,
+    ) -> Optional[Dict]:
+        """
+        Find existing lead by phone number or create new one.
+        
+        Args:
+            tenant_id: Required tenant UUID
+            phone_number: Phone number to search for or create
+            name: Full name (for new leads or to update missing name)
+            first_name: First name (takes precedence over name)
+            last_name: Last name
+            email: Email address
+            user_id: UUID of user (for new leads)
+            source: Lead source
+            
+        Returns:
+            Lead record dict if successful, None otherwise
+        """
+        if not tenant_id:
+            logger.error("tenant_id is required for find_or_create_lead")
+            return None
+        
+        try:
+            # First try to find existing lead
+            existing_lead = await self.get_lead_by_phone(phone_number, tenant_id)
+            
+            if existing_lead:
+                logger.info(f"Using existing lead: id={existing_lead['id']}, phone={phone_number}")
+                
+                # Update name if missing
+                has_name = bool(existing_lead.get('first_name') or existing_lead.get('last_name'))
+                if (name or first_name) and not has_name:
+                    fn = first_name
+                    ln = last_name
+                    if not fn and name:
+                        fn, ln = self._split_name(name)
+                    
+                    if fn:
+                        updated = await self._set_name_if_missing(
+                            existing_lead['id'],
+                            first_name=fn,
+                            last_name=ln
+                        )
+                        if updated:
+                            existing_lead['first_name'] = fn
+                            existing_lead['last_name'] = ln
+                            existing_lead['name'] = self._combine_name(fn, ln)
+                
+                return existing_lead
+            
+            # If not found, create new lead
+            logger.info(f"Creating new lead for phone: {phone_number}")
+            return await self.create_lead(
+                tenant_id=tenant_id,
+                phone_number=phone_number,
+                first_name=first_name,
+                last_name=last_name,
+                name=name,
+                email=email,
+                user_id=user_id,
+                source=source,
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in find_or_create_lead for {phone_number}: {e}", exc_info=True)
+            return None
+
+    # =========================================================================
+    # UPDATE
+    # =========================================================================
+
+
+    async def _set_name_if_missing(
+        self,
+        lead_id: str,
+        first_name: str | None = None,
+        last_name: str | None = None,
+    ) -> bool:
+        """Set the lead name only when it is currently null or blank."""
+        if not first_name and not last_name:
+            return False
+
+        conn = None
+        cursor = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                UPDATE {FULL_TABLE}
+                SET first_name = COALESCE(%s, first_name),
+                    last_name = COALESCE(%s, last_name),
+                    updated_at = %s
+                WHERE id = %s
+                AND (first_name IS NULL OR LENGTH(TRIM(first_name)) = 0)
+                AND (last_name IS NULL OR LENGTH(TRIM(last_name)) = 0)
+                RETURNING id
+                """,
+                (first_name, last_name, datetime.utcnow(), lead_id)
+            )
+            updated = cursor.fetchone() is not None
+            conn.commit()
+            cursor.close()
+            self._return_connection(conn)
+            if updated:
+                logger.info(f"Updated missing name for lead id={lead_id}")
+            return updated
+        except Exception as e:
+            logger.error(f"Error updating missing name for lead {lead_id}: {e}", exc_info=True)
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.rollback()
+                self._return_connection(conn)
+            return False
+    
+    async def update_lead_info(
+        self,
+        lead_id: str,
+        *,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        name: str | None = None,
+        email: str | None = None,
+        phone: str | None = None,
+        notes: str | None = None,
+        status: str | None = None,
+        custom_fields: dict | None = None,
+    ) -> bool:
+        """
+        Update lead information.
+        
+        Args:
+            lead_id: Lead UUID to update
+            first_name: First name
+            last_name: Last name
+            name: Full name (split into first/last)
+            email: Email address
+            phone: Phone number
+            notes: Notes
+            status: Lead status
+            custom_fields: Custom fields JSONB
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Handle name splitting
+            if name and not first_name:
+                first_name, last_name = self._split_name(name)
+            
+            # Build dynamic UPDATE
+            updates = ["updated_at = %s"]
+            params: list[Any] = [datetime.utcnow()]
+            
+            field_map = {
+                'first_name': first_name,
+                'last_name': last_name,
+                'email': email,
+                'phone': phone,
+                'notes': notes,
+                'status': status,
+            }
+            
+            for col, val in field_map.items():
+                if val is not None:
+                    updates.append(f"{col} = %s")
+                    params.append(val)
+            
+            if custom_fields is not None:
+                updates.append("custom_fields = %s")
+                params.append(Json(custom_fields))
+            
+            if len(updates) == 1:
+                logger.warning("No fields to update")
+                return False
+            
+            params.append(lead_id)
+            
+            query = f"""
+                UPDATE {FULL_TABLE}
+                SET {', '.join(updates)}
+                WHERE id = %s
+            """
+            
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows_updated = cursor.rowcount
+            conn.commit()
+            cursor.close()
+            self._return_connection(conn)
+            
+            if rows_updated > 0:
+                logger.info(f"Updated lead: id={lead_id}")
+                return True
+            else:
+                logger.warning(f"No lead found with id={lead_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error updating lead {lead_id}: {e}", exc_info=True)
+            return False
