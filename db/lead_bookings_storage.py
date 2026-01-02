@@ -389,6 +389,7 @@ class LeadBookingsStorage:
                     id,
                     tenant_id,
                     lead_id,
+                    booking_type,
                     scheduled_at,
                     created_at,
                     parent_booking_id,
@@ -408,6 +409,7 @@ class LeadBookingsStorage:
                         id,
                         tenant_id,
                         lead_id,
+                        booking_type,
                         scheduled_at,
                         created_at,
                         parent_booking_id,
@@ -427,6 +429,7 @@ class LeadBookingsStorage:
                 "id": str(booking_data['id']) if booking_data['id'] else None,
                 "tenant_id": str(booking_data['tenant_id']) if booking_data['tenant_id'] else None,
                 "lead_id": str(booking_data['lead_id']) if booking_data['lead_id'] else None,
+                "booking_type": booking_data.get('booking_type'),
                 "scheduled_at": booking_data['scheduled_at'],
                 "created_at": booking_data['created_at'],
                 "parent_booking_id": str(booking_data['parent_booking_id']) if booking_data['parent_booking_id'] else None
@@ -485,6 +488,124 @@ class LeadBookingsStorage:
             """, str(lead_id))
             
             return max_retry if max_retry is not None else 0
+        finally:
+            await self._return_connection(conn)
+    
+    async def count_bookings_by_lead_id_and_booking_type(self, lead_id: str, booking_type: str) -> int:
+        """
+        Count existing bookings for a lead_id and booking_type combination
+        
+        Args:
+            lead_id: Lead ID (UUID string)
+            booking_type: Booking type (e.g., 'auto_followup', 'auto_consultation')
+        
+        Returns:
+            Count of existing bookings (integer)
+        """
+        if not DB_AVAILABLE:
+            raise ImportError("asyncpg not installed")
+        
+        conn = await self._get_connection()
+        
+        try:
+            count = await conn.fetchval(f"""
+                SELECT COUNT(*)
+                FROM {self.SCHEMA}.{self.LEAD_BOOKINGS_TABLE}
+                WHERE lead_id = $1::uuid
+                AND booking_type = $2
+                AND is_deleted = false
+            """, str(lead_id), booking_type)
+            
+            return count if count is not None else 0
+        finally:
+            await self._return_connection(conn)
+    
+    async def get_max_retry_count_by_lead_id_and_booking_type(self, lead_id: str, booking_type: str) -> int:
+        """
+        Get the maximum retry_count for a lead_id and booking_type combination
+        
+        Args:
+            lead_id: Lead ID (UUID string)
+            booking_type: Booking type (e.g., 'auto_followup', 'auto_consultation')
+        
+        Returns:
+            Maximum retry_count (integer), or 0 if no bookings exist
+        """
+        if not DB_AVAILABLE:
+            raise ImportError("asyncpg not installed")
+        
+        conn = await self._get_connection()
+        
+        try:
+            max_retry = await conn.fetchval(f"""
+                SELECT MAX(retry_count)
+                FROM {self.SCHEMA}.{self.LEAD_BOOKINGS_TABLE}
+                WHERE lead_id = $1::uuid
+                AND booking_type = $2
+                AND is_deleted = false
+            """, str(lead_id), booking_type)
+            
+            return max_retry if max_retry is not None else 0
+        finally:
+            await self._return_connection(conn)
+    
+    async def get_original_booking_by_lead_id_and_booking_type(self, lead_id: str, booking_type: str) -> Optional[Dict]:
+        """
+        Get the original booking for a lead_id and booking_type combination (where parent_booking_id IS NULL)
+        This is the first booking for this lead_id and booking_type.
+        
+        Args:
+            lead_id: Lead ID (UUID string)
+            booking_type: Booking type (e.g., 'auto_followup', 'auto_consultation')
+        
+        Returns:
+            Dictionary with original booking data or None if not found
+        """
+        if not DB_AVAILABLE:
+            raise ImportError("asyncpg not installed")
+        
+        conn = await self._get_connection()
+        
+        try:
+            booking_data = await conn.fetchrow(f"""
+                SELECT 
+                    id,
+                    tenant_id,
+                    lead_id,
+                    scheduled_at,
+                    created_at,
+                    parent_booking_id,
+                    metadata
+                FROM {self.SCHEMA}.{self.LEAD_BOOKINGS_TABLE}
+                WHERE lead_id = $1::uuid
+                AND booking_type = $2
+                AND parent_booking_id IS NULL
+                AND is_deleted = false
+                ORDER BY created_at ASC
+                LIMIT 1
+            """, str(lead_id), booking_type)
+            
+            if not booking_data:
+                return None
+            
+            # Parse metadata to get call_id if it exists
+            metadata = booking_data.get('metadata')
+            call_id_from_metadata = None
+            if metadata:
+                if isinstance(metadata, str):
+                    metadata = json.loads(metadata)
+                call_id_from_metadata = metadata.get('call_id') if isinstance(metadata, dict) else None
+            
+            # Convert UUID objects to strings
+            return {
+                "id": str(booking_data['id']) if booking_data['id'] else None,
+                "tenant_id": str(booking_data['tenant_id']) if booking_data['tenant_id'] else None,
+                "lead_id": str(booking_data['lead_id']) if booking_data['lead_id'] else None,
+                "scheduled_at": booking_data['scheduled_at'],
+                "created_at": booking_data['created_at'],
+                "parent_booking_id": str(booking_data['parent_booking_id']) if booking_data['parent_booking_id'] else None,
+                "call_id": call_id_from_metadata  # call_id from metadata
+            }
         finally:
             await self._return_connection(conn)
     

@@ -552,34 +552,34 @@ Respond ONLY in JSON format:
             voice_id = await self.storage.get_voice_id_from_agent_id(agent_id)
             
             # Get retry_count and parent_booking_id from database
-            # retry_count is based on lead_id (increments for each booking for the same lead_id)
-            # First booking for a lead_id: retry_count = 0, parent_booking_id = NULL
-            # Second booking onwards for the same lead_id: retry_count = max_retry_count + 1, parent_booking_id = booking ID from original booking (where retry_count = 0)
-            # For duplicate call_id (same call_id processed again): retry_count = max_retry_count + 1 for this call_id
+            # IMPORTANT: auto_followup and auto_consultation are treated separately
+            # Each booking_type maintains its own retry_count sequence starting from 0
+            # parent_booking_id always points to the call_id from metadata of the original booking 
+            # (where parent_booking_id IS NULL) for that lead_id and booking_type combination
             if is_fresh_call:
-                # This is a new call_id - check if it's a follow-up call to the same person (same lead_id)
-                if lead_id:
+                # This is a new call_id - check if it's a follow-up call for the same lead_id and booking_type
+                if lead_id and booking_type:
                     try:
-                        # Check if there are existing bookings for this lead_id (same person/phone number)
-                        existing_bookings_count = await self.storage.count_bookings_by_lead_id(lead_id)
+                        # Check if there are existing bookings for this lead_id and booking_type combination
+                        existing_bookings_count = await self.storage.count_bookings_by_lead_id_and_booking_type(lead_id, booking_type)
                         
                         if existing_bookings_count > 0:
-                            # This is a follow-up call to the same person (same phone number)
-                            # Get the maximum retry_count for this lead_id and add 1
-                            max_retry_count = await self.storage.get_max_retry_count_by_lead_id(lead_id)
+                            # This is a follow-up call for the same lead_id and booking_type
+                            # Get the maximum retry_count for this lead_id and booking_type combination and add 1
+                            max_retry_count = await self.storage.get_max_retry_count_by_lead_id_and_booking_type(lead_id, booking_type)
                             retry_count = max_retry_count + 1
                             
-                            # Find the original booking for this lead_id (where parent_booking_id IS NULL, i.e., retry_count = 0)
+                            # Find the original booking for this lead_id and booking_type (where parent_booking_id IS NULL)
                             # Use the call_id from its metadata as parent_booking_id for all subsequent bookings
-                            original_booking = await self.storage.get_original_booking_by_lead_id(lead_id)
+                            original_booking = await self.storage.get_original_booking_by_lead_id_and_booking_type(lead_id, booking_type)
                             if original_booking:
                                 original_booking_call_id = original_booking.get('call_id')  # Get call_id from metadata
                                 if original_booking_call_id:
                                     parent_booking_id = original_booking_call_id
-                                    logger.info(f"Follow-up call to same person (lead_id {lead_id}) - {existing_bookings_count} existing booking(s) for this person")
-                                    logger.info(f"Maximum retry_count for this lead_id: {max_retry_count}")
+                                    logger.info(f"Follow-up call for lead_id {lead_id} and booking_type {booking_type} - {existing_bookings_count} existing booking(s)")
+                                    logger.info(f"Maximum retry_count for this lead_id and booking_type: {max_retry_count}")
                                     logger.info(f"retry_count = {retry_count} (max_retry_count + 1)")
-                                    logger.info(f"parent_booking_id = {parent_booking_id} (call_id from metadata of first booking where retry_count = 0)")
+                                    logger.info(f"parent_booking_id = {parent_booking_id} (call_id from metadata of first booking where parent_booking_id IS NULL)")
                                 else:
                                     parent_booking_id = None
                                     logger.warning(f"Original booking found but no call_id in metadata, setting parent_booking_id to NULL")
@@ -587,45 +587,76 @@ Respond ONLY in JSON format:
                                 parent_booking_id = None
                                 logger.warning(f"Found {existing_bookings_count} booking(s) but could not find original booking")
                         else:
-                            # This is a fresh lead (new person/phone number) - first booking for this lead_id
+                            # This is the first booking for this lead_id and booking_type combination
                             retry_count = 0
                             parent_booking_id = None
-                            logger.info(f"Fresh lead - first booking for lead_id {lead_id}")
+                            logger.info(f"First booking for lead_id {lead_id} and booking_type {booking_type}")
                             logger.info(f"retry_count = 0, parent_booking_id = NULL")
                     except Exception as e:
-                        logger.warning(f"Error checking for existing bookings by lead_id: {e}. Treating as fresh lead.")
+                        logger.warning(f"Error checking for existing bookings by lead_id and booking_type: {e}. Treating as fresh booking.")
                         retry_count = 0
                         parent_booking_id = None
                 else:
-                    # No lead_id - treat as fresh lead
+                    # No lead_id or booking_type - treat as fresh booking
                     retry_count = 0
                     parent_booking_id = None
-                    logger.info(f"Fresh lead - new call_id {original_call_id}, no lead_id provided")
+                    logger.info(f"Fresh booking - new call_id {original_call_id}, lead_id={lead_id}, booking_type={booking_type}")
                     logger.info(f"retry_count = 0, parent_booking_id = NULL")
             else:
                 # Duplicate call_id detected - a booking already exists for this call_id
-                # Get the maximum retry_count for this call_id and add 1
+                # Even for duplicates, retry_count should be based on lead_id and booking_type, not call_id
+                # For duplicate call_ids, we still need to get parent_booking_id from the original booking
+                # (where parent_booking_id IS NULL) for the same lead_id and booking_type
                 try:
-                    max_retry_count = await self.storage.get_max_retry_count_by_call_id_in_metadata(original_call_id)
-                    retry_count = max_retry_count + 1
-                    
-                    # Find the original booking for this call_id (first booking processed with this call_id)
+                    # Get the original booking for this call_id to find lead_id
                     original_booking_for_call_id = await self.storage.get_booking_by_call_id_in_metadata(original_call_id)
                     if original_booking_for_call_id:
-                        # For duplicate call_ids, use the same parent_booking_id as the original booking
-                        # This maintains consistency - if original had parent_booking_id, duplicates use the same
-                        original_parent_booking_id = original_booking_for_call_id.get('parent_booking_id')
-                        parent_booking_id = original_parent_booking_id  # Can be None if original had no parent
-                        logger.warning(f"Duplicate call_id {original_call_id} detected")
-                        logger.info(f"Maximum retry_count for this call_id: {max_retry_count}")
-                        logger.info(f"retry_count = {retry_count} (max_retry_count + 1)")
-                        logger.info(f"parent_booking_id = {parent_booking_id} (same as original booking for this call_id)")
+                        original_lead_id = original_booking_for_call_id.get('lead_id')
+                        
+                        if original_lead_id and booking_type:
+                            # Count existing bookings for this lead_id and booking_type combination (not by call_id)
+                            existing_bookings_count = await self.storage.count_bookings_by_lead_id_and_booking_type(original_lead_id, booking_type)
+                            
+                            if existing_bookings_count > 0:
+                                # Get max retry_count for this lead_id and booking_type combination (not by call_id)
+                                max_retry_count = await self.storage.get_max_retry_count_by_lead_id_and_booking_type(original_lead_id, booking_type)
+                                retry_count = max_retry_count + 1
+                                
+                                # Find the original booking for this lead_id and booking_type (where parent_booking_id IS NULL)
+                                # Use the call_id from its metadata as parent_booking_id
+                                original_booking_by_type = await self.storage.get_original_booking_by_lead_id_and_booking_type(original_lead_id, booking_type)
+                                if original_booking_by_type:
+                                    original_call_id_from_metadata = original_booking_by_type.get('call_id')
+                                    if original_call_id_from_metadata:
+                                        parent_booking_id = original_call_id_from_metadata
+                                        logger.warning(f"Duplicate call_id {original_call_id} detected, but retry_count based on lead_id and booking_type")
+                                        logger.info(f"Existing bookings for lead_id {original_lead_id} and booking_type {booking_type}: {existing_bookings_count}")
+                                        logger.info(f"Maximum retry_count for this lead_id and booking_type: {max_retry_count}")
+                                        logger.info(f"retry_count = {retry_count} (max_retry_count + 1)")
+                                        logger.info(f"parent_booking_id = {parent_booking_id} (call_id from metadata of original booking where parent_booking_id IS NULL)")
+                                    else:
+                                        parent_booking_id = None
+                                        logger.warning(f"Original booking found but no call_id in metadata, setting parent_booking_id to NULL")
+                                else:
+                                    parent_booking_id = None
+                                    logger.warning(f"Could not find original booking for lead_id {original_lead_id} and booking_type {booking_type}")
+                            else:
+                                # No bookings found for this booking_type - treat as first booking for this type
+                                retry_count = 0
+                                parent_booking_id = None
+                                logger.info(f"Duplicate call_id but first booking for booking_type {booking_type}, setting retry_count=0, parent_booking_id=NULL")
+                        else:
+                            # Fallback: treat as fresh booking
+                            retry_count = 0
+                            parent_booking_id = None
+                            logger.warning(f"Duplicate call_id {original_call_id} detected, but missing lead_id or booking_type, treating as fresh booking")
                     else:
-                        # Fallback: if original booking not found, set parent_booking_id to NULL
+                        # Fallback: if original booking not found, treat as fresh booking
+                        retry_count = 0
                         parent_booking_id = None
-                        logger.warning(f"Could not find original booking for call_id {original_call_id}, setting parent_booking_id to NULL")
+                        logger.warning(f"Could not find original booking for call_id {original_call_id}, treating as fresh booking")
                 except Exception as e:
-                    logger.warning(f"Error getting max retry_count for call_id {original_call_id}: {e}. Setting retry_count to 0.")
+                    logger.warning(f"Error getting retry_count for duplicate call_id {original_call_id}: {e}. Treating as fresh booking.")
                     retry_count = 0
                     parent_booking_id = None
             
