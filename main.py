@@ -20,8 +20,19 @@ import os
 import logging
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+
+# Load environment variables first
+load_dotenv()
+
+# ============================================================================
+# NON-BLOCKING LOGGING SETUP (MUST BE BEFORE OTHER IMPORTS)
+# ============================================================================
+from utils.logger_config import configure_non_blocking_logging
+
+_log_listener = configure_non_blocking_logging()
 
 # Import routes
 from api.routes import (

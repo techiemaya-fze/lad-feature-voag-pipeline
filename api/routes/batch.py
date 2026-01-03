@@ -376,6 +376,28 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
         # Mark batch as completed
         await batch_storage.update_batch_status(batch_id, "completed")
         logger.info("Batch %s completed", job_id)
+        
+        # Trigger batch report generation and email (fire and forget)
+        try:
+            from analysis.batch_report import generate_batch_report
+            asyncio.create_task(_generate_and_send_batch_report(batch_id))
+        except ImportError as e:
+            logger.warning("Batch report module not available: %s", e)
+        except Exception as e:
+            logger.error("Error triggering batch report: %s", e)
+    
+    async def _generate_and_send_batch_report(batch_id: str):
+        """Generate and send batch report email."""
+        try:
+            from analysis.batch_report import generate_batch_report
+            # generate_batch_report gets initiator from batch_info internally
+            result = await generate_batch_report(batch_id, send_email=True)
+            if result.get("status") == "success":
+                logger.info("Batch report sent for batch_id=%s", batch_id)
+            else:
+                logger.warning("Batch report failed for batch_id=%s: %s", batch_id, result.get("message"))
+        except Exception as e:
+            logger.error("Error generating batch report: %s", e, exc_info=True)
 
     asyncio.create_task(_process_batch())
     
