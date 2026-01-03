@@ -514,4 +514,77 @@ async def cancel_batch(batch_id: str) -> dict[str, Any]:
     }
 
 
+# =============================================================================
+# POST /batch/entry-completed - Worker callback for entry completion
+# =============================================================================
+
+class EntryCompletedRequest(BaseModel):
+    """Request body for entry completion callback."""
+    batch_id: str = Field(..., description="Batch UUID")
+    entry_id: str = Field(..., description="Entry UUID")
+    call_status: str = Field(..., description="Final call status (ended, failed, etc)")
+
+
+@router.post("/entry-completed")
+async def entry_completed_callback(request: EntryCompletedRequest) -> dict:
+    """
+    Internal endpoint for worker to notify that a batch entry call has completed.
+    
+    This runs in main.py (stable process) so report generation won't be killed.
+    
+    Args:
+        batch_id: Batch UUID
+        entry_id: Entry UUID  
+        call_status: Final call status
+    
+    Returns:
+        Status response with batch completion info
+    """
+    batch_storage = _get_batch_storage()
+    
+    # Map call status to entry status
+    entry_status = "completed" if request.call_status in ("ended", "completed") else "failed"
+    
+    # Update entry status
+    await batch_storage.update_batch_entry_status(request.entry_id, entry_status)
+    logger.info(f"Updated batch entry {request.entry_id} to status={entry_status}")
+    
+    # Increment batch counters
+    if entry_status == "completed":
+        await batch_storage.increment_batch_counters(request.batch_id, completed_delta=1)
+    else:
+        await batch_storage.increment_batch_counters(request.batch_id, failed_delta=1)
+    
+    # Check if batch is complete
+    result = await batch_storage.check_and_complete_batch(request.batch_id)
+    
+    if result.get("should_report"):
+        logger.info(f"Batch {request.batch_id} fully complete - triggering report from main server")
+        # Fire and forget - runs in main.py's event loop (stable process)
+        asyncio.create_task(_generate_and_send_batch_report(request.batch_id))
+    
+    return {
+        "status": "ok",
+        "entry_id": request.entry_id,
+        "entry_status": entry_status,
+        "batch_completed": result.get("completed", False),
+        "report_triggered": result.get("should_report", False),
+    }
+
+
+async def _generate_and_send_batch_report(batch_id: str) -> None:
+    """Generate and send batch report email. Runs in main.py's stable event loop."""
+    try:
+        from analysis.batch_report import generate_batch_report
+        logger.info(f"Starting batch report generation for batch_id={batch_id}")
+        result = await generate_batch_report(batch_id, send_email=True)
+        if result.get("status") == "success":
+            logger.info(f"Batch report sent for batch_id={batch_id}")
+        else:
+            logger.warning(f"Batch report failed for batch_id={batch_id}: {result.get('message')}")
+    except Exception as e:
+        logger.error(f"Error generating batch report: {e}", exc_info=True)
+
+
 __all__ = ["router"]
+

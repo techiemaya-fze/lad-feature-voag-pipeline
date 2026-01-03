@@ -550,8 +550,11 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
 
 async def update_batch_on_call_complete(ctx: CleanupContext, final_status: str) -> None:
     """
-    Update batch entry status when a call completes.
-    Then check if the entire batch is done and trigger report if so.
+    Notify main.py that a batch entry call has completed.
+    
+    Main.py handles the entry status update, batch completion check, and report generation.
+    This architecture ensures report generation runs in main.py's stable event loop,
+    not in the worker which terminates after call ends.
     
     Args:
         ctx: Cleanup context with batch_id and entry_id
@@ -562,49 +565,39 @@ async def update_batch_on_call_complete(ctx: CleanupContext, final_status: str) 
         return
     
     try:
-        from db.storage.batches import BatchStorage
-        batch_storage = BatchStorage()
+        import httpx
+        import os
         
-        # Map call status to entry status
-        entry_status = "completed" if final_status in ("ended", "completed") else "failed"
+        # Get main.py URL (same host, different or same port)
+        main_api_base = os.getenv("MAIN_API_BASE_URL", "http://localhost:8000")
+        url = f"{main_api_base}/batch/entry-completed"
         
-        # Update entry status
-        await batch_storage.update_batch_entry_status(ctx.entry_id, entry_status)
-        logger.info(f"Updated batch entry {ctx.entry_id} to status={entry_status}")
+        payload = {
+            "batch_id": ctx.batch_id,
+            "entry_id": ctx.entry_id,
+            "call_status": final_status,
+        }
         
-        # Increment batch counters
-        if entry_status == "completed":
-            await batch_storage.increment_batch_counters(ctx.batch_id, completed_delta=1)
-        else:
-            await batch_storage.increment_batch_counters(ctx.batch_id, failed_delta=1)
+        logger.info(f"Notifying main server of batch entry completion: batch={ctx.batch_id}, entry={ctx.entry_id}")
         
-        # Check if batch is complete and trigger report
-        result = await batch_storage.check_and_complete_batch(ctx.batch_id)
-        
-        if result.get("should_report"):
-            logger.info(f"Batch {ctx.batch_id} fully complete - triggering report")
-            try:
-                from analysis.batch_report import generate_batch_report
-                # Fire and forget - don't block cleanup
-                asyncio.create_task(_trigger_batch_report(ctx.batch_id))
-            except ImportError as e:
-                logger.warning(f"Batch report module not available: {e}")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=payload)
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(
+                    f"Batch entry {ctx.entry_id} completed. "
+                    f"Batch completed: {result.get('batch_completed')}, "
+                    f"Report triggered: {result.get('report_triggered')}"
+                )
+            else:
+                logger.error(
+                    f"Failed to notify main server of batch completion: "
+                    f"status={response.status_code}, body={response.text[:200]}"
+                )
     
     except Exception as e:
-        logger.error(f"Error updating batch on call complete: {e}", exc_info=True)
-
-
-async def _trigger_batch_report(batch_id: str) -> None:
-    """Fire-and-forget batch report generation."""
-    try:
-        from analysis.batch_report import generate_batch_report
-        result = await generate_batch_report(batch_id, send_email=True)
-        if result.get("status") == "success":
-            logger.info(f"Batch report sent for batch_id={batch_id}")
-        else:
-            logger.warning(f"Batch report failed: {result.get('message')}")
-    except Exception as e:
-        logger.error(f"Error generating batch report: {e}", exc_info=True)
+        logger.error(f"Error notifying main server of batch completion: {e}", exc_info=True)
 
 
 # =============================================================================
@@ -624,4 +617,5 @@ __all__ = [
     "stop_background_audio",
     "update_batch_on_call_complete",
 ]
+
 
