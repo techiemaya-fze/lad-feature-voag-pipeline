@@ -363,27 +363,73 @@ class VoiceAssistant(Agent):
         """
         End the current call gracefully.
         
+        Waits for TTS parting words to complete before hanging up.
+        If human interrupts during parting words, hangup is cancelled.
+        
         Args:
             reason: Reason for ending (e.g., "call_complete", "not_interested")
         
         Returns:
             Confirmation message
         """
-        logger.info(f"Agent hanging up call (reason: {reason})")
+        import asyncio
         
+        logger.info(f"Agent initiating graceful hangup (reason: {reason})")
+        
+        # Disable silence monitor to prevent timeout during goodbye
         if self.silence_monitor:
             self.silence_monitor.disable()
         
-        if self.job_context and self.job_context.room:
-            try:
-                await self.job_context.api.room.delete_room(
-                    api.DeleteRoomRequest(room=self.job_context.room.name)
-                )
-                logger.info(f"Room {self.job_context.room.name} deleted")
-            except Exception as e:
-                logger.error(f"Error deleting room: {e}")
+        # Mark hangup as pending (for interruption detection)
+        self._hangup_pending = True
+        self._hangup_cancelled = False
         
-        return f"Call ended: {reason}"
+        try:
+            # Wait for TTS parting words to complete (if recorder available)
+            if self.call_recorder:
+                try:
+                    tts_completed = await self.call_recorder.wait_for_tts_playout(timeout=20.0)
+                    if not tts_completed:
+                        logger.warning("TTS playout wait timed out, proceeding with hangup")
+                except Exception as e:
+                    logger.warning(f"Error waiting for TTS playout: {e}")
+            
+            # Check if hangup was cancelled due to interruption
+            if getattr(self, '_hangup_cancelled', False):
+                logger.info("Hangup cancelled - human interrupted during parting words")
+                self._hangup_pending = False
+                return "Hangup cancelled - user is speaking"
+            
+            # Wait 1 second after TTS for natural pause
+            await asyncio.sleep(1.0)
+            
+            # Final check for interruption during the pause
+            if getattr(self, '_hangup_cancelled', False):
+                logger.info("Hangup cancelled during post-TTS pause")
+                self._hangup_pending = False
+                return "Hangup cancelled - user started speaking"
+            
+            # Execute hangup
+            if self.job_context and self.job_context.room:
+                try:
+                    await self.job_context.api.room.delete_room(
+                        api.DeleteRoomRequest(room=self.job_context.room.name)
+                    )
+                    logger.info(f"Room {self.job_context.room.name} deleted after graceful goodbye")
+                except Exception as e:
+                    logger.error(f"Error deleting room: {e}")
+                    return f"Error ending call: {e}"
+            
+            return f"Call ended: {reason}"
+            
+        finally:
+            self._hangup_pending = False
+    
+    def cancel_pending_hangup(self) -> None:
+        """Cancel a pending hangup if human interrupts during parting words."""
+        if getattr(self, '_hangup_pending', False):
+            self._hangup_cancelled = True
+            logger.info("Pending hangup marked for cancellation")
 
     def set_silence_monitor(self, monitor: SilenceMonitor | None) -> None:
         self.silence_monitor = monitor
