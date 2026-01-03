@@ -674,20 +674,10 @@ Respond ONLY in JSON format:
             return None
     
     def save_booking_json(self, booking_data: Dict, call_log_id: str) -> Optional[str]:
-        """Save booking to JSON file"""
-        try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"lead_booking_{call_log_id}_{timestamp}.json"
-            filepath = JSON_STORAGE_DIR / filename
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(booking_data, f, indent=2, ensure_ascii=False)
-            
-            logger.info(f"Saved booking to: {filepath}")
-            return str(filepath)
-        except Exception as e:
-            logger.error(f"Error saving JSON: {e}")
-            return None
+        """Save booking to JSON file - DISABLED in v2 refactor"""
+        # JSON file saving disabled - data goes directly to database
+        logger.debug(f"JSON file saving disabled for call_log_id={call_log_id}")
+        return None
     
     async def list_calls(self, limit: Optional[int] = 100) -> List[Dict]:
         """List all calls from voice_call_logs (async)"""
