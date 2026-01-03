@@ -343,6 +343,10 @@ class VoiceAssistant(Agent):
         self.silence_monitor = silence_monitor
         self._is_glinks_agent = is_glinks_agent
         
+        # Hangup control flags
+        self._hangup_pending = False
+        self._hangup_cancelled = False
+        
         if isinstance(initiating_user_id, int):
             self._initiating_user_id: str | None = str(initiating_user_id)
         elif isinstance(initiating_user_id, str):
@@ -355,8 +359,18 @@ class VoiceAssistant(Agent):
         self._human_joined = False
         self._knowledge_base_store_ids = knowledge_base_store_ids or []
         
+        # Register interruption callback to cancel pending hangup
+        if self.call_recorder and hasattr(self.call_recorder, 'register_agent_speech_end_callback'):
+            self.call_recorder.register_agent_speech_end_callback(self._on_agent_speech_end)
+        
         # Pass tools from tool_builder to parent Agent
         super().__init__(instructions=instructions, tools=tools or [])
+    
+    def _on_agent_speech_end(self, was_interrupted: bool) -> None:
+        """Callback when agent speech ends - cancels pending hangup if interrupted."""
+        if was_interrupted and self._hangup_pending:
+            logger.info("Agent speech interrupted during hangup - cancelling hangup")
+            self._hangup_cancelled = True
 
     @function_tool
     async def hangup_call(self, reason: str = "call_complete") -> str:
