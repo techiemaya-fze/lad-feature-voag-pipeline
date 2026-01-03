@@ -519,12 +519,19 @@ async def entrypoint(ctx: agents.JobContext):
             if org_id and str(org_id) == VoiceAssistant.GLINKS_ORG_ID:
                 is_glinks_agent = True
     
-    # Phase 4: Get tenant_id for multi-tenancy
+    # Phase 4: Get tenant_id for multi-tenancy (from USER's primary_tenant_id, not agent)
     tenant_id = None
-    if agent_id:
+    if initiating_user_id:
+        from db.storage.tokens import UserTokenStorage
+        token_storage = UserTokenStorage()
+        tenant_id = await token_storage.get_user_tenant_id(initiating_user_id)
+        if tenant_id:
+            logger.debug(f"Resolved tenant_id={tenant_id} from user_id={initiating_user_id}")
+    # Fallback: try agent's tenant if no user (inbound calls)
+    if not tenant_id and agent_id:
         tenant_id = await agent_storage.get_agent_tenant_id(agent_id)
         if tenant_id:
-            logger.debug(f"Resolved tenant_id={tenant_id} for agent_id={agent_id}")
+            logger.debug(f"Resolved tenant_id={tenant_id} from agent_id={agent_id} (fallback)")
     # Resolve LLM configuration
     llm_provider, llm_model = resolve_llm_configuration(
         llm_provider_override, llm_model_override
