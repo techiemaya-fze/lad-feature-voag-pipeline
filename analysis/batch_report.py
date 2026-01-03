@@ -320,10 +320,11 @@ async def get_batch_info(batch_id: str) -> Optional[Dict]:
     conn = _get_connection()
     try:
         with conn.cursor() as cur:
+            # v2 schema: lad_dev.voice_call_batches uses finished_at, no cancelled_calls
             cur.execute(f"""
                 SELECT 
                     id, metadata->>'job_id' as job_id, status, total_calls, completed_calls,
-                    failed_calls, cancelled_calls, created_at, updated_at,
+                    failed_calls, created_at, finished_at,
                     agent_id, initiated_by_user_id
                 FROM {BATCHES_FULL}
                 WHERE id = %s::uuid
@@ -340,11 +341,11 @@ async def get_batch_info(batch_id: str) -> Optional[Dict]:
                 "total_calls": row[3],
                 "completed_calls": row[4],
                 "failed_calls": row[5],
-                "cancelled_calls": row[6],
-                "created_at": row[7],
-                "completed_at": row[8],
-                "agent_id": row[9],
-                "initiated_by": row[10],
+                "cancelled_calls": 0,  # v2 schema doesn't have this, default to 0
+                "created_at": row[6],
+                "completed_at": row[7],  # Using finished_at column
+                "agent_id": row[8],
+                "initiated_by": row[9],
             }
     finally:
         _return_conn(conn)
