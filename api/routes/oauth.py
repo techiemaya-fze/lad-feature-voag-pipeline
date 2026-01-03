@@ -317,7 +317,9 @@ async def google_auth_status(user_id: str) -> OAuthStatusResponse:
     """
     canonical_id, user_record = await _resolve_user_record(user_id)
     
-    blob = _coerce_db_blob(user_record.get("google_oauth_tokens"))
+    # Tokens are stored in user_identities table, not users table
+    storage = _get_token_storage()
+    blob = await storage.get_google_token_blob(canonical_id)
     if not blob:
         return OAuthStatusResponse(connected=False)
 
@@ -326,7 +328,6 @@ async def google_auth_status(user_id: str) -> OAuthStatusResponse:
         payload = encryptor.decrypt_json(blob)
     except ValueError:
         logger.warning("Stored Google tokens for user_id=%s are invalid; clearing", canonical_id)
-        storage = _get_token_storage()
         await storage.remove_tokens(canonical_id)
         return OAuthStatusResponse(connected=False)
 
@@ -341,7 +342,7 @@ async def google_auth_status(user_id: str) -> OAuthStatusResponse:
         except ValueError:
             expires_at = None
 
-    connected_gmail = user_record.get("connected_gmail")
+    connected_gmail = await storage.get_connected_gmail(canonical_id)
     
     return OAuthStatusResponse(
         connected=True,
