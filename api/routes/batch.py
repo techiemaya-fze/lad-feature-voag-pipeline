@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from api.models import (
     CallJobResponse,
