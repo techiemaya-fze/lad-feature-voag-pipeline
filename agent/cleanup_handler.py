@@ -382,6 +382,58 @@ async def trigger_post_call_analysis(
 
 
 # =============================================================================
+# LEAD BOOKINGS EXTRACTION
+# =============================================================================
+
+async def trigger_lead_bookings_extraction(
+    ctx: CleanupContext,
+    transcription_data: dict | None,
+    call_details: dict | None,
+) -> None:
+    """
+    Extract and save lead bookings from call transcription.
+    
+    Args:
+        ctx: Cleanup context
+        transcription_data: Transcription dict
+        call_details: Full call record
+    """
+    try:
+        from analysis.lead_bookings_extractor import LeadBookingsExtractor
+    except ImportError:
+        logger.warning("Lead bookings extractor not available, skipping extraction")
+        return
+    
+    call_log_id = ctx.call_log_id
+    
+    if not transcription_data:
+        logger.warning("Skipping lead bookings extraction; no transcript for call_log_id=%s", call_log_id)
+        return
+    
+    if not call_log_id:
+        logger.warning("Skipping lead bookings extraction; no call_log_id")
+        return
+    
+    try:
+        extractor = LeadBookingsExtractor()
+        try:
+            booking_data = await extractor.process_call_log(str(call_log_id))
+            if booking_data:
+                save_results = await extractor.save_booking(booking_data)
+                if save_results.get("db"):
+                    logger.info("Lead booking extracted and saved for call_log_id=%s", call_log_id)
+                elif save_results.get("errors"):
+                    logger.warning("Lead booking extraction completed with errors for call_log_id=%s: %s",
+                                 call_log_id, save_results["errors"])
+            else:
+                logger.debug("No booking data extracted for call_log_id=%s", call_log_id)
+        finally:
+            await extractor.close()
+    except Exception as exc:
+        logger.error("Lead bookings extraction failed for call_log_id=%s: %s", call_log_id, exc, exc_info=True)
+
+
+# =============================================================================
 # AUDIO CLEANUP
 # =============================================================================
 
@@ -472,10 +524,13 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
     # 6. Run post-call analysis
     await trigger_post_call_analysis(ctx, transcription_data, duration_seconds, call_details)
     
-    # 7. Stop background audio
+    # 7. Extract and save lead bookings
+    await trigger_lead_bookings_extraction(ctx, transcription_data, call_details)
+    
+    # 8. Stop background audio
     await stop_background_audio(ctx)
     
-    # 8. Release semaphore
+    # 9. Release semaphore
     if ctx.acquired_call_slot and ctx.call_semaphore:
         ctx.call_semaphore.release()
         logger.info("Released semaphore for job %s", ctx.job_id)
@@ -494,5 +549,6 @@ __all__ = [
     "determine_final_status",
     "update_call_status",
     "trigger_post_call_analysis",
+    "trigger_lead_bookings_extraction",
     "stop_background_audio",
 ]
