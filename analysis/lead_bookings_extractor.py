@@ -36,7 +36,7 @@ except ImportError:
         # Try absolute import (when run from project root)
         from analysis.schedule_calculator import ScheduleCalculator
 
-from db.lead_bookings_storage import LeadBookingsStorage, LeadBookingsStorageError
+from db.storage.lead_bookings import LeadBookingsStorage, LeadBookingsStorageError
 
 # GST timezone
 GST = pytz.timezone('Asia/Dubai')

@@ -66,8 +66,8 @@ v2/
 │       ├── email_templates.py    # Email template storage
 │       ├── call_analysis.py      # Post-call analysis results
 │       ├── numbers.py            # Phone number management
-│       └── voices.py             # Custom voice configurations
-│   └── lead_bookings_storage.py  # Lead bookings storage (v2 refactored)
+│       ├── voices.py             # Custom voice configurations
+│       └── lead_bookings.py      # Lead bookings storage
 │
 ├── tools/                        # 🔧 Agent Tools (Function Calling)
 │   ├── google_workspace.py       # AgentGoogleWorkspace - OAuth wrapper
