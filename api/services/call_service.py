@@ -153,7 +153,12 @@ def _augment_context_with_lead(
     context: str | None,
     lead_name: str | None,
     lead_notes: str | None,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    email: str | None = None,
+    company: str | None = None,
 ) -> str | None:
+    """Augment context with lead information for the agent."""
     def _append_line(existing: str | None, line: str | None) -> str | None:
         if not line:
             return existing
@@ -165,13 +170,34 @@ def _augment_context_with_lead(
         return line
 
     updated = (context or None)
-    if lead_name:
-        lead_line = f'The lead\'s name is "{lead_name}".'
+    
+    # Add lead name (combined or from first/last)
+    name_to_use = lead_name
+    if not name_to_use and (first_name or last_name):
+        parts = [n for n in [first_name, last_name] if n]
+        name_to_use = " ".join(parts) if parts else None
+    
+    if name_to_use:
+        lead_line = f'The lead\'s name is "{name_to_use}".'
         updated = _append_line(updated, lead_line)
-    if lead_notes:
-        notes_line = f"Lead notes: {lead_notes}"
+    
+    # Add email if available
+    if email and email.strip():
+        email_line = f'Lead email: {email.strip()}'
+        updated = _append_line(updated, email_line)
+    
+    # Add company if available
+    if company and company.strip():
+        company_line = f'Lead company: {company.strip()}'
+        updated = _append_line(updated, company_line)
+    
+    # Add notes if available
+    if lead_notes and lead_notes.strip():
+        notes_line = f"Lead notes: {lead_notes.strip()}"
         updated = _append_line(updated, notes_line)
+    
     return updated.rstrip() if isinstance(updated, str) else updated
+
 
 
 def _combine_contexts(*contexts: Optional[str]) -> str | None:
@@ -390,23 +416,30 @@ class CallService:
             logger.warning("No tenant_id found for user=%s agent=%s, skipping lead lookup", initiated_by, agent_id)
         
         lead_id = lead_id_override
-        # Determine lead name for agent context:
-        # 1. If request has name, use it (overrides table for agent context)
-        # 2. If no request name, use table name
-        # Table name is not modified if request name differs (already handled by find_or_create_lead)
+        # Determine lead info for agent context
         lead_name_for_agent = None
         lead_notes = None
+        lead_first_name = None
+        lead_last_name = None
+        lead_email = None
+        lead_company = None
         
         if lead_record:
             lead_id = lead_id or lead_record.get("id")
             
-            # Get table name
+            # Get fields from lead record
+            lead_first_name = lead_record.get("first_name")
+            lead_last_name = lead_record.get("last_name")
+            lead_email = lead_record.get("email")
+            lead_company = lead_record.get("company")
+            
+            # Get table name (combined)
             table_name_raw = lead_record.get("name")
             table_name = None
             if isinstance(table_name_raw, str) and table_name_raw.strip():
                 table_name = table_name_raw.strip()
             
-            # Priority: request name > table name
+            # Priority: request name > table name (for agent context)
             if request_lead_name and request_lead_name.strip():
                 lead_name_for_agent = request_lead_name.strip()
                 if table_name and table_name != lead_name_for_agent:
@@ -418,8 +451,16 @@ class CallService:
             if isinstance(lead_notes_raw, str) and lead_notes_raw.strip():
                 lead_notes = lead_notes_raw.strip()
         
-        # Augment context with lead info
-        final_context = _augment_context_with_lead(context, lead_name_for_agent, lead_notes)
+        # Augment context with lead info (name, email, company, notes)
+        final_context = _augment_context_with_lead(
+            context=context,
+            lead_name=lead_name_for_agent,
+            lead_notes=lead_notes,
+            first_name=lead_first_name,
+            last_name=lead_last_name,
+            email=lead_email,
+            company=lead_company,
+        )
         
         # Generate room name
         room_name = f"call-{job_id}-{uuid.uuid4().hex[:8]}"
