@@ -12,9 +12,14 @@ The **v2** folder contains the modular, production-ready implementation of the V
 v2/
 ├── .env                          # Environment variables (secrets, API keys)
 ├── .env.example                  # Template for environment variables
+├── .gitignore                    # Git ignore file (ignores secrets/, .env, etc.)
+├── pyproject.toml                # Python project config and dependencies
 ├── main.py                       # FastAPI application entry point
 ├── schema_analysis.txt           # Database schema documentation
-├── salesmaya-yts-*.json          # GCS service account credentials
+│
+├── secrets/                      # 🔐 Credential Files (gitignored)
+│   ├── salesmaya-yts-*.json      # GCS service account credentials
+│   └── google_oauth_client_secret.json  # Google OAuth client credentials
 │
 ├── agent/                        # 🎯 Core Voice Agent Components
 │   ├── __init__.py               # Package exports
@@ -163,12 +168,21 @@ The heart of the voice agent system. Handles LiveKit integration, conversation f
 | `instruction_builder.py` | Agent prompt generation - builds system instructions from templates | worker.py |
 | `cleanup_handler.py` | Post-call cleanup - saves transcripts, calculates costs, updates call status | worker.py |
 
+#### VoiceAssistant Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Graceful Hangup** | When `hangup_call()` is invoked, waits for TTS parting words to complete, then waits 1 second before ending call. |
+| **Interruption Cancellation** | If user speaks during parting words, pending hangup is cancelled and call continues. Uses `_on_agent_speech_end` callback from CallRecorder. |
+| **Silence Monitoring** | Automatic warning prompts and hangup after configurable silence timeout. |
+| **Human Support Handoff** | Blocks `hangup_call` when human support has joined the call. |
+
 #### `agent/providers/` - LLM/TTS Factories
 
 | File | Purpose |
 |------|---------|
 | `llm_builder.py` | Creates LLM instances (Gemini 2.0 Flash, OpenAI GPT-4) |
-| `tts_builder.py` | Creates TTS engines (Google Cloud TTS, ElevenLabs) |
+| `tts_builder.py` | Creates TTS engines (Google Cloud TTS, ElevenLabs, Cartesia) |
 
 ---
 

@@ -300,6 +300,47 @@
 
 ---
 
+## 5b. OAuth - Microsoft Bookings
+
+### New in V2 - Microsoft Bookings Integration
+
+| Action | Endpoint | Method |
+|--------|----------|--------|
+| **Start** | `/auth/microsoft/start?user_id={id}&frontend_id={fid}` | GET |
+| **Callback** | `/auth/microsoft/callback` | GET |
+| **Status** | `/auth/microsoft/status?user_id={id}` | GET |
+| **List Businesses** | `/auth/microsoft/list-businesses?user_id={id}` | GET |
+| **List Services** | `/auth/microsoft/list-services?user_id={id}&business_id={bid}` | GET |
+| **List Staff** | `/auth/microsoft/staff?user_id={id}&business_id={bid}` | GET |
+| **Save Config** | `/auth/microsoft/save-config` | POST |
+| **Revoke** | `/auth/microsoft/revoke` | POST |
+
+### Status Response: `MicrosoftOAuthStatusResponse`
+```json
+{
+  "connected": true,
+  "connected_account": "user@company.com",
+  "bookings_accessible": true,  // false if Bookings API returns Forbidden
+  "selected_business_id": "business@company.com",
+  "selected_business_name": "My Business",
+  "default_service_id": "uuid-of-service",
+  "default_staff_member_id": "uuid-of-staff"
+}
+```
+
+### Save Config Request
+```json
+{
+  "user_id": "uuid-string",
+  "business_id": "business@company.com",
+  "business_name": "My Business",
+  "service_id": "uuid-of-service",
+  "staff_member_id": "uuid-of-staff"
+}
+```
+
+---
+
 ## 6. Recordings API
 
 ### Endpoints (No Changes)
