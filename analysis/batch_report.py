@@ -394,7 +394,7 @@ async def fetch_batch_call_data(batch_id: str) -> List[Dict]:
             for row in rows:
                 row_dict = dict(zip(columns, row))
                 
-                # Extract fields from lead_extraction JSONB for backwards compatibility
+                # Parse lead_extraction JSONB
                 lead_extraction = row_dict.get('lead_extraction') or {}
                 if isinstance(lead_extraction, str):
                     try:
@@ -402,12 +402,40 @@ async def fetch_batch_call_data(batch_id: str) -> List[Dict]:
                     except json.JSONDecodeError:
                         lead_extraction = {}
                 
-                # Map new schema fields to old report format
+                # Parse raw_analysis JSONB for additional fields
+                raw_analysis = row_dict.get('raw_analysis') or {}
+                if isinstance(raw_analysis, str):
+                    try:
+                        raw_analysis = json.loads(raw_analysis)
+                    except json.JSONDecodeError:
+                        raw_analysis = {}
+                
+                # Extract lead_category/priority from lead_extraction (from lead_score)
                 row_dict['lead_category'] = lead_extraction.get('lead_category', '')
+                row_dict['priority'] = lead_extraction.get('priority', '')
+                
+                # Extract disposition/recommended_action from lead_extraction
                 row_dict['disposition'] = lead_extraction.get('disposition', '')
                 row_dict['recommended_action'] = lead_extraction.get('recommended_action', '')
-                row_dict['engagement_level'] = lead_extraction.get('engagement_level', '')
-                row_dict['recommendations'] = lead_extraction.get('recommendations', '')
+                
+                # Extract engagement_level from raw_analysis->quality_metrics
+                quality_metrics = raw_analysis.get('quality_metrics') or {}
+                row_dict['engagement_level'] = quality_metrics.get('engagement_level', '')
+                
+                # Get lead_score from raw_analysis
+                lead_score_data = raw_analysis.get('lead_score') or {}
+                if not row_dict['lead_category'] and lead_score_data:
+                    row_dict['lead_category'] = lead_score_data.get('lead_category', '')
+                    row_dict['priority'] = lead_score_data.get('priority', '')
+                
+                # Get disposition from raw_analysis->lead_disposition if not in lead_extraction
+                lead_disposition = raw_analysis.get('lead_disposition') or {}
+                if not row_dict['disposition'] and lead_disposition:
+                    row_dict['disposition'] = lead_disposition.get('disposition', '')
+                    row_dict['recommended_action'] = lead_disposition.get('recommended_action', '')
+                
+                # Recommendations - not stored separately, construct from disposition reasoning
+                row_dict['recommendations'] = lead_disposition.get('reasoning', '')
                 
                 # Extract key_points from JSONB
                 key_points = row_dict.get('key_points') or []
