@@ -356,6 +356,8 @@ class CallService:
         knowledge_base_store_ids: list[str] | None = None,
         lead_name: str | None = None,  # For lead creation/update
         lead_id_override: str | None = None,  # UUID
+        batch_id: str | None = None,  # Batch call tracking
+        entry_id: str | None = None,  # Batch entry tracking
     ) -> DispatchResult:
         """
         Dispatch a single outbound call via LiveKit.
@@ -485,6 +487,12 @@ class CallService:
             outbound_trunk = routing_result.outbound_trunk_id or os.getenv("OUTBOUND_TRUNK_ID")
             if outbound_trunk:
                 metadata["outbound_trunk_id"] = outbound_trunk
+            
+            # Batch call tracking - worker uses these to update entry status on completion
+            if batch_id:
+                metadata["batch_id"] = batch_id
+            if entry_id:
+                metadata["entry_id"] = entry_id
             
             import json
             participant_metadata = json.dumps(metadata)

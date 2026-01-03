@@ -360,44 +360,26 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
                     llm_model=llm_model_override,
                     knowledge_base_store_ids=entry.knowledge_base_store_ids,
                     lead_id_override=entry.lead_id,
+                    batch_id=str(batch_id),  # For worker to track batch completion
+                    entry_id=entry_id,  # For worker to update entry status
                 )
                 
                 # Update entry with call log ID and status
                 await batch_storage.update_batch_entry_call_log(batch_id, entry_id, result.call_log_id)
                 await batch_storage.update_batch_entry_status(entry_id, "dispatched")
                 
-                await batch_storage.increment_batch_counters(batch_id, completed_delta=1)
+                # Don't increment completed_calls here - worker will do it when call ends
                 
             except Exception as exc:
                 logger.exception("Batch entry %d failed: %s", i, exc)
                 await batch_storage.update_batch_entry_status(entry_id, "failed", error_message=str(exc)[:500])
                 await batch_storage.increment_batch_counters(batch_id, failed_delta=1)
         
-        # Mark batch as completed
-        await batch_storage.update_batch_status(batch_id, "completed")
-        logger.info("Batch %s completed", job_id)
+        # Mark batch as processing (not completed - worker will complete when all calls end)
+        await batch_storage.update_batch_status(batch_id, "processing")
+        logger.info("Batch %s dispatched all calls, now processing", job_id)
         
-        # Trigger batch report generation and email (fire and forget)
-        try:
-            from analysis.batch_report import generate_batch_report
-            asyncio.create_task(_generate_and_send_batch_report(batch_id))
-        except ImportError as e:
-            logger.warning("Batch report module not available: %s", e)
-        except Exception as e:
-            logger.error("Error triggering batch report: %s", e)
-    
-    async def _generate_and_send_batch_report(batch_id: str):
-        """Generate and send batch report email."""
-        try:
-            from analysis.batch_report import generate_batch_report
-            # generate_batch_report gets initiator from batch_info internally
-            result = await generate_batch_report(batch_id, send_email=True)
-            if result.get("status") == "success":
-                logger.info("Batch report sent for batch_id=%s", batch_id)
-            else:
-                logger.warning("Batch report failed for batch_id=%s: %s", batch_id, result.get("message"))
-        except Exception as e:
-            logger.error("Error generating batch report: %s", e, exc_info=True)
+        # NOTE: Batch report is triggered by cleanup_handler when last call completes
 
     asyncio.create_task(_process_batch())
     

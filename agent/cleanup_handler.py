@@ -55,6 +55,8 @@ class CleanupContext:
         acquired_call_slot: bool = False,
         usage_collector: Any = None,
         job_id: str | None = None,
+        batch_id: str | None = None,  # Batch call tracking
+        entry_id: str | None = None,  # Batch entry tracking
     ):
         self.call_recorder = call_recorder
         self.call_log_id = call_log_id
@@ -69,6 +71,8 @@ class CleanupContext:
         self.acquired_call_slot = acquired_call_slot
         self.usage_collector = usage_collector
         self.job_id = job_id
+        self.batch_id = batch_id
+        self.entry_id = entry_id
 
 
 # =============================================================================
@@ -534,6 +538,71 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
     if ctx.acquired_call_slot and ctx.call_semaphore:
         ctx.call_semaphore.release()
         logger.info("Released semaphore for job %s", ctx.job_id)
+    
+    # 10. Update batch entry status and check for batch completion
+    await update_batch_on_call_complete(ctx, final_status)
+
+# =============================================================================
+# BATCH COMPLETION TRACKING
+# =============================================================================
+
+async def update_batch_on_call_complete(ctx: CleanupContext, final_status: str) -> None:
+    """
+    Update batch entry status when a call completes.
+    Then check if the entire batch is done and trigger report if so.
+    
+    Args:
+        ctx: Cleanup context with batch_id and entry_id
+        final_status: The final status of the call (ended, failed, etc.)
+    """
+    if not ctx.batch_id or not ctx.entry_id:
+        # Not a batch call
+        return
+    
+    try:
+        from db.storage.batches import BatchStorage
+        batch_storage = BatchStorage()
+        
+        # Map call status to entry status
+        entry_status = "completed" if final_status in ("ended", "completed") else "failed"
+        
+        # Update entry status
+        await batch_storage.update_batch_entry_status(ctx.entry_id, entry_status)
+        logger.info(f"Updated batch entry {ctx.entry_id} to status={entry_status}")
+        
+        # Increment batch counters
+        if entry_status == "completed":
+            await batch_storage.increment_batch_counters(ctx.batch_id, completed_delta=1)
+        else:
+            await batch_storage.increment_batch_counters(ctx.batch_id, failed_delta=1)
+        
+        # Check if batch is complete and trigger report
+        result = await batch_storage.check_and_complete_batch(ctx.batch_id)
+        
+        if result.get("should_report"):
+            logger.info(f"Batch {ctx.batch_id} fully complete - triggering report")
+            try:
+                from analysis.batch_report import generate_batch_report
+                # Fire and forget - don't block cleanup
+                asyncio.create_task(_trigger_batch_report(ctx.batch_id))
+            except ImportError as e:
+                logger.warning(f"Batch report module not available: {e}")
+    
+    except Exception as e:
+        logger.error(f"Error updating batch on call complete: {e}", exc_info=True)
+
+
+async def _trigger_batch_report(batch_id: str) -> None:
+    """Fire-and-forget batch report generation."""
+    try:
+        from analysis.batch_report import generate_batch_report
+        result = await generate_batch_report(batch_id, send_email=True)
+        if result.get("status") == "success":
+            logger.info(f"Batch report sent for batch_id={batch_id}")
+        else:
+            logger.warning(f"Batch report failed: {result.get('message')}")
+    except Exception as e:
+        logger.error(f"Error generating batch report: {e}", exc_info=True)
 
 
 # =============================================================================
@@ -551,4 +620,6 @@ __all__ = [
     "trigger_post_call_analysis",
     "trigger_lead_bookings_extraction",
     "stop_background_audio",
+    "update_batch_on_call_complete",
 ]
+

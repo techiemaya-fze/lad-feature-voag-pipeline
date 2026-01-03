@@ -673,3 +673,94 @@ class BatchStorage:
                 exc_info=True
             )
             return False
+
+    async def check_and_complete_batch(
+        self,
+        batch_id: str,
+    ) -> dict:
+        """
+        Check if all entries in the batch are done. If so, mark batch completed.
+        
+        Args:
+            batch_id: UUID of the batch
+        
+        Returns:
+            Dict with 'completed' (bool), 'should_report' (bool), and stats
+        """
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    # Get batch status and entry counts
+                    cur.execute(
+                        f"""
+                        SELECT 
+                            b.status,
+                            b.total_calls,
+                            COALESCE(b.completed_calls, 0),
+                            COALESCE(b.failed_calls, 0),
+                            (SELECT COUNT(*) FROM {FULL_ENTRY_TABLE} 
+                             WHERE batch_id = b.id AND status IN ('completed', 'failed')) as done_count
+                        FROM {FULL_TABLE} b
+                        WHERE b.id = %s
+                        """,
+                        (batch_id,)
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        logger.warning(f"Batch {batch_id} not found")
+                        return {"completed": False, "should_report": False}
+                    
+                    status, total_calls, completed_calls, failed_calls, done_count = row
+                    
+                    logger.debug(
+                        f"Batch {batch_id}: status={status}, total={total_calls}, "
+                        f"completed={completed_calls}, failed={failed_calls}, done_entries={done_count}"
+                    )
+                    
+                    # Already completed?
+                    if status == "completed":
+                        return {"completed": True, "should_report": False}
+                    
+                    # Check if all entries are done
+                    all_done = done_count >= total_calls if total_calls > 0 else False
+                    
+                    if all_done:
+                        # Mark batch as completed
+                        cur.execute(
+                            f"""
+                            UPDATE {FULL_TABLE}
+                            SET status = 'completed', finished_at = NOW(), updated_at = NOW()
+                            WHERE id = %s AND status = 'processing'
+                            RETURNING id
+                            """,
+                            (batch_id,)
+                        )
+                        updated = cur.fetchone()
+                        conn.commit()
+                        
+                        if updated:
+                            logger.info(f"Batch {batch_id} marked completed (all {total_calls} entries done)")
+                            return {
+                                "completed": True,
+                                "should_report": True,
+                                "total_calls": total_calls,
+                                "completed_calls": completed_calls,
+                                "failed_calls": failed_calls,
+                            }
+                        else:
+                            # Already updated by another worker
+                            return {"completed": True, "should_report": False}
+                    
+                    return {"completed": False, "should_report": False}
+            finally:
+                self._return_connection(conn)
+
+        except Exception as exc:
+            logger.error(
+                "Failed to check batch completion: %s",
+                exc,
+                exc_info=True
+            )
+            return {"completed": False, "should_report": False}
+

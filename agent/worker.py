@@ -439,6 +439,8 @@ async def entrypoint(ctx: agents.JobContext):
     lead_id: str | None = None  # For vertical routing
     knowledge_base_store_ids: list[str] = []
     outbound_trunk_id: str | None = None  # SIP trunk ID from number rules
+    batch_id: str | None = None  # Batch call tracking
+    entry_id: str | None = None  # Batch entry tracking
     
     try:
         if ctx.job.metadata:
@@ -452,6 +454,8 @@ async def entrypoint(ctx: agents.JobContext):
             from_number = dial_info.get("from_number")
             added_context = dial_info.get("added_context")
             outbound_trunk_id = dial_info.get("outbound_trunk_id")
+            batch_id = dial_info.get("batch_id")  # For batch completion tracking
+            entry_id = dial_info.get("entry_id")  # For batch entry status update
             
             raw_agent_id = dial_info.get("agent_id")
             if isinstance(raw_agent_id, (int, str)):
@@ -660,6 +664,8 @@ async def entrypoint(ctx: agents.JobContext):
         call_semaphore=_call_semaphore,
         acquired_call_slot=acquired_call_slot,
         job_id=job_id,
+        batch_id=batch_id,  # For batch completion tracking
+        entry_id=entry_id,  # For batch entry status update
     )
     
     async def shutdown_callback():
