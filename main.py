@@ -32,7 +32,9 @@ load_dotenv()
 # ============================================================================
 from utils.logger_config import configure_non_blocking_logging
 
-_log_listener = configure_non_blocking_logging()
+# MAIN_PY_LOG_LEVEL takes precedence, falls back to LOG_LEVEL
+_main_log_level = os.getenv("MAIN_PY_LOG_LEVEL") or os.getenv("LOG_LEVEL")
+_log_listener = configure_non_blocking_logging(level=_main_log_level)
 
 # Import routes
 from api.routes import (

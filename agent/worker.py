@@ -28,6 +28,26 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Sequence
 
 from dotenv import load_dotenv
+
+# Load environment variables first
+load_dotenv()
+
+# ============================================================================
+# AGENT LOG LEVEL CONFIGURATION
+# ============================================================================
+# AGENT_LOG_LEVEL takes precedence, falls back to LOG_LEVEL
+def _resolve_log_level(value):
+    if value is None:
+        return logging.INFO
+    level_map = {"DEBUG": logging.DEBUG, "INFO": logging.INFO, 
+                 "WARNING": logging.WARNING, "ERROR": logging.ERROR}
+    return level_map.get(value.strip().upper(), logging.INFO)
+
+_agent_log_level = _resolve_log_level(
+    os.getenv("AGENT_LOG_LEVEL") or os.getenv("LOG_LEVEL")
+)
+logging.basicConfig(level=_agent_log_level, format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
+
 from livekit import agents, api
 from livekit.agents import (
     Agent,
