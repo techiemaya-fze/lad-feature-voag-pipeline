@@ -540,9 +540,9 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
         logger.info("Released semaphore for job %s", ctx.job_id)
     
     # 10. Update batch entry status and check for batch completion
-    # Use 'ended' as default - call completed normally if we reached this point
-    call_status = call_details.get('status', 'ended') if call_details else 'ended'
-    await update_batch_on_call_complete(ctx, call_status)
+    # If cleanup_and_save is called, the call completed normally -> status is "ended"
+    # (call_details has the OLD status from before update_call_status was called)
+    await update_batch_on_call_complete(ctx, "ended")
 
 # =============================================================================
 # BATCH COMPLETION TRACKING

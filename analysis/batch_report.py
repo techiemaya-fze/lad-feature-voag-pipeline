@@ -372,7 +372,7 @@ async def fetch_batch_call_data(batch_id: str) -> List[Dict]:
                     cl.status as call_status,
                     cl.duration_seconds as call_duration,
                     COALESCE(l.first_name || ' ' || l.last_name, '') as lead_name,
-                    COALESCE('+' || l.country_code || l.base_number::text, '') as lead_number,
+                    COALESCE(l.phone, '') as lead_number,
                     a.summary,
                     a.sentiment,
                     a.key_points,
@@ -1291,7 +1291,7 @@ def _build_html_email_body(
                                 This is an automated report from the Voice Agent System.
                             </p>
                             <p style="margin: 10px 0 0 0; font-size: 11px; color: #aaaaaa;">
-                                © {gst_now.year} Voice Agent • All times shown in Gulf Standard Time (GST/UTC+4)
+                                © {gst_now.year} Dev-S-t • All times shown in Gulf Standard Time (GST/UTC+4)
                             </p>
                         </td>
                     </tr>
