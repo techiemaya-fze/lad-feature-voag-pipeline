@@ -307,15 +307,29 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
     
     logger.info("Created batch record: batch_id=%s, job_id=%s, total_calls=%d", batch_id, job_id, len(entries))
     
-    # Create batch entry records
+    # Create batch entry records and track their IDs
+    entry_ids: list[str] = []
     for i, entry in enumerate(entries):
-        await batch_storage.create_batch_entry(
+        # Store lead_name in metadata since table uses lead_id (UUID FK)
+        entry_metadata = {"entry_index": i}
+        if entry.lead_name:
+            entry_metadata["lead_name"] = entry.lead_name
+        if entry.added_context:
+            entry_metadata["added_context"] = entry.added_context
+        
+        entry_id = await batch_storage.create_batch_entry(
+            tenant_id=tenant_id,
             batch_id=batch_id,
-            entry_index=i,
-            to_number=entry.to_number,
-            lead_name=entry.lead_name,
+            to_phone=entry.to_number,
+            lead_id=None,  # Would need lead resolution
             call_log_id=None,
+            metadata=entry_metadata,
         )
+        if entry_id:
+            entry_ids.append(entry_id)
+        else:
+            logger.warning("Failed to create batch entry %d", i)
+            entry_ids.append("")  # Empty placeholder
 
     # Fire and forget the batch processing
     async def _process_batch():
@@ -323,9 +337,14 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
         batch_storage = _get_batch_storage()
         
         for i, entry in enumerate(entries):
+            entry_id = entry_ids[i] if i < len(entry_ids) else None
+            if not entry_id:
+                logger.warning("Skipping entry %d - no entry_id", i)
+                continue
+            
             try:
                 # Update entry status to running
-                await batch_storage.update_batch_entry_status(batch_id, i, "running")
+                await batch_storage.update_batch_entry_status(entry_id, "running")
                 
                 # Dispatch call
                 result = await call_service.dispatch_call(
@@ -343,22 +362,15 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
                     lead_id_override=entry.lead_id,
                 )
                 
-                # Update entry with call log ID
-                await batch_storage.update_batch_entry(
-                    batch_id, i,
-                    call_log_id=result.call_log_id,
-                    status="dispatched",
-                )
+                # Update entry with call log ID and status
+                await batch_storage.update_batch_entry_call_log(batch_id, entry_id, result.call_log_id)
+                await batch_storage.update_batch_entry_status(entry_id, "dispatched")
                 
                 await batch_storage.increment_batch_counters(batch_id, completed_delta=1)
                 
             except Exception as exc:
                 logger.exception("Batch entry %d failed: %s", i, exc)
-                await batch_storage.update_batch_entry(
-                    batch_id, i,
-                    status="failed",
-                    error_message=str(exc)[:500],
-                )
+                await batch_storage.update_batch_entry_status(entry_id, "failed", error_message=str(exc)[:500])
                 await batch_storage.increment_batch_counters(batch_id, failed_delta=1)
         
         # Mark batch as completed
