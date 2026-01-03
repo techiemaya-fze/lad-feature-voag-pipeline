@@ -468,3 +468,45 @@ class LeadStorage:
         except Exception as e:
             logger.error(f"Error updating lead {lead_id}: {e}", exc_info=True)
             return False
+    
+    def assign_lead_to_user_if_unassigned(
+        self,
+        lead_id: str,
+        user_id: str,
+    ) -> bool:
+        """
+        Assign a lead to a user if currently unassigned.
+        
+        Args:
+            lead_id: Lead UUID to update
+            user_id: User UUID to assign
+        
+        Returns:
+            True if assigned (or already assigned), False on error
+        """
+        if not lead_id or not user_id:
+            logger.warning("lead_id and user_id required for assignment")
+            return False
+        
+        try:
+            with get_db_connection(self.db_config) as conn:
+                with conn.cursor() as cursor:
+                    # Only update if assigned_user_id is NULL
+                    cursor.execute(f"""
+                        UPDATE {FULL_TABLE}
+                        SET assigned_user_id = %s, assigned_at = NOW(), updated_at = NOW()
+                        WHERE id = %s AND assigned_user_id IS NULL
+                    """, (user_id, lead_id))
+                    rows_updated = cursor.rowcount
+                    conn.commit()
+                    
+                    if rows_updated > 0:
+                        logger.info(f"Assigned lead {lead_id} to user {user_id}")
+                        return True
+                    else:
+                        # Either already assigned or lead not found
+                        logger.debug(f"Lead {lead_id} already assigned or not found")
+                        return True  # Return True since it's not an error
+        except Exception as e:
+            logger.error(f"Error assigning lead {lead_id} to user: {e}", exc_info=True)
+            return False

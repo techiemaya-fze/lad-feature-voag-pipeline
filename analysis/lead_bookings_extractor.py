@@ -714,6 +714,17 @@ Respond ONLY in JSON format:
                 logger.warning(error_msg)
                 results["errors"].append(error_msg)
             else:
+                # Ensure lead is assigned to user before booking (required by DB trigger)
+                lead_id = booking_data.get('lead_id')
+                assigned_user_id = booking_data.get('assigned_user_id')
+                if lead_id and assigned_user_id:
+                    try:
+                        from db.storage.leads import LeadStorage
+                        lead_storage = LeadStorage()
+                        lead_storage.assign_lead_to_user_if_unassigned(lead_id, assigned_user_id)
+                    except Exception as e:
+                        logger.warning(f"Could not assign lead to user: {e}")
+                
                 db_booking_id = await self.storage.save_booking(booking_data)
                 results["db"] = db_booking_id
                 logger.info(f"Saved booking to database: {db_booking_id}")
