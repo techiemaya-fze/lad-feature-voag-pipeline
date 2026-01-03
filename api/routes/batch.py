@@ -359,6 +359,7 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
                     llm_provider=llm_provider_override,
                     llm_model=llm_model_override,
                     knowledge_base_store_ids=entry.knowledge_base_store_ids,
+                    lead_name=entry.lead_name,  # Pass lead_name from batch entry
                     lead_id_override=entry.lead_id,
                     batch_id=str(batch_id),  # For worker to track batch completion
                     entry_id=entry_id,  # For worker to update entry status
