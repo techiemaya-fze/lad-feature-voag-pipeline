@@ -375,9 +375,9 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
                 await batch_storage.update_batch_entry_status(entry_id, "failed", error_message=str(exc)[:500])
                 await batch_storage.increment_batch_counters(batch_id, failed_delta=1)
         
-        # Mark batch as processing (not completed - worker will complete when all calls end)
-        await batch_storage.update_batch_status(batch_id, "processing")
-        logger.info("Batch %s dispatched all calls, now processing", job_id)
+        # Mark batch as running (not completed - worker will complete when all calls end)
+        await batch_storage.update_batch_status(batch_id, "running")
+        logger.info("Batch %s dispatched all calls, now running", job_id)
         
         # NOTE: Batch report is triggered by cleanup_handler when last call completes
 
