@@ -152,10 +152,12 @@ if __name__ == "__main__":
     import uvicorn
     
     port = int(os.getenv("PORT", "8000"))
+    workers = int(os.getenv("UVICORN_WORKERS", "1"))
+    
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=port,
-        reload=True,
-        log_level="info",
+        workers=workers,
+        log_level=os.getenv("UVICORN_LOG_LEVEL", "info").lower(),
     )
