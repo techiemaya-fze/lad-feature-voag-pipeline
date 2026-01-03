@@ -418,6 +418,7 @@ async def entrypoint(ctx: agents.JobContext):
     initiating_user_id: str | None = None
     lead_id: str | None = None  # For vertical routing
     knowledge_base_store_ids: list[str] = []
+    outbound_trunk_id: str | None = None  # SIP trunk ID from number rules
     
     try:
         if ctx.job.metadata:
@@ -430,6 +431,7 @@ async def entrypoint(ctx: agents.JobContext):
             call_mode = dial_info.get("call_mode", "inbound")
             from_number = dial_info.get("from_number")
             added_context = dial_info.get("added_context")
+            outbound_trunk_id = dial_info.get("outbound_trunk_id")
             
             raw_agent_id = dial_info.get("agent_id")
             if isinstance(raw_agent_id, (int, str)):
@@ -660,8 +662,8 @@ async def entrypoint(ctx: agents.JobContext):
     
     try:
         if call_mode == "outbound" and phone_number:
-            # Outbound call - dial out
-            trunk_id = os.getenv("OUTBOUND_TRUNK_ID")
+            # Outbound call - dial out, use trunk from metadata or env default
+            trunk_id = outbound_trunk_id or os.getenv("OUTBOUND_TRUNK_ID")
             if trunk_id:
                 try:
                     await ctx.api.sip.create_sip_participant(

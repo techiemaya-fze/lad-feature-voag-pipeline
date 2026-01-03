@@ -481,6 +481,11 @@ class CallService:
             if final_context:
                 metadata["added_context"] = final_context[:500]  # Truncate for safety
             
+            # Use trunk ID from routing rules, or fall back to env default
+            outbound_trunk = routing_result.outbound_trunk_id or os.getenv("OUTBOUND_TRUNK_ID")
+            if outbound_trunk:
+                metadata["outbound_trunk_id"] = outbound_trunk
+            
             import json
             participant_metadata = json.dumps(metadata)
             

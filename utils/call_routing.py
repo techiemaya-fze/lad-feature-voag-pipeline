@@ -62,6 +62,7 @@ class CallRoutingResult:
     error_message: Optional[str] = None
     carrier_name: Optional[str] = None
     detected_country: Optional[str] = None
+    outbound_trunk_id: Optional[str] = None  # SIP trunk ID from rules
     
 
 @dataclass
@@ -272,6 +273,7 @@ def validate_and_format_call(
     
     carrier_name = carrier_info['carrier_name']
     rules = carrier_info['rules'] or {}
+    outbound_trunk_id = rules.get('outbound_trunk_id')  # Get trunk ID from rules
     
     # Check if outbound is allowed
     if not rules.get('outbound', True):
@@ -328,7 +330,8 @@ def validate_and_format_call(
         success=True,
         formatted_to_number=formatted_number,
         carrier_name=carrier_name,
-        detected_country=detected_country
+        detected_country=detected_country,
+        outbound_trunk_id=outbound_trunk_id
     )
 
 
