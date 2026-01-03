@@ -119,6 +119,9 @@ class BatchStorage:
                 metadata["llm_provider"] = llm_provider
             if llm_model:
                 metadata["llm_model"] = llm_model
+            # Store agent_id in metadata (column is UUID type but we have integer agent_id)
+            if agent_id:
+                metadata["agent_id"] = agent_id
             
             conn = self._get_connection()
             try:
@@ -127,9 +130,9 @@ class BatchStorage:
                         f"""
                         INSERT INTO {FULL_BATCH_TABLE}
                         (tenant_id, status, total_calls, completed_calls, failed_calls,
-                         initiated_by_user_id, agent_id, voice_id, from_number_id,
+                         initiated_by_user_id, voice_id, from_number_id,
                          scheduled_at, metadata)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING id
                         """,
                         (
@@ -139,7 +142,6 @@ class BatchStorage:
                             0,
                             0,
                             initiated_by_user_id,
-                            agent_id,
                             voice_id,
                             from_number_id,
                             scheduled_at,
