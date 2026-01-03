@@ -701,7 +701,7 @@ class BatchStorage:
                             COALESCE(b.failed_calls, 0),
                             (SELECT COUNT(*) FROM {FULL_ENTRY_TABLE} 
                              WHERE batch_id = b.id AND status IN ('completed', 'failed')) as done_count
-                        FROM {FULL_TABLE} b
+                        FROM {FULL_BATCH_TABLE} b
                         WHERE b.id = %s
                         """,
                         (batch_id,)
@@ -729,7 +729,7 @@ class BatchStorage:
                         # Mark batch as completed
                         cur.execute(
                             f"""
-                            UPDATE {FULL_TABLE}
+                            UPDATE {FULL_BATCH_TABLE}
                             SET status = 'completed', finished_at = NOW(), updated_at = NOW()
                             WHERE id = %s AND status = 'running'
                             RETURNING id
