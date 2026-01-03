@@ -378,31 +378,48 @@ class CallService:
             logger.debug("Resolved tenant_id from agent_id=%s (user tenant not found)", agent_id)
         
         lead_record = None
+        request_lead_name = lead_name  # Save the name from API request
         if tenant_id:
             lead_record = await self._lead_storage.find_or_create_lead(
                 tenant_id=tenant_id,
                 phone_number=to_number,
                 user_id=initiated_by,
-                name=lead_name,  # Pass lead_name from API
+                name=lead_name,  # Pass lead_name from API (will save if table empty)
             )
         else:
             logger.warning("No tenant_id found for user=%s agent=%s, skipping lead lookup", initiated_by, agent_id)
         
         lead_id = lead_id_override
-        lead_name = None
+        # Determine lead name for agent context:
+        # 1. If request has name, use it (overrides table for agent context)
+        # 2. If no request name, use table name
+        # Table name is not modified if request name differs (already handled by find_or_create_lead)
+        lead_name_for_agent = None
         lead_notes = None
         
         if lead_record:
             lead_id = lead_id or lead_record.get("id")
-            lead_name_raw = lead_record.get("name")
-            if isinstance(lead_name_raw, str) and lead_name_raw.strip():
-                lead_name = lead_name_raw.strip()
+            
+            # Get table name
+            table_name_raw = lead_record.get("name")
+            table_name = None
+            if isinstance(table_name_raw, str) and table_name_raw.strip():
+                table_name = table_name_raw.strip()
+            
+            # Priority: request name > table name
+            if request_lead_name and request_lead_name.strip():
+                lead_name_for_agent = request_lead_name.strip()
+                if table_name and table_name != lead_name_for_agent:
+                    logger.info(f"Using request name '{lead_name_for_agent}' for agent (table has '{table_name}')")
+            elif table_name:
+                lead_name_for_agent = table_name
+            
             lead_notes_raw = lead_record.get("notes")
             if isinstance(lead_notes_raw, str) and lead_notes_raw.strip():
                 lead_notes = lead_notes_raw.strip()
         
         # Augment context with lead info
-        final_context = _augment_context_with_lead(context, lead_name, lead_notes)
+        final_context = _augment_context_with_lead(context, lead_name_for_agent, lead_notes)
         
         # Generate room name
         room_name = f"call-{job_id}-{uuid.uuid4().hex[:8]}"
