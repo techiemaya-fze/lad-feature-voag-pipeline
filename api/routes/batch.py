@@ -314,8 +314,8 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
         entry_metadata = {"entry_index": i}
         if entry.lead_name:
             entry_metadata["lead_name"] = entry.lead_name
-        if entry.added_context:
-            entry_metadata["added_context"] = entry.added_context
+        if entry.context:
+            entry_metadata["added_context"] = entry.context
         
         entry_id = await batch_storage.create_batch_entry(
             tenant_id=tenant_id,
