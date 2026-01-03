@@ -67,6 +67,7 @@ v2/
 │       ├── call_analysis.py      # Post-call analysis results
 │       ├── numbers.py            # Phone number management
 │       └── voices.py             # Custom voice configurations
+│   └── lead_bookings_storage.py  # Lead bookings storage (v2 refactored)
 │
 ├── tools/                        # 🔧 Agent Tools (Function Calling)
 │   ├── google_workspace.py       # AgentGoogleWorkspace - OAuth wrapper
@@ -99,9 +100,11 @@ v2/
 │   ├── batch_report.py           # Batch campaign reports
 │   ├── lead_extractor.py         # Lead extraction from transcripts
 │   ├── lead_info_extractor.py    # Detailed lead info extraction
+│   ├── lead_bookings_extractor.py# Lead bookings extraction from calls
+│   ├── schedule_calculator.py    # Follow-up schedule calculation
 │   ├── student_extractor.py      # G-Links student extraction
 │   ├── lad_dev.py                # LAD schema analytics
-│   ├── runner.py                 # CLI analytics runner
+│   ├── runner.py                 # CLI analytics runner + vertical routing
 │   ├── logs/                     # Analytics logs
 │   ├── exports/                  # CSV/Excel exports
 │   └── json_exports/             # JSON data exports
@@ -273,9 +276,50 @@ Runs after calls complete to extract insights and generate reports.
 | `call_report.py` | Single call report generation |
 | `batch_report.py` | Batch campaign summary reports |
 | `lead_extractor.py` | Extract lead info from transcripts |
+| `lead_bookings_extractor.py` | Extract bookings/follow-ups from calls (Gemini AI) |
+| `schedule_calculator.py` | Calculate follow-up schedules (stage-based timelines) |
 | `student_extractor.py` | G-Links specific student extraction |
 | `lad_dev.py` | LAD schema analytics |
-| `runner.py` | CLI entry point for analytics |
+| `runner.py` | CLI entry point + vertical routing |
+
+---
+
+### Post-Call Cleanup Flow
+
+The cleanup flow is triggered when a call ends (`agent/cleanup_handler.py`). It orchestrates multiple steps:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        cleanup_and_save(ctx)                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│ Step │ Function                        │ File Involved                 │
+├──────┼─────────────────────────────────┼───────────────────────────────┤
+│  1   │ stop_and_save_recording()       │ recording/recorder.py         │
+│      │                                 │ db/storage/calls.py           │
+│  2   │ get_transcription()             │ recording/transcription.py    │
+│  3   │ Load call details               │ db/storage/calls.py           │
+│  4   │ calculate_and_save_cost()       │ utils/usage_tracker.py        │
+│  5   │ update_call_status()            │ db/storage/calls.py           │
+│  6   │ trigger_post_call_analysis()    │ analysis/runner.py            │
+│      │   └── run_post_call_analysis()  │ analysis/merged_analytics.py  │
+│      │       └── route_lead_extraction()│ utils/vertical_routing.py   │
+│  7   │ trigger_lead_bookings_extraction()│ analysis/lead_bookings_extractor.py │
+│      │   └── LeadBookingsExtractor     │ db/lead_bookings_storage.py   │
+│      │       └── ScheduleCalculator    │ analysis/schedule_calculator.py │
+│  8   │ stop_background_audio()         │ (internal audio cleanup)      │
+│  9   │ Release semaphore               │ (concurrency control)         │
+└──────┴─────────────────────────────────┴───────────────────────────────┘
+```
+
+#### Key Cleanup Files
+
+| File | Purpose |
+|------|---------|
+| `agent/cleanup_handler.py` | Orchestrates all cleanup steps, defines `CleanupContext` |
+| `analysis/runner.py` | Routes post-call analysis, calls `route_lead_extraction()` |
+| `analysis/lead_bookings_extractor.py` | Extracts follow-up/consultation bookings using Gemini AI |
+| `analysis/schedule_calculator.py` | Calculates next call time based on lead stage/grade |
+| `db/lead_bookings_storage.py` | Stores bookings to `lad_dev.lead_bookings` table |
 
 ---
 
