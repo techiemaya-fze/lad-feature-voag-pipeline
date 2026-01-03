@@ -163,12 +163,13 @@ async def route_lead_extraction(
         )
     
     else:
-        # General vertical - no additional routing needed
-        logger.debug(f"General vertical, no additional routing needed")
-        return VerticalRoutingResult(
-            vertical="general",
-            routed=False,
-            target_table=None
+        # General vertical - extract general lead info and update analysis table
+        return await _route_general_vertical(
+            call_log_id=call_log_id,
+            tenant_id=tenant_id,
+            conversation=conversation,
+            lead_id=lead_id,
+            db_config=db_config
         )
 
 
@@ -251,6 +252,210 @@ async def _route_education_vertical(
         logger.error(f"Education vertical routing failed for call {call_log_id}: {e}", exc_info=True)
         return VerticalRoutingResult(
             vertical="education",
+            routed=False,
+            error=str(e)
+        )
+
+async def _route_general_vertical(
+    call_log_id: str,
+    tenant_id: str,
+    conversation: list[Dict[str, Any]],
+    lead_id: Optional[str],
+    db_config: Optional[Dict[str, Any]]
+) -> VerticalRoutingResult:
+    """
+    Extract general lead information and update voice_call_analysis.lead_extraction.
+    
+    Used for non-education verticals to capture general lead data like:
+    name, email, phone, company, meeting time, etc.
+    """
+    import os
+    import json
+    import requests
+    from db.storage.call_analysis import CallAnalysisStorage
+    
+    try:
+        # Convert conversation to text
+        conversation_text = _conversation_to_text(conversation)
+        
+        if not conversation_text or len(conversation_text) < 50:
+            logger.debug(f"Insufficient conversation for general extraction: {len(conversation_text)} chars")
+            return VerticalRoutingResult(
+                vertical="general",
+                routed=False,
+                error="Empty or insufficient conversation"
+            )
+        
+        # Extract general lead info using Gemini
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_api_key:
+            logger.warning("GEMINI_API_KEY not available, skipping general extraction")
+            return VerticalRoutingResult(
+                vertical="general",
+                routed=False,
+                error="No API key for extraction"
+            )
+        
+        prompt = f"""Extract ALL information about the lead from this sales conversation. Capture EVERYTHING the LEAD/USER mentioned (NOT the agent/bot).
+
+CONVERSATION:
+{conversation_text}
+
+TASK: Extract ALL information that the LEAD provided during the conversation:
+
+1. Personal Information:
+   - Lead's name (first name, full name - the person speaking, NOT agent/bot names)
+   - Contact details (email, phone, WhatsApp number)
+   - Position/title/role
+   - Company/business name
+
+2. Contact Preferences & Meeting Scheduling:
+   - Available time (when they prefer to be contacted)
+   - Agreed meeting times (if agent suggests and user agrees)
+   - Preferred contact method
+
+3. Requirements/Interests:
+   - What they are looking for
+   - Budget if mentioned
+   - Timeline/urgency
+
+Respond in JSON format:
+
+{{
+    "first_name": "First name of the lead or null",
+    "full_name": "Full name if mentioned or null",
+    "email": "Email address if mentioned or null",
+    "phone": "Phone number if mentioned or null",
+    "position": "Job title/position if mentioned or null",
+    "company": "Company/business name if mentioned or null",
+    "available_time": "Scheduled/confirmed meeting time or null",
+    "contact_preference": "Preferred contact method if mentioned or null",
+    "location": "Location/city if mentioned or null",
+    "requirements": "What they need or are looking for or null",
+    "budget": "Budget if mentioned or null",
+    "timeline": "Timeline/urgency if mentioned or null",
+    "additional_notes": "Any other relevant information or null"
+}}
+
+CRITICAL: Only extract information PROVIDED BY THE LEAD/USER, NOT the agent/bot.
+"""
+        
+        # Call Gemini API
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={gemini_api_key}"
+        response = requests.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 500}
+            },
+            timeout=15
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"Gemini API error: {response.status_code}")
+            return VerticalRoutingResult(
+                vertical="general",
+                routed=False,
+                error=f"API error: {response.status_code}"
+            )
+        
+        # Parse response
+        response_data = response.json()
+        if "candidates" not in response_data or not response_data["candidates"]:
+            logger.warning("No candidates in Gemini response")
+            return VerticalRoutingResult(
+                vertical="general",
+                routed=False,
+                error="Empty API response"
+            )
+        
+        raw_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        
+        # Parse JSON from response
+        lead_info = None
+        try:
+            # Try to find JSON in response
+            json_match = raw_text.find("{")
+            if json_match != -1:
+                json_str = raw_text[json_match:]
+                decoder = json.JSONDecoder()
+                lead_info, _ = decoder.raw_decode(json_str)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse JSON from general extraction response")
+            return VerticalRoutingResult(
+                vertical="general",
+                routed=False,
+                error="Failed to parse extraction response"
+            )
+        
+        if not lead_info:
+            logger.debug("No lead info extracted for general vertical")
+            return VerticalRoutingResult(
+                vertical="general",
+                routed=False,
+                error="No info extracted"
+            )
+        
+        # Clean the extracted data (remove nulls)
+        cleaned_info = {}
+        for key, value in lead_info.items():
+            if value is not None:
+                if isinstance(value, str):
+                    cleaned = value.strip()
+                    if cleaned and cleaned.lower() not in ['none', 'null', 'n/a']:
+                        cleaned_info[key] = cleaned
+                else:
+                    cleaned_info[key] = value
+        
+        if not cleaned_info:
+            logger.debug("All extracted fields were null/empty")
+            return VerticalRoutingResult(
+                vertical="general",
+                routed=False,
+                error="No valid data extracted"
+            )
+        
+        # Update the voice_call_analysis.lead_extraction column
+        storage = CallAnalysisStorage()
+        existing = await storage.get_analysis_by_call_id(call_log_id)
+        
+        if existing:
+            # Merge with existing lead_extraction data
+            existing_extraction = existing.get("lead_extraction") or {}
+            if isinstance(existing_extraction, str):
+                try:
+                    existing_extraction = json.loads(existing_extraction)
+                except json.JSONDecodeError:
+                    existing_extraction = {}
+            
+            merged = {**existing_extraction, **cleaned_info}
+            
+            success = await storage.update_analysis(
+                existing["id"],
+                lead_extraction=merged
+            )
+            
+            if success:
+                logger.info(f"General vertical: Updated lead_extraction for call {call_log_id} with {len(cleaned_info)} fields")
+                return VerticalRoutingResult(
+                    vertical="general",
+                    routed=True,
+                    target_table="lad_dev.voice_call_analysis",
+                    extracted_data=cleaned_info
+                )
+        
+        logger.warning(f"No analysis record found to update for call {call_log_id}")
+        return VerticalRoutingResult(
+            vertical="general",
+            routed=False,
+            error="No analysis record to update"
+        )
+        
+    except Exception as e:
+        logger.error(f"General vertical routing failed for call {call_log_id}: {e}", exc_info=True)
+        return VerticalRoutingResult(
+            vertical="general",
             routed=False,
             error=str(e)
         )
