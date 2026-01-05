@@ -46,6 +46,7 @@ class CleanupContext:
         call_recorder: Any = None,
         call_log_id: str | None = None,
         tenant_id: str | None = None,  # Phase 16: Multi-tenancy
+        lead_id: str | None = None,  # For vertical routing and lead tracking
         call_storage: Any = None,
         silence_monitor: Any = None,
         latency_mask_player: Any = None,
@@ -55,10 +56,13 @@ class CleanupContext:
         acquired_call_slot: bool = False,
         usage_collector: Any = None,
         job_id: str | None = None,
+        batch_id: str | None = None,  # For batch completion tracking
+        entry_id: str | None = None,  # For batch entry status update
     ):
         self.call_recorder = call_recorder
         self.call_log_id = call_log_id
         self.tenant_id = tenant_id
+        self.lead_id = lead_id
         self.call_storage = call_storage
         self.silence_monitor = silence_monitor
         self.latency_mask_player = latency_mask_player
@@ -68,6 +72,8 @@ class CleanupContext:
         self.acquired_call_slot = acquired_call_slot
         self.usage_collector = usage_collector
         self.job_id = job_id
+        self.batch_id = batch_id
+        self.entry_id = entry_id
 
 
 # =============================================================================
