@@ -627,17 +627,27 @@ async def entrypoint(ctx: agents.JobContext):
         force_cpu=pipeline_config.vad.force_cpu,
     )
     
-    # Create tool config
-    tool_config = ToolConfig()
+    # PHASE 17 FIX: Fetch tools BEFORE building instructions
+    # This ensures tool_config and tenant_id are used in instruction generation
+    tool_config, tool_configs = await get_enabled_tools({}, tenant_id)
+    tool_list = await attach_tools(
+        None,  # Agent not needed here, just building tools
+        tool_config,
+        tool_configs,
+        tenant_id=tenant_id,
+        user_id=initiating_user_id,
+        knowledge_base_store_ids=knowledge_base_store_ids,
+    )
+    logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}")
     
-    # Build instructions
+    # Build instructions - now using proper tool_config from get_enabled_tools()
     instructions = await build_instructions_async(
         system_instructions=system_instructions,
         agent_instructions=agent_instructions,
         added_context=added_context,
         direction=call_mode,
-        tool_config=tool_config,
-        tenant_id=None,
+        tool_config=tool_config,  # Use real tool_config from tenant
+        tenant_id=tenant_id,  # Pass tenant_id for template instructions
     )
     
     # Create call recorder
@@ -678,18 +688,6 @@ async def entrypoint(ctx: agents.JobContext):
         on_timeout=on_silence_timeout,
         logger=logger,
     )
-    
-    # Fetch tools before creating VoiceAssistant
-    tool_config, tool_configs = await get_enabled_tools({}, tenant_id)
-    tool_list = await attach_tools(
-        None,  # Agent not needed here, just building tools
-        tool_config,
-        tool_configs,
-        tenant_id=tenant_id,
-        user_id=initiating_user_id,
-        knowledge_base_store_ids=knowledge_base_store_ids,
-    )
-    logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}")
     
     # Create voice assistant with tools
     voice_assistant = VoiceAssistant(
