@@ -627,8 +627,8 @@ async def entrypoint(ctx: agents.JobContext):
         force_cpu=pipeline_config.vad.force_cpu,
     )
     
-    # PHASE 17 FIX: Fetch tools BEFORE building instructions
-    # This ensures tool_config and tenant_id are used in instruction generation
+    # Fetch tools BEFORE building instructions (Phase 17c: tool instructions require valid tool_config)
+    # NOTE: This must happen before build_instructions_async() so hangup instruction is included!
     tool_config, tool_configs = await get_enabled_tools({}, tenant_id)
     tool_list = await attach_tools(
         None,  # Agent not needed here, just building tools
@@ -640,14 +640,14 @@ async def entrypoint(ctx: agents.JobContext):
     )
     logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}")
     
-    # Build instructions - now using proper tool_config from get_enabled_tools()
+    # Build instructions (now with valid tool_config that includes hangup instructions)
     instructions = await build_instructions_async(
         system_instructions=system_instructions,
         agent_instructions=agent_instructions,
         added_context=added_context,
         direction=call_mode,
-        tool_config=tool_config,  # Use real tool_config from tenant
-        tenant_id=tenant_id,  # Pass tenant_id for template instructions
+        tool_config=tool_config,  # Actual tool config from get_enabled_tools()
+        tenant_id=tenant_id,  # Pass actual tenant_id, not None
     )
     
     # Create call recorder
@@ -689,7 +689,7 @@ async def entrypoint(ctx: agents.JobContext):
         logger=logger,
     )
     
-    # Create voice assistant with tools
+    # Create voice assistant with tools (tools already fetched above before instruction building)
     voice_assistant = VoiceAssistant(
         call_recorder=call_recorder,
         job_context=ctx,
