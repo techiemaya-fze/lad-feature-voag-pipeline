@@ -594,37 +594,24 @@ CRITICAL RULES WITH EXAMPLES:
                         if value_str and value_str.lower() not in ['none', 'null']:
                             metadata[key] = value
             
-            # Normalize and validate `lead_id` for storage in education_students.lead_id (UUID)
-            # Behavior merged from branches:
-            # - Reject explicit 'None'/'null' or empty string values
-            # - If value contains a dash, try to parse it as UUID and use it when valid
-            # - Otherwise treat as legacy numeric ID and convert deterministically to UUID
+            # Convert lead_id to UUID format for education_students.lead_id column (UUID type)
+            # NOTE: All IDs except agent_id should be UUIDs - no int fallback
             lead_id_uuid = None
             if lead_id is not None:
-                lead_str = str(lead_id).strip()
-                # Reject common sentinel strings
-                if lead_str.lower() in ('none', 'null', ''):
+                lead_id_str = str(lead_id).strip()
+                # Reject 'None' or 'null' string values
+                if lead_id_str.lower() in ('none', 'null', ''):
                     logger.warning(f"lead_id is invalid string value: '{lead_id}'")
                     lead_id_uuid = None
                 else:
-                    # If it looks like a UUID string, validate it
-                    if '-' in lead_str:
-                        try:
-                            parsed = uuid_lib.UUID(lead_str)
-                            lead_id_uuid = str(parsed)
-                            logger.debug(f"lead_id '{lead_str}' validated as UUID")
-                        except (ValueError, TypeError) as e:
-                            logger.warning(f"lead_id '{lead_str}' contains dashes but is not a valid UUID: {e}")
-                            # Fall back to trying numeric conversion below
-                    if lead_id_uuid is None:
-                        # Attempt legacy numeric conversion: integer -> deterministic UUID
-                        try:
-                            lead_id_int = int(lead_str)
-                            lead_id_uuid_str = f"00000000-0000-0000-0000-{lead_id_int:012x}"
-                            lead_id_uuid = str(uuid_lib.UUID(lead_id_uuid_str))
-                        except (ValueError, TypeError) as e:
-                            logger.warning(f"Could not convert legacy numeric lead_id to UUID: {e}")
-                            lead_id_uuid = None
+                    try:
+                        # Parse as UUID - this is the only valid format
+                        parsed_uuid = uuid_lib.UUID(lead_id_str)
+                        lead_id_uuid = str(parsed_uuid)
+                        logger.debug(f"lead_id '{lead_id_str}' validated as UUID")
+                    except ValueError as e:
+                        logger.error(f"lead_id '{lead_id}' is not a valid UUID: {e}")
+                        lead_id_uuid = None
 
             # Prepare INSERT query with tenant_id and lead_id
             # Use ON CONFLICT to handle duplicates (UPSERT)
