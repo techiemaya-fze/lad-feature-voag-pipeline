@@ -36,12 +36,35 @@ except ImportError:
         # Try absolute import (when run from project root)
         from analysis.schedule_calculator import ScheduleCalculator
 
-from db.storage.lead_bookings import LeadBookingsStorage, LeadBookingsStorageError
+from db.lead_bookings_storage import LeadBookingsStorage, LeadBookingsStorageError
+
+load_dotenv()
+
+# Configure logging
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+LOG_FILE = LOG_DIR / f"lead_bookings_{datetime.now().strftime('%Y%m%d')}.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+# Database operations are handled by LeadBookingsStorage
 
 # GST timezone
 GST = pytz.timezone('Asia/Dubai')
 
-logger = logging.getLogger(__name__)
+# JSON storage directory
+JSON_STORAGE_DIR = Path(__file__).parent / "json_exports"
+JSON_STORAGE_DIR.mkdir(exist_ok=True)
 
 
 class LeadBookingsExtractorError(Exception):
@@ -413,6 +436,10 @@ Respond ONLY in JSON format:
             # PRIORITY 1: If time is explicitly mentioned in the call, use that time directly (no stages)
             # PRIORITY 2: If no time mentioned, use appropriate timeline pattern based on transcription length and grade
             
+            # Initialize scheduled_at and buffer_until to None
+            scheduled_at = None
+            buffer_until = None
+            
             # First, try to extract time directly from conversation if Gemini didn't extract it
             if not scheduled_at_str or scheduled_at_str.strip() == "":
                 # Try to extract time directly from conversation text as fallback
@@ -639,6 +666,20 @@ Respond ONLY in JSON format:
             
             logger.info(f"Final retry count for call_id {original_call_id}: {retry_count}")
             
+            # Ensure buffer_until is always calculated if scheduled_at exists
+            # This is a safety check to ensure buffer_until is set correctly even if code paths are missed
+            if scheduled_at and not buffer_until:
+                buffer_until = scheduled_at + timedelta(minutes=15)
+                logger.info(f"Recalculated buffer_until from scheduled_at: {buffer_until}")
+            elif scheduled_at and buffer_until:
+                # Verify buffer_until is correct (should be scheduled_at + 15 minutes)
+                expected_buffer = scheduled_at + timedelta(minutes=15)
+                if abs((buffer_until - expected_buffer).total_seconds()) > 60:  # More than 1 minute difference
+                    logger.warning(f"buffer_until ({buffer_until}) doesn't match expected ({expected_buffer}), recalculating")
+                    buffer_until = expected_buffer
+            
+            logger.info(f"scheduled_at: {scheduled_at}, buffer_until: {buffer_until}")
+            
             # Create booking data (always create, even if no booking found)
             # Generate new UUID for booking id (auto-generated)
             booking_id = str(uuid.uuid4())
@@ -674,10 +715,20 @@ Respond ONLY in JSON format:
             return None
     
     def save_booking_json(self, booking_data: Dict, call_log_id: str) -> Optional[str]:
-        """Save booking to JSON file - DISABLED in v2 refactor"""
-        # JSON file saving disabled - data goes directly to database
-        logger.debug(f"JSON file saving disabled for call_log_id={call_log_id}")
-        return None
+        """Save booking to JSON file"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"lead_booking_{call_log_id}_{timestamp}.json"
+            filepath = JSON_STORAGE_DIR / filename
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(booking_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Saved booking to: {filepath}")
+            return str(filepath)
+        except Exception as e:
+            logger.error(f"Error saving JSON: {e}")
+            return None
     
     async def list_calls(self, limit: Optional[int] = 100) -> List[Dict]:
         """List all calls from voice_call_logs (async)"""
@@ -714,17 +765,6 @@ Respond ONLY in JSON format:
                 logger.warning(error_msg)
                 results["errors"].append(error_msg)
             else:
-                # Ensure lead is assigned to user before booking (required by DB trigger)
-                lead_id = booking_data.get('lead_id')
-                assigned_user_id = booking_data.get('assigned_user_id')
-                if lead_id and assigned_user_id:
-                    try:
-                        from db.storage.leads import LeadStorage
-                        lead_storage = LeadStorage()
-                        lead_storage.assign_lead_to_user_if_unassigned(lead_id, assigned_user_id)
-                    except Exception as e:
-                        logger.warning(f"Could not assign lead to user: {e}")
-                
                 db_booking_id = await self.storage.save_booking(booking_data)
                 results["db"] = db_booking_id
                 logger.info(f"Saved booking to database: {db_booking_id}")

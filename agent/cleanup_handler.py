@@ -618,4 +618,3 @@ __all__ = [
     "update_batch_on_call_complete",
 ]
 
-

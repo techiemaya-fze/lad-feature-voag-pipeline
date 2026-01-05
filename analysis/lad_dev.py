@@ -17,7 +17,7 @@ import os
 import json
 import asyncio
 import re
-import requests
+import httpx
 import logging
 import argparse
 import uuid as uuid_lib
@@ -70,8 +70,8 @@ class StudentExtractor:
             return 0
         return len(text) // 4
     
-    def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 500) -> str:
-        """Helper function to call Gemini 2.0 Flash API"""
+    async def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 500) -> str:
+        """Helper function to call Gemini 2.0 Flash API asynchronously using httpx.AsyncClient"""
         if not self.gemini_api_key:
             logger.warning("Gemini API key not available, skipping API call")
             return None
@@ -96,9 +96,11 @@ class StudentExtractor:
                 }
             }
             
-            response = requests.post(url, headers=headers, json=data, timeout=10)
+            # Use httpx.AsyncClient for async HTTP requests
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, headers=headers, json=data)
+                response.raise_for_status()
             
-            if response.status_code == 200:
                 response_data = response.json()
                 logger.debug("Gemini API call successful")
                 
@@ -111,10 +113,15 @@ class StudentExtractor:
                 
                 if "promptFeedback" in response_data:
                     logger.warning(f"Gemini API warning: {response_data.get('promptFeedback', {})}")
-            else:
-                logger.error(f"Gemini API error: {response.status_code} - {response.text[:200]}")
+            
             return None
             
+        except httpx.TimeoutException:
+            logger.error("Gemini API timeout after 10 seconds")
+            return None
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Gemini API HTTP error: {e.response.status_code} - {e.response.text[:200]}")
+            return None
         except Exception as e:
             logger.error(f"Gemini API exception: {str(e)}", exc_info=True)
             return None
@@ -357,7 +364,7 @@ CRITICAL RULES WITH EXAMPLES:
 """
 
             logger.debug("Extracting student information using LLM...")
-            result = self._call_gemini_api(prompt, temperature=0.2, max_output_tokens=800)
+            result = await self._call_gemini_api(prompt, temperature=0.2, max_output_tokens=800)
             
             if not result:
                 logger.warning("LLM did not return student information")
@@ -541,13 +548,13 @@ CRITICAL RULES WITH EXAMPLES:
     
     def save_to_database(self, student_info: Dict, call_log_id, lead_id, tenant_id: Optional[str], db_config: Dict) -> bool:
         """
-        Save student information to lad_dev.education_students table
+        Save student information to lad_dev.education_students table.
         
         Args:
             student_info: The extracted student information dictionary
-            call_log_id: ID from call_logs_voiceagent table (for reference in metadata)
-            lead_id: Target ID from call_logs_voiceagent.target (to connect with education_students.lead_id)
-            tenant_id: Tenant ID from lad_dev.tenants.id (UUID string or None)
+            call_log_id: ID from lad_dev.voice_call_logs.id (for reference in logs)
+            lead_id: Lead ID from lad_dev.voice_call_logs.lead_id (UUID or legacy numeric)
+            tenant_id: Tenant ID from lad_dev.voice_call_logs.tenant_id or lad_dev.tenants.id
             db_config: Dict with db connection parameters
         
         Returns:
@@ -587,31 +594,31 @@ CRITICAL RULES WITH EXAMPLES:
                         if value_str and value_str.lower() not in ['none', 'null']:
                             metadata[key] = value
             
-            # Convert lead_id (target) to UUID format to match education_students.lead_id column type (UUID)
-            # The target column can be BIGINT (legacy) or UUID (new schema), so handle both cases
+            # Convert lead_id to UUID format to match education_students.lead_id column type (UUID)
+            # New behavior:
+            # - If lead_id already looks like a UUID (contains dashes), use it directly
+            # - Otherwise (legacy BIGINT IDs), convert deterministically as before
             lead_id_uuid = None
             if lead_id is not None:
-                lead_id_str = str(lead_id).strip()
-                try:
-                    # First, try parsing as a valid UUID (new schema - lead_id is already UUID)
+                # Normalize to string
+                lead_str = str(lead_id).strip()
+                if lead_str and "-" in lead_str:
+                    # Assume this is already a UUID string coming from lad_dev.voice_call_logs.lead_id
+                    lead_id_uuid = lead_str
+                else:
+                    # Legacy numeric ID (e.g., from voice_agent.call_logs_voiceagent.target)
                     try:
-                        parsed_uuid = uuid_lib.UUID(lead_id_str)
-                        lead_id_uuid = str(parsed_uuid)
-                        logger.debug(f"lead_id '{lead_id_str}' is already a valid UUID")
-                    except ValueError:
-                        # Not a valid UUID - try as integer (legacy schema)
-                        lead_id_int = int(lead_id_str)
+                        lead_id_int = int(lead_str)
                         # Convert integer to UUID format deterministically
                         # Use format: 00000000-0000-0000-0000-{integer as hex padded to 12 chars}
-                        # This creates a deterministic UUID from the integer
                         lead_id_uuid_str = f"00000000-0000-0000-0000-{lead_id_int:012x}"
                         lead_id_uuid = str(uuid_lib.UUID(lead_id_uuid_str))
-                        logger.debug(f"Converted integer lead_id {lead_id_int} to UUID {lead_id_uuid}")
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Could not convert lead_id '{lead_id}' to UUID: {e}")
-                    lead_id_uuid = None
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Could not convert legacy numeric lead_id to UUID: {e}")
+                        lead_id_uuid = None
             
             # Prepare INSERT query with tenant_id and lead_id
+            # Use ON CONFLICT to handle duplicates (UPSERT)
             query = """
                 INSERT INTO lad_dev.education_students (
                     tenant_id,
@@ -629,6 +636,17 @@ CRITICAL RULES WITH EXAMPLES:
                 ) VALUES (
                     %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, FALSE
                 )
+                ON CONFLICT (tenant_id, lead_id)
+                DO UPDATE SET
+                    student_parent_name = EXCLUDED.student_parent_name,
+                    parent_designation = EXCLUDED.parent_designation,
+                    program_interested_in = EXCLUDED.program_interested_in,
+                    country_interested = EXCLUDED.country_interested,
+                    intake_year = EXCLUDED.intake_year,
+                    intake_month = EXCLUDED.intake_month,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = CURRENT_TIMESTAMP,
+                    is_deleted = FALSE
             """
             
             values = (
@@ -646,8 +664,13 @@ CRITICAL RULES WITH EXAMPLES:
             cursor.execute(query, values)
             conn.commit()
             
-            logger.info(f"Student information saved to database (call_log_id: {call_log_id})")
-            return True
+            # Check if it was an INSERT or UPDATE
+            if cursor.rowcount > 0:
+                logger.info(f"Student information saved/updated to database (call_log_id: {call_log_id})")
+                return True
+            else:
+                logger.warning(f"No rows affected when saving student info (call_log_id: {call_log_id})")
+                return False
             
         except Exception as e:
             logger.error(f"Database save failed: {e}", exc_info=True)
@@ -705,14 +728,14 @@ class StandaloneStudentExtractor:
             return None
     
     async def list_database_calls(self) -> None:
-        """List all calls from database with row numbers matching the query order"""
+        """List calls from lad_dev.voice_call_logs with row numbers matching the query order"""
         if not DB_AVAILABLE:
             raise ImportError("psycopg2 not installed. Install with: pip install psycopg2-binary")
         
         if not self.db_config:
             raise ValueError("Database config not provided. Use --db-host, --db-name, --db-user, --db-pass or .env file")
         
-        logger.info("Listing calls from database...")
+        logger.info("Listing calls from database (lad_dev.voice_call_logs)...")
         logger.info("=" * 80)
         
         conn = psycopg2.connect(**self.db_config)
@@ -720,15 +743,15 @@ class StandaloneStudentExtractor:
         
         try:
             # Fetch calls in pgAdmin's default display order (physical storage order using ctid)
-            # Select transcriptions as-is and handle conversion in Python to avoid JSONB validation errors
+            # Select transcripts as-is and handle conversion in Python to avoid JSONB validation errors
             cursor.execute("""
                 SELECT 
                     ROW_NUMBER() OVER (ORDER BY ctid) as row_num,
                     id,
                     started_at,
                     ended_at,
-                    transcriptions
-                FROM voice_agent.call_logs_voiceagent
+                    transcripts
+                FROM lad_dev.voice_call_logs
                 ORDER BY ctid
                 LIMIT 500000
             """)
@@ -744,15 +767,15 @@ class StandaloneStudentExtractor:
             logger.info(header)
             logger.info("-" * 80)
             
-            for row_num, call_id, started_at, ended_at, transcriptions in calls:
-                # Convert transcriptions to preview text safely in Python
+            for row_num, call_id, started_at, ended_at, transcripts in calls:
+                # Convert transcripts to preview text safely in Python
                 transcript_preview = 'No transcript'
-                if transcriptions:
+                if transcripts:
                     try:
-                        if isinstance(transcriptions, (dict, list)):
-                            transcript_str = json.dumps(transcriptions)
+                        if isinstance(transcripts, (dict, list)):
+                            transcript_str = json.dumps(transcripts)
                         else:
-                            transcript_str = str(transcriptions)
+                            transcript_str = str(transcripts)
                         
                         if transcript_str:
                             preview = transcript_str[:50]
@@ -797,7 +820,7 @@ class StandaloneStudentExtractor:
         if not self.db_config:
             raise ValueError("Database config not provided. Use --db-host, --db-name, --db-user, --db-pass")
         
-        logger.info(f"Fetching call from database (ID: {call_log_id})")
+        logger.info(f"Fetching call from database lad_dev.voice_call_logs (ID: {call_log_id})")
         
         # Connect to database
         conn = psycopg2.connect(**self.db_config)
@@ -813,84 +836,86 @@ class StandaloneStudentExtractor:
                 pass
             
             if isinstance(call_log_id, int):
-                # Integer ID: Use ROW_NUMBER() to find the Nth record
+                # Integer ID: Use ROW_NUMBER() to find the Nth record in lad_dev.voice_call_logs
                 cursor.execute("""
-                    SELECT id, transcriptions, started_at, ended_at, target
+                    SELECT id, transcripts, started_at, ended_at, lead_id, tenant_id
                     FROM (
                         SELECT 
                             id, 
-                            transcriptions, 
+                            transcripts,
                             started_at, 
                             ended_at,
-                            target,
+                            lead_id,
+                            tenant_id,
                             ROW_NUMBER() OVER (ORDER BY ctid) as row_num
-                        FROM voice_agent.call_logs_voiceagent
+                        FROM lad_dev.voice_call_logs
                     ) ranked
                     WHERE row_num = %s
                 """, (call_log_id,))
             else:
-                # UUID string: Try direct UUID match or text match
+                # UUID string: Try direct UUID match or text match on lad_dev.voice_call_logs.id
                 try:
                     cursor.execute("""
-                        SELECT id, transcriptions, started_at, ended_at, target
-                        FROM voice_agent.call_logs_voiceagent
+                        SELECT id, transcripts, started_at, ended_at, lead_id, tenant_id
+                        FROM lad_dev.voice_call_logs
                         WHERE id = %s::uuid
                     """, (str(call_log_id),))
                 except (psycopg2.errors.InvalidTextRepresentation, psycopg2.errors.UndefinedFunction):
                     # Fallback: try text match
                     cursor.execute("""
-                        SELECT id, transcriptions, started_at, ended_at, target
-                        FROM voice_agent.call_logs_voiceagent
+                        SELECT id, transcripts, started_at, ended_at, lead_id, tenant_id
+                        FROM lad_dev.voice_call_logs
                         WHERE id::text = %s
                     """, (str(call_log_id),))
             
             call_data = cursor.fetchone()
             
             if not call_data:
-                raise ValueError(f"Call log {call_log_id} not found in database")
+                raise ValueError(f"Call log {call_log_id} not found in lad_dev.voice_call_logs")
             
-            db_call_id, transcriptions, started_at, ended_at, target_id = call_data
+            db_call_id, transcripts, started_at, ended_at, lead_id, tenant_id_from_log = call_data
             
-            # Get transcript from transcriptions column
+            # Get transcript from transcripts column
             # Handle different data types: dict (JSONB), list, or string
-            if not transcriptions:
+            if not transcripts:
                 raise ValueError(f"No transcript found for call {call_log_id}")
             
             # Convert transcriptions to conversation text
-            if isinstance(transcriptions, dict):
+            if isinstance(transcripts, dict):
                 # If it's a dict, check if it contains a list of messages
-                if 'messages' in transcriptions and isinstance(transcriptions['messages'], list):
+                if 'messages' in transcripts and isinstance(transcripts['messages'], list):
                     # Structured format with messages array
-                    conversation_log = transcriptions['messages']
+                    conversation_log = transcripts['messages']
                     conversation_text = "\n".join([f"{entry.get('role', 'Unknown').title()}: {entry.get('message', entry.get('text', ''))}" for entry in conversation_log])
-                elif isinstance(transcriptions, dict) and any(key in transcriptions for key in ['role', 'message', 'text']):
+                elif isinstance(transcripts, dict) and any(key in transcripts for key in ['role', 'message', 'text']):
                     # Single message dict - convert to text
-                    role = transcriptions.get('role', 'Unknown').title()
-                    message = transcriptions.get('message') or transcriptions.get('text', '')
+                    role = transcripts.get('role', 'Unknown').title()
+                    message = transcripts.get('message') or transcripts.get('text', '')
                     conversation_text = f"{role}: {message}"
                 else:
                     # Try to extract text from dict
-                    if 'text' in transcriptions:
-                        conversation_text = str(transcriptions['text'])
-                    elif 'transcript' in transcriptions:
-                        conversation_text = str(transcriptions['transcript'])
-                    elif 'content' in transcriptions:
-                        conversation_text = str(transcriptions['content'])
+                    if 'text' in transcripts:
+                        conversation_text = str(transcripts['text'])
+                    elif 'transcript' in transcripts:
+                        conversation_text = str(transcripts['transcript'])
+                    elif 'content' in transcripts:
+                        conversation_text = str(transcripts['content'])
                     else:
                         # Fallback: convert entire dict to JSON string
-                        conversation_text = json.dumps(transcriptions)
-            elif isinstance(transcriptions, list):
+                        conversation_text = json.dumps(transcripts)
+            elif isinstance(transcripts, list):
                 # List format - convert to text
-                conversation_text = "\n".join([f"{entry.get('role', 'Unknown').title()}: {entry.get('message', entry.get('text', ''))}" if isinstance(entry, dict) else str(entry) for entry in transcriptions])
+                conversation_text = "\n".join([f"{entry.get('role', 'Unknown').title()}: {entry.get('message', entry.get('text', ''))}" if isinstance(entry, dict) else str(entry) for entry in transcripts])
             else:
                 # String format - use as-is
-                conversation_text = str(transcriptions)
+                conversation_text = str(transcripts)
             
-            logger.info(f"Call ID: {db_call_id}, Started: {started_at}, Ended: {ended_at}, Target ID: {target_id}")
+            logger.info(f"Call ID: {db_call_id}, Started: {started_at}, Ended: {ended_at}, Lead ID: {lead_id}")
             logger.info(f"Conversation text length: {len(conversation_text)} characters")
             
             # Get tenant_id from lad_dev.tenants table (for JSON structure)
-            tenant_id = self._get_tenant_id(cursor)
+            # Prefer tenant_id from voice_call_logs if present; otherwise fall back to lad_dev.tenants lookup
+            tenant_id = str(tenant_id_from_log) if tenant_id_from_log else self._get_tenant_id(cursor)
             
             # Extract student information
             student_info = await self.extractor.extract_student_information(conversation_text)
@@ -904,7 +929,7 @@ class StandaloneStudentExtractor:
                 # Save to JSON file (default behavior)
                 if save_to_json:
                     logger.info("Saving student information to JSON file...")
-                    json_file = self.extractor.save_to_json(student_info, db_call_id, target_id, tenant_id)
+                    json_file = self.extractor.save_to_json(student_info, db_call_id, lead_id, tenant_id)
                     
                     if json_file:
                         logger.info(f"Student information saved to JSON file: {json_file}")
@@ -917,9 +942,9 @@ class StandaloneStudentExtractor:
                     db_saved = self.extractor.save_to_database(
                         student_info, 
                         db_call_id, 
-                        target_id, 
+                        lead_id,
                         tenant_id, 
-                        self.db_config
+                        self.db_config,
                     )
                     if db_saved:
                         logger.info("Student information saved to database successfully")
@@ -966,7 +991,8 @@ Examples:
     parser.add_argument('--db-name', help='Database name (default: from .env)')
     parser.add_argument('--db-user', help='Database user (default: from .env or postgres)')
     parser.add_argument('--db-pass', help='Database password (default: from .env)')
-    parser.add_argument('--save-db', action='store_true', help='Also save extracted data to database (optional)')
+    # By default, save to DB as well as JSON; --no-save-db can disable if needed
+    parser.add_argument('--save-db', action='store_true', default=True, help='Also save extracted data to database (default: ON)')
     parser.add_argument('--no-save-json', action='store_true', help='Skip saving to JSON file (JSON is saved by default)')
     
     args = parser.parse_args()

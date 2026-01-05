@@ -276,7 +276,7 @@ async def _route_general_vertical(
     
     try:
         # Convert conversation to text
-        conversation_text = _conversation_to_text(conversation)
+        conversation_text = _format_conversation_for_extraction(conversation)
         
         if not conversation_text or len(conversation_text) < 50:
             logger.debug(f"Insufficient conversation for general extraction: {len(conversation_text)} chars")

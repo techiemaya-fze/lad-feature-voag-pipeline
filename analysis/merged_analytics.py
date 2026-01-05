@@ -1368,17 +1368,15 @@ Be specific about their mindset, not generic."""
         except Exception as e:
             return f"LLM full summary error: {str(e)}"
     
-    async def _determine_lead_disposition_llm(self, lead_score: Dict, sentiment: Dict, summary: Dict) -> Dict:
+    async def _determine_lead_disposition_llm(self, sentiment: Dict, summary: Dict) -> Dict:
         """Use LLM to determine lead disposition (AI-powered, no hardcoded keywords)"""
         
-        logger.debug(f"Determining disposition - Score: {lead_score.get('lead_score', 0)}/10, Category: {lead_score.get('lead_category', 'Unknown')}")
+        logger.debug(f"Determining disposition from sentiment and summary")
         if not self.gemini_api_key:
             # Fallback to rule-based if no API key
-            return self._determine_lead_disposition_fallback(lead_score, sentiment, summary)
+            return self._determine_lead_disposition_fallback(sentiment, summary)
         
         try:
-            score = lead_score.get('lead_score', 0)
-            category = lead_score.get('lead_category', 'Unknown')
             call_summary = str(summary.get('call_summary', ''))
             concerns = summary.get('prospect_concerns', [])
             next_steps = summary.get('next_steps', [])
@@ -1387,7 +1385,6 @@ Be specific about their mindset, not generic."""
             prompt = f"""Analyze this sales call and determine the lead disposition.
 
 CALL DATA:
-- Lead Score: {score}/10 ({category})
 - Sentiment: {sentiment_score}
 - Call Summary: {call_summary}
 - Prospect Concerns: {', '.join(concerns) if concerns else 'None'}
@@ -1439,7 +1436,7 @@ CONFIDENCE: [High/Medium/Low]"""
             
             if not llm_response:
                 logger.warning("LLM disposition failed, using fallback")
-                return self._determine_lead_disposition_fallback(lead_score, sentiment, summary)
+                return self._determine_lead_disposition_fallback(sentiment, summary)
             
             # Parse LLM response
             disposition_map = {
@@ -1468,7 +1465,7 @@ CONFIDENCE: [High/Medium/Low]"""
             
             if not disposition_letter:
                 logger.warning("Could not parse LLM response, using fallback")
-                return self._determine_lead_disposition_fallback(lead_score, sentiment, summary)
+                return self._determine_lead_disposition_fallback(sentiment, summary)
             
             # Extract action and reasoning
             action = action_map.get(disposition_letter, "Review manually")
@@ -1484,7 +1481,7 @@ CONFIDENCE: [High/Medium/Low]"""
                     confidence = line.split(':', 1)[1].strip()
             
             if not reasoning:
-                reasoning = f"LLM analysis based on score {score}/10 and call context"
+                reasoning = f"LLM analysis based on call context and sentiment"
             
             return {
                 "disposition": disposition_map[disposition_letter],
@@ -1496,13 +1493,10 @@ CONFIDENCE: [High/Medium/Low]"""
             
         except Exception as e:
             logger.error(f"LLM disposition error: {str(e)}, using fallback", exc_info=True)
-            return self._determine_lead_disposition_fallback(lead_score, sentiment, summary)
+            return self._determine_lead_disposition_fallback(sentiment, summary)
     
-    def _determine_lead_disposition_fallback(self, lead_score: Dict, sentiment: Dict, summary: Dict) -> Dict:
+    def _determine_lead_disposition_fallback(self, sentiment: Dict, summary: Dict) -> Dict:
         """Determine if lead is worth pursuing - clear YES/NO decision"""
-        
-        score = lead_score.get('lead_score', 0)
-        category = lead_score.get('lead_category', 'Unknown')
         concerns = summary.get('prospect_concerns', [])
         next_steps = summary.get('next_steps', [])
         
@@ -1644,7 +1638,7 @@ CONFIDENCE: [High/Medium/Low]"""
             # Gatekeeper who can't/won't share decision maker info
             disposition = "NURTURE (7 DAYS)"
             action = "Send WhatsApp info, wait for internal referral"
-            reasoning.append(f"Not decision maker, can't share details (Score: {score}/10)")
+            reasoning.append("Not decision maker, can't share details")
             
         elif has_already_have and not open_to_switch:
             # Has partner and NOT open to switching
@@ -1656,34 +1650,25 @@ CONFIDENCE: [High/Medium/Low]"""
             # They have a partner BUT are open to switching - NURTURE lead!
             disposition = "NURTURE (7 DAYS)"
             action = "Send promised info, follow up in 1-2 weeks"
-            reasoning.append(f"Has existing partner but open to alternatives (Score: {score}/10)")
+            reasoning.append("Has existing partner but open to alternatives")
             
-        elif score >= 7 and has_green_flag:
-            # High score AND strong interest signals (both required now!)
+        elif has_green_flag:
+            # Strong interest signals
             disposition = "PROCEED IMMEDIATELY"
             action = "Follow up within 24 hours"
-            reasoning.append(f"High interest with strong buying signals (Score: {score}/10)")
+            reasoning.append("High interest with strong buying signals")
             
-        elif score >= 7:
-            # High score but no strong green flag - warm lead
+        elif next_steps and len(next_steps) > 0 and next_steps[0] != "None":
+            # Has next steps - good engagement
             disposition = "FOLLOW UP IN 3 DAYS"
             action = "Send info, follow up in 2-3 days"
-            reasoning.append(f"Good engagement but needs nurturing (Score: {score}/10)")
-            
-        elif score >= 5:
-            disposition = "FOLLOW UP IN 3 DAYS"
-            action = "Schedule follow-up for 3 days"
-            reasoning.append(f"Moderate interest, needs nurturing (Score: {score}/10)")
-            
-        elif score >= 3:
-            disposition = "NURTURE (7 DAYS)"
-            action = "Add to nurture campaign, follow up in 1 week"
-            reasoning.append(f"Low engagement but not negative (Score: {score}/10)")
+            reasoning.append("Good engagement with next steps agreed")
             
         else:
-            disposition = "DON'T PURSUE"
-            action = "Archive - Very low priority"
-            reasoning.append(f"Very low score ({score}/10), minimal engagement")
+            # Default: moderate engagement, needs nurturing
+            disposition = "FOLLOW UP IN 3 DAYS"
+            action = "Send info, follow up in 2-3 days"
+            reasoning.append("Moderate interest, needs nurturing")
         
         # Additional context
         if "busy" in str(concerns).lower() or "busy" in call_summary:
@@ -1985,6 +1970,50 @@ CONFIDENCE: [High/Medium/Low]"""
             "scoring_breakdown": scoring_breakdown
         }
     
+    def _calculate_lead_score_from_disposition(self, disposition: Dict) -> Dict:
+        """
+        Calculate lead_score and lead_category based on disposition.
+        
+        Mapping:
+        - "PROCEED IMMEDIATELY" → lead_score = 10/10, lead_category = "Hot Lead"
+        - "FOLLOW UP IN 3 DAYS" → lead_score = 8/10, lead_category = "Hot Lead"
+        - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "Warm Lead"
+        - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Cold Lead"
+        """
+        disposition_str = disposition.get('disposition', '').upper()
+        
+        if disposition_str == 'PROCEED IMMEDIATELY':
+            lead_score = 10.0
+            lead_category = "Hot Lead"
+            priority = "High"
+        elif disposition_str == 'FOLLOW UP IN 3 DAYS':
+            lead_score = 8.0
+            lead_category = "Hot Lead"
+            priority = "High"
+        elif disposition_str in ['FOLLOW UP IN 7 DAYS', 'NURTURE (7 DAYS)', 'NURTURE']:
+            lead_score = 6.0
+            lead_category = "Warm Lead"
+            priority = "Medium"
+        elif disposition_str == "DON'T PURSUE" or disposition_str == "DONT PURSUE":
+            lead_score = 4.0
+            lead_category = "Cold Lead"
+            priority = "Low"
+        else:
+            # Default/Unknown disposition
+            lead_score = 5.0
+            lead_category = "Warm Lead"
+            priority = "Medium"
+        
+        return {
+            "lead_score": lead_score,
+            "max_score": 10.0,
+            "lead_category": lead_category,
+            "priority": priority,
+            "scoring_breakdown": {
+                "disposition_based": f"Score calculated from disposition: {disposition_str}"
+            }
+        }
+    
     def calculate_conversation_quality(self, conversation_text: str, sentiment: Dict, duration_seconds: int) -> Dict:
         """
         Calculate conversation quality metrics
@@ -2200,20 +2229,25 @@ CONFIDENCE: [High/Medium/Low]"""
         logger.info("Step 2/7: Generating summary...")
         summary = await self.generate_summary(conversation_text, sentiment_data=sentiment, duration=duration_seconds)
         
-        logger.info("Step 3/7: Calculating lead score...")
-        lead_score = self.calculate_lead_score(conversation_text, sentiment, summary, duration_seconds)
+        logger.info("Step 3/7: Determining lead disposition...")
+        lead_disposition = await self._determine_lead_disposition_llm(sentiment, summary)
+        logger.info(f"Lead disposition: {lead_disposition.get('disposition', 'Unknown')} - Action: {lead_disposition.get('recommended_action', 'N/A')}")
         
-        logger.info("Step 4/7: Calculating quality metrics...")
+        logger.info("Step 4/7: Calculating lead score from disposition...")
+        lead_score = self._calculate_lead_score_from_disposition(lead_disposition)
+        logger.info(f"Lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
+        
+        logger.info("Step 5/7: Calculating quality metrics...")
         quality_metrics = self.calculate_conversation_quality(conversation_text, sentiment, duration_seconds)
         
-        logger.info("Step 5/7: Extracting call stages...")
+        logger.info("Step 6/7: Extracting call stages...")
         stage_info = self.extract_call_stages(conversation_text, summary)
         
-        # Step 6/7: Extract lead information and save to JSON
+        # Step 7/7: Extract lead information and save to JSON
         lead_info = None
         lead_info_path = None
         if self.lead_extractor:
-            logger.info("Step 6/7: Extracting lead information...")
+            logger.info("Step 7/7: Extracting lead information...")
             try:
                 lead_info = await self.lead_extractor.extract_lead_information(conversation_text, summary)
                 if lead_info:
@@ -2225,10 +2259,6 @@ CONFIDENCE: [High/Medium/Low]"""
                 logger.error(f"Lead info extraction failed: {e}", exc_info=True)
         else:
             logger.debug("Lead extractor not available - skipping lead info extraction")
-        
-        logger.info("Step 7/7: Determining lead disposition...")
-        lead_disposition = await self._determine_lead_disposition_llm(lead_score, sentiment, summary)
-        logger.info(f"Lead disposition: {lead_disposition.get('disposition', 'Unknown')} - Action: {lead_disposition.get('recommended_action', 'N/A')}")
         
         # Enhance recommendations with complete analytics data
         if summary and 'recommendations' in summary and lead_score:
