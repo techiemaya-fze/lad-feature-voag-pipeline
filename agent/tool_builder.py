@@ -177,21 +177,10 @@ TOOL_INSTRUCTIONS = {
 """,
 
     "hangup": """
-## Call Ending Protocol
-When ending a call:
-1. Say a polite goodbye (e.g., "Thank you for your time. Have a great day!")
-2. After your farewell speech, invoke the hangup_call tool with the appropriate reason
-
-**CRITICAL**: Tool calls and speech are separate operations. You must:
-- SPEAK your farewell message to the user
-- SEPARATELY invoke the hangup_call function as a tool call
-- NEVER say "hangup_call(...)" out loud - this is a function you invoke, not text you speak
-
-Available reasons: "call_complete", "not_interested", "callback_scheduled", "appointment_booked", "information_sent"
-
-Example correct behavior:
-- You SAY: "Thank you so much for your time today. Have a wonderful day!"
-- You INVOKE: hangup_call(reason="call_complete")  ← This is a tool call, not spoken text
+## Call Ending
+- Use the **hangup_call** tool to end the call gracefully
+- Always say goodbye BEFORE using the tool (e.g., "Thank you for your time. Have a great day!")
+- Provide a reason: "call_complete", "not_interested", "callback_scheduled", "appointment_booked"
 """,
 }
 
