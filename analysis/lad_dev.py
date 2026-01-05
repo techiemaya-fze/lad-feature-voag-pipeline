@@ -594,29 +594,38 @@ CRITICAL RULES WITH EXAMPLES:
                         if value_str and value_str.lower() not in ['none', 'null']:
                             metadata[key] = value
             
-            # Convert lead_id to UUID format to match education_students.lead_id column type (UUID)
-            # New behavior:
-            # - If lead_id already looks like a UUID (contains dashes), use it directly
-            # - Otherwise (legacy BIGINT IDs), convert deterministically as before
+            # Normalize and validate `lead_id` for storage in education_students.lead_id (UUID)
+            # Behavior merged from branches:
+            # - Reject explicit 'None'/'null' or empty string values
+            # - If value contains a dash, try to parse it as UUID and use it when valid
+            # - Otherwise treat as legacy numeric ID and convert deterministically to UUID
             lead_id_uuid = None
             if lead_id is not None:
-                # Normalize to string
                 lead_str = str(lead_id).strip()
-                if lead_str and "-" in lead_str:
-                    # Assume this is already a UUID string coming from lad_dev.voice_call_logs.lead_id
-                    lead_id_uuid = lead_str
+                # Reject common sentinel strings
+                if lead_str.lower() in ('none', 'null', ''):
+                    logger.warning(f"lead_id is invalid string value: '{lead_id}'")
+                    lead_id_uuid = None
                 else:
-                    # Legacy numeric ID (e.g., from voice_agent.call_logs_voiceagent.target)
-                    try:
-                        lead_id_int = int(lead_str)
-                        # Convert integer to UUID format deterministically
-                        # Use format: 00000000-0000-0000-0000-{integer as hex padded to 12 chars}
-                        lead_id_uuid_str = f"00000000-0000-0000-0000-{lead_id_int:012x}"
-                        lead_id_uuid = str(uuid_lib.UUID(lead_id_uuid_str))
-                    except (ValueError, TypeError) as e:
-                        logger.warning(f"Could not convert legacy numeric lead_id to UUID: {e}")
-                        lead_id_uuid = None
-            
+                    # If it looks like a UUID string, validate it
+                    if '-' in lead_str:
+                        try:
+                            parsed = uuid_lib.UUID(lead_str)
+                            lead_id_uuid = str(parsed)
+                            logger.debug(f"lead_id '{lead_str}' validated as UUID")
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"lead_id '{lead_str}' contains dashes but is not a valid UUID: {e}")
+                            # Fall back to trying numeric conversion below
+                    if lead_id_uuid is None:
+                        # Attempt legacy numeric conversion: integer -> deterministic UUID
+                        try:
+                            lead_id_int = int(lead_str)
+                            lead_id_uuid_str = f"00000000-0000-0000-0000-{lead_id_int:012x}"
+                            lead_id_uuid = str(uuid_lib.UUID(lead_id_uuid_str))
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"Could not convert legacy numeric lead_id to UUID: {e}")
+                            lead_id_uuid = None
+
             # Prepare INSERT query with tenant_id and lead_id
             # Use ON CONFLICT to handle duplicates (UPSERT)
             query = """
