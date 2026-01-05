@@ -363,14 +363,9 @@ class VoiceAssistant(Agent):
         if self.call_recorder and hasattr(self.call_recorder, 'register_agent_speech_end_callback'):
             self.call_recorder.register_agent_speech_end_callback(self._on_agent_speech_end)
         
-        # Build final tools list - include hangup_call method as a callable tool
-        # NOTE: @function_tool decorator on self.hangup_call doesn't auto-register it
-        # We must explicitly add it to the tools list for the LLM to call it as a function
-        all_tools = list(tools or [])
-        all_tools.append(self.hangup_call)  # Add hangup_call method as available tool
-        
-        # Pass tools from tool_builder + hangup_call to parent Agent
-        super().__init__(instructions=instructions, tools=all_tools)
+        # Pass tools from tool_builder to parent Agent
+        # NOTE: @function_tool decorated methods (like hangup_call) are auto-registered by Agent base class
+        super().__init__(instructions=instructions, tools=tools or [])
     
     def _on_agent_speech_end(self, was_interrupted: bool) -> None:
         """Callback when agent speech ends - cancels pending hangup if interrupted."""
