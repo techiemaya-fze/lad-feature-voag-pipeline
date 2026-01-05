@@ -542,6 +542,12 @@ async def entrypoint(ctx: agents.JobContext):
             raw_initiated_by = dial_info.get("initiated_by")
             if isinstance(raw_initiated_by, (int, str)):
                 initiating_user_id = str(raw_initiated_by).strip() or None
+            
+            # DEBUG: Log initiated_by parsing for OAuth tool debugging
+            logger.info(
+                "OAuth user context: raw_initiated_by=%s, initiating_user_id=%s",
+                raw_initiated_by, initiating_user_id
+            )
                 
             logger.info(
                 "Metadata: job_id=%s, call_log_id=%s, agent_id=%s, voice_id=%s",
@@ -638,7 +644,7 @@ async def entrypoint(ctx: agents.JobContext):
         user_id=initiating_user_id,
         knowledge_base_store_ids=knowledge_base_store_ids,
     )
-    logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}")
+    logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}, user_id={'set' if initiating_user_id else 'None'}")
     
     # Build instructions (now with valid tool_config that includes hangup instructions)
     instructions = await build_instructions_async(
