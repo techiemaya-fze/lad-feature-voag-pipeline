@@ -24,7 +24,6 @@ from agent.pipeline import (
 # Instructions
 from agent.instruction_builder import (
     InstructionBuilder,
-    build_instructions,
     build_instructions_async,
 )
 
@@ -50,7 +49,6 @@ __all__ = [
     "derive_stt_language",
     # Instructions
     "InstructionBuilder",
-    "build_instructions",
     "build_instructions_async",
     # Tools
     "ToolConfig",

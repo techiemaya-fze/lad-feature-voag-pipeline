@@ -533,10 +533,18 @@ class BatchStorage:
                     cur.execute(
                         f"""
                         SELECT 
-                            e.id, e.tenant_id, e.batch_id, e.lead_id, e.to_phone,
-                            e.status, e.call_log_id, e.last_error, e.metadata,
+                            e.id, e.tenant_id, e.batch_id, e.lead_id,
+                            e.to_phone as to_number,
+                            e.status, e.call_log_id, 
+                            e.last_error as error_message,
+                            e.metadata,
                             e.created_at, e.updated_at,
-                            c.status as call_status, c.recording_url, c.duration_seconds
+                            c.status as call_status, 
+                            c.recording_url as call_recording_url, 
+                            c.duration_seconds as call_duration,
+                            -- Extract lead_name and entry_index from metadata
+                            (e.metadata->>'lead_name') as lead_name,
+                            (e.metadata->>'entry_index')::int as entry_index
                         FROM {FULL_ENTRY_TABLE} e
                         LEFT JOIN {FULL_CALL_TABLE} c ON e.call_log_id = c.id
                         WHERE e.batch_id = %s AND e.is_deleted = FALSE
