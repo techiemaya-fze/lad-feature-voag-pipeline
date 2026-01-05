@@ -100,7 +100,7 @@ class StudentExtractor:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(url, headers=headers, json=data)
                 response.raise_for_status()
-                
+            
                 response_data = response.json()
                 logger.debug("Gemini API call successful")
                 
@@ -841,9 +841,9 @@ class StandaloneStudentExtractor:
                     SELECT id, transcripts, started_at, ended_at, lead_id, tenant_id
                     FROM (
                         SELECT 
-                            id,
+                            id, 
                             transcripts,
-                            started_at,
+                            started_at, 
                             ended_at,
                             lead_id,
                             tenant_id,
@@ -940,10 +940,10 @@ class StandaloneStudentExtractor:
                 if save_to_db:
                     logger.info("Saving student information to database...")
                     db_saved = self.extractor.save_to_database(
-                        student_info,
-                        db_call_id,
+                        student_info, 
+                        db_call_id, 
                         lead_id,
-                        tenant_id,
+                        tenant_id, 
                         self.db_config,
                     )
                     if db_saved:

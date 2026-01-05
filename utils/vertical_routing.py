@@ -145,13 +145,12 @@ async def route_lead_extraction(
     logger.info(f"Vertical routing: tenant_id={tenant_id}, vertical={vertical}")
     
     if vertical == "education":
-        # Education vertical is handled by trigger_student_info_extraction in cleanup_handler.py
-        # Skip here to avoid duplication
-        logger.debug(f"Education vertical detected but handled separately in cleanup_handler, skipping vertical_routing")
-        return VerticalRoutingResult(
-            vertical="education",
-            routed=False,
-            error="Handled by cleanup_handler.trigger_student_info_extraction"
+        return await _route_education_vertical(
+            call_log_id=call_log_id,
+            tenant_id=tenant_id,
+            conversation=conversation,
+            lead_id=lead_id,
+            db_config=db_config
         )
     
     elif vertical == "realestate":
@@ -277,7 +276,7 @@ async def _route_general_vertical(
     
     try:
         # Convert conversation to text
-        conversation_text = _conversation_to_text(conversation)
+        conversation_text = _format_conversation_for_extraction(conversation)
         
         if not conversation_text or len(conversation_text) < 50:
             logger.debug(f"Insufficient conversation for general extraction: {len(conversation_text)} chars")

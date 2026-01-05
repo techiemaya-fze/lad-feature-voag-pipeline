@@ -363,8 +363,14 @@ class VoiceAssistant(Agent):
         if self.call_recorder and hasattr(self.call_recorder, 'register_agent_speech_end_callback'):
             self.call_recorder.register_agent_speech_end_callback(self._on_agent_speech_end)
         
-        # Pass tools from tool_builder to parent Agent
-        super().__init__(instructions=instructions, tools=tools or [])
+        # Build final tools list - include hangup_call method as a callable tool
+        # NOTE: @function_tool decorator on self.hangup_call doesn't auto-register it
+        # We must explicitly add it to the tools list for the LLM to call it as a function
+        all_tools = list(tools or [])
+        all_tools.append(self.hangup_call)  # Add hangup_call method as available tool
+        
+        # Pass tools from tool_builder + hangup_call to parent Agent
+        super().__init__(instructions=instructions, tools=all_tools)
     
     def _on_agent_speech_end(self, was_interrupted: bool) -> None:
         """Callback when agent speech ends - cancels pending hangup if interrupted."""
@@ -542,6 +548,12 @@ async def entrypoint(ctx: agents.JobContext):
             raw_initiated_by = dial_info.get("initiated_by")
             if isinstance(raw_initiated_by, (int, str)):
                 initiating_user_id = str(raw_initiated_by).strip() or None
+            
+            # DEBUG: Log initiated_by parsing for OAuth tool debugging
+            logger.info(
+                "OAuth user context: raw_initiated_by=%s, initiating_user_id=%s",
+                raw_initiated_by, initiating_user_id
+            )
                 
             logger.info(
                 "Metadata: job_id=%s, call_log_id=%s, agent_id=%s, voice_id=%s",
@@ -638,7 +650,7 @@ async def entrypoint(ctx: agents.JobContext):
         user_id=initiating_user_id,
         knowledge_base_store_ids=knowledge_base_store_ids,
     )
-    logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}")
+    logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}, user_id={'set' if initiating_user_id else 'None'}")
     
     # Build instructions (now with valid tool_config that includes hangup instructions)
     instructions = await build_instructions_async(

@@ -21,7 +21,6 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -46,7 +45,7 @@ class CleanupContext:
         call_recorder: Any = None,
         call_log_id: str | None = None,
         tenant_id: str | None = None,  # Phase 16: Multi-tenancy
-        lead_id: str | None = None,  # For vertical routing and lead tracking
+        lead_id: str | None = None,  # For vertical routing
         call_storage: Any = None,
         silence_monitor: Any = None,
         latency_mask_player: Any = None,
@@ -56,8 +55,8 @@ class CleanupContext:
         acquired_call_slot: bool = False,
         usage_collector: Any = None,
         job_id: str | None = None,
-        batch_id: str | None = None,  # For batch completion tracking
-        entry_id: str | None = None,  # For batch entry status update
+        batch_id: str | None = None,  # Batch call tracking
+        entry_id: str | None = None,  # Batch entry tracking
     ):
         self.call_recorder = call_recorder
         self.call_log_id = call_log_id
@@ -221,7 +220,7 @@ async def calculate_and_save_cost(
         
         try:
             usage_summary = usage_collector.get_summary()
-            if usage_summary and call_storage:
+            if usage_summary and call_storage and call_log_id:
                 pricing_rates = await call_storage.get_pricing_rates()
                 await call_storage.save_call_usage(
                     call_log_id=str(call_log_id),
@@ -366,6 +365,7 @@ async def trigger_post_call_analysis(
     call_log_id = ctx.call_log_id
     call_storage = ctx.call_storage
     tenant_id = ctx.tenant_id  # Multi-tenancy support
+    lead_id = ctx.lead_id  # For vertical routing
     
     if not transcription_data:
         logger.warning("Skipping post-call analysis; no transcript for call_log_id=%s", call_log_id)
@@ -379,10 +379,15 @@ async def trigger_post_call_analysis(
             call_details=call_details or {},
             db_config=getattr(call_storage, "db_config", None),
             tenant_id=str(tenant_id) if tenant_id else None,  # Pass tenant_id
+            lead_id=str(lead_id) if lead_id else None,  # Pass lead_id for vertical routing
         )
     except Exception as exc:
         logger.error("Post-call analysis failed for call_log_id=%s: %s", call_log_id, exc, exc_info=True)
 
+
+# =============================================================================
+# LEAD BOOKINGS EXTRACTION
+# =============================================================================
 
 async def trigger_lead_bookings_extraction(
     ctx: CleanupContext,
@@ -432,269 +437,6 @@ async def trigger_lead_bookings_extraction(
         logger.error("Lead bookings extraction failed for call_log_id=%s: %s", call_log_id, exc, exc_info=True)
 
 
-async def trigger_lead_info_extraction(
-    ctx: CleanupContext,
-    transcription_data: dict | None,
-    call_details: dict | None,
-) -> None:
-    """
-    Extract and save lead information from call transcription (JSON export).
-    
-    Args:
-        ctx: Cleanup context
-        transcription_data: Transcription dict
-        call_details: Full call record (unused for now, kept for future extensions)
-    """
-    try:
-        from analysis.lead_info_extractor import extract_and_save_lead_info
-    except ImportError:
-        logger.warning("Lead info extractor not available, skipping extraction")
-        return
-
-    call_log_id = ctx.call_log_id
-
-    if not transcription_data and not ctx.call_recorder:
-        logger.warning("Skipping lead info extraction; no transcript for call_log_id=%s", call_log_id)
-        return
-
-    if not call_log_id:
-        logger.warning("Skipping lead info extraction; no call_log_id")
-        return
-
-    conversation_text: str | None = None
-
-    # Preferred: use recorder's unified transcription text (matches logging)
-    if ctx.call_recorder:
-        try:
-            conversation_text = ctx.call_recorder.get_transcription_text()
-        except Exception as exc:
-            logger.warning(
-                "Failed to get transcription text from recorder for call_log_id=%s: %s",
-                call_log_id,
-                exc,
-            )
-
-    # Fallback: stringify transcription_data
-    if not conversation_text and transcription_data is not None:
-        try:
-            conversation_text = json.dumps(transcription_data)
-        except Exception:
-            conversation_text = str(transcription_data)
-
-    if not conversation_text:
-        logger.warning(
-            "Skipping lead info extraction; could not derive conversation text for call_log_id=%s",
-            call_log_id,
-        )
-        return
-
-    try:
-        result = await extract_and_save_lead_info(
-            conversation_text=conversation_text,
-            call_id=str(call_log_id),
-            summary=None,
-        )
-        if not result:
-            logger.debug("No lead info extracted for call_log_id=%s", call_log_id)
-            return
-
-        lead_info = result.get("lead_info") if isinstance(result, dict) else None
-        json_path = result.get("json_path") if isinstance(result, dict) else None
-
-        if json_path:
-            logger.info(
-                "Lead info extracted and saved for call_log_id=%s to %s",
-                call_log_id,
-                json_path,
-            )
-
-        # Also save/update lead in lad_dev.leads using asyncpg storage
-        if lead_info:
-            try:
-                from db.lead_info_storage import LeadInfoStorage
-
-                storage = LeadInfoStorage()
-                try:
-                    tenant_id = str(ctx.tenant_id) if ctx.tenant_id else None
-                    lead_id = await storage.save_lead_from_extraction(
-                        tenant_id=tenant_id,
-                        lead_info=lead_info,
-                        call_id=str(call_log_id),
-                    )
-                    if lead_id:
-                        logger.info(
-                            "Lead info saved to lad_dev.leads with id=%s for call_log_id=%s",
-                            lead_id,
-                            call_log_id,
-                        )
-                    else:
-                        logger.debug(
-                            "Lead info not saved to lad_dev.leads (missing phone or tenant) for call_log_id=%s",
-                            call_log_id,
-                        )
-                finally:
-                    await storage.close()
-            except ImportError:
-                logger.warning(
-                    "LeadInfoStorage not available; skipping lad_dev.leads save for call_log_id=%s",
-                    call_log_id,
-                )
-            except Exception as exc_storage:
-                logger.error(
-                    "Failed to save lead info to lad_dev.leads for call_log_id=%s: %s",
-                    call_log_id,
-                    exc_storage,
-                    exc_info=True,
-                )
-    except Exception as exc:
-        logger.error("Lead info extraction failed for call_log_id=%s: %s", call_log_id, exc, exc_info=True)
-
-
-async def trigger_student_info_extraction(
-    ctx: CleanupContext,
-    transcription_data: dict | None,
-    call_details: dict | None,
-) -> None:
-    """
-    Extract and save student/parent education information to lad_dev.education_students.
-    
-    This mirrors lad_dev.py behavior but runs automatically after a call ends.
-    """
-    try:
-        from analysis.lad_dev import StudentExtractor
-    except ImportError:
-        logger.warning("Student extractor (lad_dev.py) not available, skipping education_students extraction")
-        return
-
-    call_log_id = ctx.call_log_id
-    if not call_log_id:
-        logger.warning("Skipping student info extraction; no call_log_id")
-        return
-
-    # Build conversation text (same strategy as lead info extraction)
-    conversation_text: str | None = None
-    if ctx.call_recorder:
-        try:
-            conversation_text = ctx.call_recorder.get_transcription_text()
-        except Exception as exc:
-            logger.warning(
-                "Failed to get transcription text from recorder for student info (call_log_id=%s): %s",
-                call_log_id,
-                exc,
-            )
-
-    if not conversation_text and transcription_data is not None:
-        try:
-            conversation_text = json.dumps(transcription_data)
-        except Exception:
-            conversation_text = str(transcription_data)
-
-    if not conversation_text:
-        logger.warning(
-            "Skipping student info extraction; could not derive conversation text for call_log_id=%s",
-            call_log_id,
-        )
-        return
-
-    # Extract student information using the existing extractor
-    extractor = StudentExtractor()
-    try:
-        student_info = await extractor.extract_student_information(conversation_text)
-    except Exception as exc:
-        logger.error(
-            "Student info extraction failed for call_log_id=%s: %s",
-            call_log_id,
-            exc,
-            exc_info=True,
-        )
-        return
-
-    if not student_info:
-        logger.debug("No student information extracted for call_log_id=%s", call_log_id)
-        return
-
-    logger.info(
-        "Student info extracted for call_log_id=%s: program=%s, country=%s",
-        call_log_id,
-        student_info.get("program_interested_in"),
-        student_info.get("country_interested"),
-    )
-
-    # Derive tenant_id and lead_id for lad_dev.education_students
-    tenant_id: str | None = None
-    lead_id: str | None = None
-
-    # Prefer lad_dev.voice_call_logs via LeadBookingsStorage (same as bookings extraction)
-    try:
-        from db.lead_bookings_storage import LeadBookingsStorage
-
-        storage = LeadBookingsStorage()
-        try:
-            call_data = await storage.get_call_log(str(call_log_id))
-        finally:
-            await storage.close()
-
-        if call_data:
-            tenant_id = call_data.get("tenant_id")
-            lead_id = call_data.get("lead_id")
-    except ImportError:
-        logger.debug("LeadBookingsStorage not available when resolving tenant_id/lead_id for student info")
-    except Exception as exc:
-        logger.warning(
-            "Error fetching tenant_id/lead_id from lad_dev.voice_call_logs for call_log_id=%s: %s",
-            call_log_id,
-            exc,
-        )
-
-    # Fallbacks if not found via lad_dev.voice_call_logs
-    if not tenant_id and ctx.tenant_id:
-        tenant_id = str(ctx.tenant_id)
-
-    # Build DB config from environment (same pattern as lad_dev.py)
-    db_config = {
-        "host": os.getenv("DB_HOST", "localhost"),
-        "database": os.getenv("DB_NAME", "salesmaya_agent"),
-        "user": os.getenv("DB_USER", "postgres"),
-        "password": os.getenv("DB_PASSWORD"),
-    }
-    if not db_config.get("password"):
-        logger.warning(
-            "DB_PASSWORD not set; skipping student info save to lad_dev.education_students for call_log_id=%s",
-            call_log_id,
-        )
-        return
-
-    # Save to lad_dev.education_students using existing synchronous method in a worker thread
-    try:
-        saved = await asyncio.to_thread(
-            extractor.save_to_database,
-            student_info,
-            str(call_log_id),
-            lead_id,
-            tenant_id,
-            db_config,
-        )
-        if saved:
-            logger.info(
-                "Student info saved to lad_dev.education_students for call_log_id=%s (lead_id=%s, tenant_id=%s)",
-                call_log_id,
-                lead_id,
-                tenant_id,
-            )
-        else:
-            logger.error(
-                "Failed to save student info to lad_dev.education_students for call_log_id=%s",
-                call_log_id,
-            )
-    except Exception as exc:
-        logger.error(
-            "Error while saving student info to lad_dev.education_students for call_log_id=%s: %s",
-            call_log_id,
-            exc,
-            exc_info=True,
-        )
-
-
 # =============================================================================
 # AUDIO CLEANUP
 # =============================================================================
@@ -739,11 +481,8 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
     4. Calculate and save cost
     5. Update call status
     6. Run post-call analysis
-    7. Extract and save student info (lad_dev.education_students)
-    8. Extract and save lead info (JSON export + lad_dev.leads)
-    9. Extract and save lead bookings
-    10. Stop background audio
-    11. Release semaphore
+    7. Stop background audio
+    8. Release semaphore
     
     Args:
         ctx: Cleanup context with all resources
@@ -789,22 +528,76 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
     # 6. Run post-call analysis
     await trigger_post_call_analysis(ctx, transcription_data, duration_seconds, call_details)
     
-    # 7. Extract and save student info (lad_dev.education_students)
-    await trigger_student_info_extraction(ctx, transcription_data, call_details)
-    
-    # 8. Extract and save lead info (JSON export + lad_dev.leads)
-    await trigger_lead_info_extraction(ctx, transcription_data, call_details)
-    
-    # 9. Extract and save lead bookings
+    # 7. Extract and save lead bookings
     await trigger_lead_bookings_extraction(ctx, transcription_data, call_details)
     
-    # 10. Stop background audio
+    # 8. Stop background audio
     await stop_background_audio(ctx)
     
-    # 11. Release semaphore
+    # 9. Release semaphore
     if ctx.acquired_call_slot and ctx.call_semaphore:
         ctx.call_semaphore.release()
         logger.info("Released semaphore for job %s", ctx.job_id)
+    
+    # 10. Update batch entry status and check for batch completion
+    # If cleanup_and_save is called, the call completed normally -> status is "ended"
+    # (call_details has the OLD status from before update_call_status was called)
+    await update_batch_on_call_complete(ctx, "ended")
+
+# =============================================================================
+# BATCH COMPLETION TRACKING
+# =============================================================================
+
+async def update_batch_on_call_complete(ctx: CleanupContext, final_status: str) -> None:
+    """
+    Notify main.py that a batch entry call has completed.
+    
+    Main.py handles the entry status update, batch completion check, and report generation.
+    This architecture ensures report generation runs in main.py's stable event loop,
+    not in the worker which terminates after call ends.
+    
+    Args:
+        ctx: Cleanup context with batch_id and entry_id
+        final_status: The final status of the call (ended, failed, etc.)
+    """
+    if not ctx.batch_id or not ctx.entry_id:
+        # Not a batch call
+        return
+    
+    try:
+        import httpx
+        import os
+        
+        # Get main.py URL (same host, different or same port)
+        main_api_base = os.getenv("MAIN_API_BASE_URL", "http://localhost:8000")
+        url = f"{main_api_base}/batch/entry-completed"
+        
+        payload = {
+            "batch_id": ctx.batch_id,
+            "entry_id": ctx.entry_id,
+            "call_status": final_status,
+        }
+        
+        logger.info(f"Notifying main server of batch entry completion: batch={ctx.batch_id}, entry={ctx.entry_id}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=payload)
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(
+                    f"Batch entry {ctx.entry_id} completed. "
+                    f"Batch completed: {result.get('batch_completed')}, "
+                    f"Report triggered: {result.get('report_triggered')}"
+                )
+            else:
+                logger.error(
+                    f"Failed to notify main server of batch completion: "
+                    f"status={response.status_code}, body={response.text[:200]}"
+                )
+    
+    except Exception as e:
+        logger.error(f"Error notifying main server of batch completion: {e}", exc_info=True)
 
 
 # =============================================================================
@@ -820,8 +613,8 @@ __all__ = [
     "determine_final_status",
     "update_call_status",
     "trigger_post_call_analysis",
-    "trigger_student_info_extraction",
-    "trigger_lead_info_extraction",
     "trigger_lead_bookings_extraction",
     "stop_background_audio",
+    "update_batch_on_call_complete",
 ]
+
