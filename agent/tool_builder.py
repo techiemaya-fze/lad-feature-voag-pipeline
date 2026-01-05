@@ -977,9 +977,9 @@ async def attach_tools(
     # Email Templates
     if config.email_templates:
         try:
-            tools = build_email_template_tools(tenant_id) if tenant_id else []
+            tools = build_email_template_tools(tenant_id, user_id) if tenant_id else []
             attached_tools.extend(tools)
-            logger.info(f"Attached Email Template tools: {len(tools) if tools else 0} functions")
+            logger.info(f"Attached Email Template tools: {len(tools) if tools else 0} functions (user_id={'set' if user_id else 'None'})")
         except Exception as e:
             logger.error(f"Failed to build Email Template tools: {e}")
     

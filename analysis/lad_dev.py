@@ -587,29 +587,24 @@ CRITICAL RULES WITH EXAMPLES:
                         if value_str and value_str.lower() not in ['none', 'null']:
                             metadata[key] = value
             
-            # Convert lead_id (target) to UUID format to match education_students.lead_id column type (UUID)
-            # The target column can be BIGINT (legacy) or UUID (new schema), so handle both cases
+            # Convert lead_id to UUID format for education_students.lead_id column (UUID type)
+            # NOTE: All IDs except agent_id should be UUIDs - no int fallback
             lead_id_uuid = None
             if lead_id is not None:
                 lead_id_str = str(lead_id).strip()
-                try:
-                    # First, try parsing as a valid UUID (new schema - lead_id is already UUID)
+                # Reject 'None' or 'null' string values
+                if lead_id_str.lower() in ('none', 'null', ''):
+                    logger.warning(f"lead_id is invalid string value: '{lead_id}'")
+                    lead_id_uuid = None
+                else:
                     try:
+                        # Parse as UUID - this is the only valid format
                         parsed_uuid = uuid_lib.UUID(lead_id_str)
                         lead_id_uuid = str(parsed_uuid)
-                        logger.debug(f"lead_id '{lead_id_str}' is already a valid UUID")
-                    except ValueError:
-                        # Not a valid UUID - try as integer (legacy schema)
-                        lead_id_int = int(lead_id_str)
-                        # Convert integer to UUID format deterministically
-                        # Use format: 00000000-0000-0000-0000-{integer as hex padded to 12 chars}
-                        # This creates a deterministic UUID from the integer
-                        lead_id_uuid_str = f"00000000-0000-0000-0000-{lead_id_int:012x}"
-                        lead_id_uuid = str(uuid_lib.UUID(lead_id_uuid_str))
-                        logger.debug(f"Converted integer lead_id {lead_id_int} to UUID {lead_id_uuid}")
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Could not convert lead_id '{lead_id}' to UUID: {e}")
-                    lead_id_uuid = None
+                        logger.debug(f"lead_id '{lead_id_str}' validated as UUID")
+                    except ValueError as e:
+                        logger.error(f"lead_id '{lead_id}' is not a valid UUID: {e}")
+                        lead_id_uuid = None
             
             # Prepare INSERT query with tenant_id and lead_id
             query = """
