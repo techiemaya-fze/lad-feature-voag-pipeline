@@ -588,22 +588,27 @@ CRITICAL RULES WITH EXAMPLES:
                             metadata[key] = value
             
             # Convert lead_id (target) to UUID format to match education_students.lead_id column type (UUID)
-            # The target column is BIGINT, but lead_id column is UUID, so we need to convert
+            # The target column can be BIGINT (legacy) or UUID (new schema), so handle both cases
             lead_id_uuid = None
             if lead_id is not None:
+                lead_id_str = str(lead_id).strip()
                 try:
-                    # Convert to integer first
-                    if isinstance(lead_id, (int, str)):
-                        lead_id_int = int(lead_id)
+                    # First, try parsing as a valid UUID (new schema - lead_id is already UUID)
+                    try:
+                        parsed_uuid = uuid_lib.UUID(lead_id_str)
+                        lead_id_uuid = str(parsed_uuid)
+                        logger.debug(f"lead_id '{lead_id_str}' is already a valid UUID")
+                    except ValueError:
+                        # Not a valid UUID - try as integer (legacy schema)
+                        lead_id_int = int(lead_id_str)
                         # Convert integer to UUID format deterministically
                         # Use format: 00000000-0000-0000-0000-{integer as hex padded to 12 chars}
                         # This creates a deterministic UUID from the integer
                         lead_id_uuid_str = f"00000000-0000-0000-0000-{lead_id_int:012x}"
                         lead_id_uuid = str(uuid_lib.UUID(lead_id_uuid_str))
-                    else:
-                        lead_id_uuid = None
+                        logger.debug(f"Converted integer lead_id {lead_id_int} to UUID {lead_id_uuid}")
                 except (ValueError, TypeError) as e:
-                    logger.warning(f"Could not convert lead_id to UUID: {e}")
+                    logger.warning(f"Could not convert lead_id '{lead_id}' to UUID: {e}")
                     lead_id_uuid = None
             
             # Prepare INSERT query with tenant_id and lead_id

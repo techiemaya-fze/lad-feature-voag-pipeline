@@ -55,7 +55,8 @@ class UserTokenStorage:
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[dict[str, Any]]:
         """Get user record by UUID from lad_dev.users."""
-        if not user_id:
+        # Validate user_id - reject None, empty, or string 'None'/'null'
+        if not user_id or str(user_id).strip().lower() in ('none', 'null', ''):
             return None
         try:
             with self._get_connection() as conn:
