@@ -612,7 +612,6 @@ CRITICAL RULES WITH EXAMPLES:
                     except ValueError as e:
                         logger.error(f"lead_id '{lead_id}' is not a valid UUID: {e}")
                         lead_id_uuid = None
-
             # Prepare INSERT query with tenant_id and lead_id
             # Use ON CONFLICT to handle duplicates (UPSERT)
             query = """
