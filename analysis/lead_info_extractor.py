@@ -19,11 +19,20 @@ import os
 import json
 import re
 import logging
-import requests
+import httpx
+import asyncio
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, List
 from pathlib import Path
 from dotenv import load_dotenv
+
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
+
 
 load_dotenv()
 
@@ -60,9 +69,9 @@ class LeadInfoExtractor:
             return 0
         return len(text) // 4
     
-    def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 500) -> Optional[str]:
+    async def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 500) -> Optional[str]:
         """
-        Call Gemini 2.0 Flash API - matches merged_analytics.py pattern
+        Call Gemini 2.0 Flash API asynchronously using httpx.AsyncClient
         
         Args:
             prompt: The prompt to send to Gemini
@@ -96,10 +105,11 @@ class LeadInfoExtractor:
                 }
             }
             
-            # 10 second timeout - matches merged_analytics.py
-            response = requests.post(url, headers=headers, json=data, timeout=10)
-            
-            if response.status_code == 200:
+            # Use httpx.AsyncClient for async HTTP requests
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, headers=headers, json=data)
+                response.raise_for_status()
+                
                 response_data = response.json()
                 logger.debug("Lead extraction API call successful")
                 
@@ -134,12 +144,14 @@ class LeadInfoExtractor:
                 
                 if "promptFeedback" in response_data:
                     logger.warning(f"Gemini API warning: {response_data.get('promptFeedback', {})}")
-            else:
-                logger.error(f"Gemini API error: {response.status_code} - {response.text[:200]}")
+            
             return None
             
-        except requests.exceptions.Timeout:
+        except httpx.TimeoutException:
             logger.error("Gemini API timeout after 10 seconds")
+            return None
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Gemini API HTTP error: {e.response.status_code} - {e.response.text[:200]}")
             return None
         except Exception as e:
             logger.error(f"Gemini API exception: {str(e)}", exc_info=True)
@@ -342,7 +354,7 @@ CRITICAL RULES:
 """
         
         logger.debug("Calling Gemini API for lead info extraction...")
-        result = self._call_gemini_api(prompt, temperature=0.2, max_output_tokens=500)
+        result = await self._call_gemini_api(prompt, temperature=0.2, max_output_tokens=500)
         
         if not result:
             logger.warning("LLM did not return lead information")
@@ -419,23 +431,284 @@ CRITICAL RULES:
             return None
 
 
-# Module-level instance for easy import
-lead_extractor = LeadInfoExtractor()
-
-
-async def extract_and_save_lead_info(conversation_text: str, call_id: str, summary: Optional[Dict] = None) -> Optional[str]:
+class StandaloneLeadInfoExtractor:
     """
-    Convenience function to extract and save lead info in one call
+    Standalone lead info extractor for local runs, similar to StandaloneStudentExtractor in lad_dev.py.
     
-    Args:
-        conversation_text: Full conversation transcript
-        call_id: Call identifier
-        summary: Optional summary dict from post-call analysis
-        
-    Returns:
-        Path to saved JSON file or None
+    - Reads calls from lad_dev.voice_call_logs
+    - Extracts lead information with LeadInfoExtractor (Gemini)
+    - Saves to JSON and optionally to lad_dev.leads via async LeadInfoStorage
     """
-    lead_info = await lead_extractor.extract_lead_information(conversation_text, summary)
-    if lead_info:
-        return lead_extractor.save_to_json(lead_info, call_id)
-    return None
+    
+    def __init__(self, db_config: Optional[Dict] = None):
+        self.extractor = LeadInfoExtractor()
+        self.db_config = db_config
+    
+    def _get_db_connection(self):
+        if not DB_AVAILABLE:
+            raise ImportError("psycopg2 not installed. Install with: pip install psycopg2-binary")
+        if not self.db_config:
+            raise ValueError("Database config not provided. Use --db-host, --db-name, --db-user, --db-pass or .env file")
+        return psycopg2.connect(**self.db_config)
+    
+    async def list_database_calls(self) -> None:
+        """
+        List calls from lad_dev.voice_call_logs with row numbers (like lad_dev.StandaloneStudentExtractor).
+        """
+        if not DB_AVAILABLE:
+            raise ImportError("psycopg2 not installed. Install with: pip install psycopg2-binary")
+        
+        conn = self._get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        logger.info("Listing calls from database (lad_dev.voice_call_logs) for lead info...")
+        logger.info("=" * 80)
+        try:
+            cursor.execute(
+                """
+                SELECT
+                    ROW_NUMBER() OVER (ORDER BY ctid) as row_num,
+                    id,
+                    started_at,
+                    ended_at,
+                    transcripts,
+                    lead_id,
+                    tenant_id
+                FROM lad_dev.voice_call_logs
+                ORDER BY ctid
+                LIMIT 500000
+                """
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                logger.warning("No calls found in lad_dev.voice_call_logs.")
+                return
+            
+            header = f"{'Row':<6} {'UUID':<40} {'Started At':<20} {'Duration':<10} {'Lead ID':<40} {'Transcript Preview'}"
+            logger.info(header)
+            logger.info("-" * 80)
+            for row in rows:
+                call_id = row["id"]
+                started_at = row.get("started_at")
+                ended_at = row.get("ended_at")
+                transcripts = row.get("transcripts")
+                lead_id = row.get("lead_id")
+                
+                transcript_preview = "No transcript"
+                if transcripts:
+                    try:
+                        if isinstance(transcripts, (dict, list)):
+                            t_str = json.dumps(transcripts)
+                        else:
+                            t_str = str(transcripts)
+                        if t_str:
+                            preview = t_str[:50]
+                            if len(t_str) > 50:
+                                preview += "..."
+                            transcript_preview = preview
+                    except Exception:
+                        transcript_preview = "Invalid transcript format"
+                
+                duration = ""
+                if started_at and ended_at:
+                    try:
+                        duration_seconds = int((ended_at - started_at).total_seconds())
+                        duration = f"{duration_seconds}s"
+                    except Exception:
+                        duration = ""
+                
+                started_str = started_at.strftime("%Y-%m-%d %H:%M:%S") if started_at else "N/A"
+                lead_id_str = str(lead_id) if lead_id else "None"
+                row_num = row["row_num"]
+                info = f"{row_num:<6} {str(call_id):<40} {started_str:<20} {duration:<10} {lead_id_str:<40} {transcript_preview}"
+                logger.info(info)
+            
+            logger.info("-" * 80)
+            logger.info("Row numbers match pgAdmin's default display order (physical storage order)")
+            logger.info("To extract lead info from a call, use: python lead_info_extractor.py --db-id <row_number>")
+            logger.info("Or use UUID directly: python lead_info_extractor.py --db-id <uuid_string>")
+        finally:
+            cursor.close()
+            conn.close()
+
+    async def extract_from_database(
+        self,
+        call_log_id,
+        save_to_db: bool = True,
+        save_to_json: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Extract lead info from lad_dev.voice_call_logs by row number or UUID.
+        
+        - call_log_id: row number (int) or UUID string from lad_dev.voice_call_logs.id
+        - save_to_db: if True, also save to lad_dev.leads using async LeadInfoStorage
+        - save_to_json: if True, save JSON export
+        """
+        if not DB_AVAILABLE:
+            raise ImportError("psycopg2 not installed. Install with: pip install psycopg2-binary")
+        
+        conn = self._get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        logger.info(f"Fetching call from database lad_dev.voice_call_logs (ID: {call_log_id}) for lead info")
+        try:
+            # Interpret call_log_id as row number or UUID
+            try:
+                row_num = int(call_log_id)
+                use_row = True
+            except (ValueError, TypeError):
+                use_row = False
+            
+            if use_row:
+                cursor.execute(
+                    """
+                    SELECT id, transcripts, started_at, ended_at, lead_id, tenant_id
+                    FROM (
+                        SELECT
+                            id,
+                            transcripts,
+                            started_at,
+                            ended_at,
+                            lead_id,
+                            tenant_id,
+                            ROW_NUMBER() OVER (ORDER BY ctid) as row_num
+                        FROM lad_dev.voice_call_logs
+                    ) ranked
+                    WHERE row_num = %s
+                    """,
+                    (row_num,),
+                )
+            else:
+                try:
+                    cursor.execute(
+                        """
+                        SELECT id, transcripts, started_at, ended_at, lead_id, tenant_id
+                        FROM lad_dev.voice_call_logs
+                        WHERE id = %s::uuid
+                        """,
+                        (str(call_log_id),),
+                    )
+                except Exception:
+                    cursor.execute(
+                        """
+                        SELECT id, transcripts, started_at, ended_at, lead_id, tenant_id
+                        FROM lad_dev.voice_call_logs
+                        WHERE id::text = %s
+                        """,
+                        (str(call_log_id),),
+                    )
+            
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError(f"Call log {call_log_id} not found in lad_dev.voice_call_logs")
+            
+            db_call_id = row["id"]
+            transcripts = row["transcripts"]
+            started_at = row.get("started_at")
+            ended_at = row.get("ended_at")
+            lead_id = row.get("lead_id")
+            tenant_id = row.get("tenant_id")
+            
+            if not transcripts:
+                raise ValueError(f"No transcript found for call {call_log_id}")
+            
+            # Convert transcripts to conversation text (same style as lad_dev.py)
+            if isinstance(transcripts, dict):
+                if "messages" in transcripts and isinstance(transcripts["messages"], list):
+                    conversation_log: List[Dict[str, Any]] = transcripts["messages"]
+                    conversation_text = "\n".join(
+                        f"{entry.get('role', 'Unknown').title()}: {entry.get('message', entry.get('text', ''))}"
+                        for entry in conversation_log
+                    )
+                elif any(k in transcripts for k in ["role", "message", "text"]):
+                    role = transcripts.get("role", "Unknown").title()
+                    message = transcripts.get("message") or transcripts.get("text", "")
+                    conversation_text = f"{role}: {message}"
+                else:
+                    if "text" in transcripts:
+                        conversation_text = str(transcripts["text"])
+                    elif "transcript" in transcripts:
+                        conversation_text = str(transcripts["transcript"])
+                    elif "content" in transcripts:
+                        conversation_text = str(transcripts["content"])
+                    else:
+                        conversation_text = json.dumps(transcripts)
+            elif isinstance(transcripts, list):
+                conversation_text = "\n".join(
+                    f"{entry.get('role', 'Unknown').title()}: {entry.get('message', entry.get('text', ''))}"
+                    if isinstance(entry, dict)
+                    else str(entry)
+                    for entry in transcripts
+                )
+            else:
+                conversation_text = str(transcripts)
+            
+            logger.info(
+                "Call ID: %s, Started: %s, Ended: %s, Lead ID: %s, Tenant ID: %s",
+                db_call_id,
+                started_at,
+                ended_at,
+                lead_id,
+                tenant_id,
+            )
+            logger.info("Conversation text length: %s characters", len(conversation_text))
+            
+            # Extract lead information
+            result = await extract_and_save_lead_info(conversation_text, str(db_call_id), summary=None)
+            if not result:
+                logger.info("No lead information found in this call transcript")
+                return None
+            
+            lead_info = result.get("lead_info")
+            json_path = result.get("json_path")
+            
+            if json_path and save_to_json:
+                logger.info("Lead info saved to JSON file: %s", json_path)
+            
+            # Save to lad_dev.leads using asyncpg storage (LeadInfoStorage) if requested
+            if save_to_db and lead_info:
+                try:
+                    from db.lead_info_storage import LeadInfoStorage
+
+                    storage = LeadInfoStorage()
+                    try:
+                        tenant_str = str(tenant_id) if tenant_id else None
+                        lead_db_id = await storage.save_lead_from_extraction(
+                            tenant_id=tenant_str,
+                            lead_info=lead_info,
+                            call_id=str(db_call_id),
+                        )
+                        if lead_db_id:
+                            logger.info(
+                                "Lead info saved to lad_dev.leads with id=%s for call_log_id=%s",
+                                lead_db_id,
+                                db_call_id,
+                            )
+                        else:
+                            logger.warning(
+                                "Lead info not saved to lad_dev.leads (missing phone/tenant) for call_log_id=%s",
+                                db_call_id,
+                            )
+                    finally:
+                        await storage.close()
+                except ImportError:
+                    logger.warning(
+                        "LeadInfoStorage not available; skipping lad_dev.leads save for call_log_id=%s",
+                        db_call_id,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to save lead info to lad_dev.leads for call_log_id=%s: %s",
+                        db_call_id,
+                        exc,
+                        exc_info=True,
+                    )
+            
+            return {
+                "lead_info": lead_info,
+                "json_path": json_path,
+                "call_id": str(db_call_id),
+                "lead_id": str(lead_id) if lead_id else None,
+                "tenant_id": str(tenant_id) if tenant_id else None,
+            }
+        finally:
+            cursor.close()
+            conn.close()
