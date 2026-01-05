@@ -195,3 +195,14 @@ def attach_transcription_tracker(session, recorder: CallRecorder) -> None:
     tracker = TranscriptionTracker(recorder)
     session.output.transcription = RecorderTextOutput(tracker, text_sink)
     session.output.audio = RecorderAudioOutput(tracker, audio_sink)
+    
+    # Subscribe to user speech events to capture STT transcripts
+    @session.on("user_input_transcribed")
+    def _on_user_input_transcribed(event):
+        """Capture user speech from STT into recorder transcription."""
+        transcript = getattr(event, "transcript", None)
+        if transcript and transcript.strip():
+            logger.debug("User speech captured: %s", transcript[:100])
+            recorder.on_user_speech(transcript)
+    
+    logger.debug("Transcription tracker and user speech event attached to session")
