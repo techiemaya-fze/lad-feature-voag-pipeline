@@ -19,9 +19,15 @@ from tool_builder.py via get_tool_instructions() and get_template_instructions_f
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
+import pytz
+
 logger = logging.getLogger(__name__)
+
+# Gulf Standard Time (GST = UTC+4, Asia/Dubai)
+GST_TIMEZONE = pytz.timezone('Asia/Dubai')
 
 
 # =============================================================================
@@ -79,6 +85,19 @@ class InstructionBuilder:
             Combined instructions string
         """
         sections: list[str] = []
+        
+        # 0. Current Time Context (CRITICAL for scheduling)
+        # Include Gulf Standard Time (GST = UTC+4) as the reference time
+        gst_now = datetime.now(GST_TIMEZONE)
+        time_block = f"""# CURRENT TIME REFERENCE (CRITICAL)
+**Current Date & Time (Gulf Standard Time / GST / UTC+4):**
+- Date: {gst_now.strftime('%A, %B %d, %Y')}
+- Time: {gst_now.strftime('%I:%M %p')} GST
+- Day of Week: {gst_now.strftime('%A')}
+
+⚠️ IMPORTANT: You MUST use this time as your reference for ALL scheduling, appointments, and time-related discussions. This is the customer's local time. Do NOT guess the time or use any other time source."""
+        sections.append(time_block)
+        logger.debug(f"Added GST time context: {gst_now.strftime('%Y-%m-%d %H:%M:%S')} GST")
         
         # 1. System instructions
         system_block = (self.system_instructions or "").strip()
