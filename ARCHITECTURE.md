@@ -12,9 +12,14 @@ The **v2** folder contains the modular, production-ready implementation of the V
 v2/
 ├── .env                          # Environment variables (secrets, API keys)
 ├── .env.example                  # Template for environment variables
+├── .gitignore                    # Git ignore file (ignores secrets/, .env, etc.)
+├── pyproject.toml                # Python project config and dependencies
 ├── main.py                       # FastAPI application entry point
 ├── schema_analysis.txt           # Database schema documentation
-├── salesmaya-yts-*.json          # GCS service account credentials
+│
+├── secrets/                      # 🔐 Credential Files (gitignored)
+│   ├── salesmaya-yts-*.json      # GCS service account credentials
+│   └── google_oauth_client_secret.json  # Google OAuth client credentials
 │
 ├── agent/                        # 🎯 Core Voice Agent Components
 │   ├── __init__.py               # Package exports
@@ -66,7 +71,8 @@ v2/
 │       ├── email_templates.py    # Email template storage
 │       ├── call_analysis.py      # Post-call analysis results
 │       ├── numbers.py            # Phone number management
-│       └── voices.py             # Custom voice configurations
+│       ├── voices.py             # Custom voice configurations
+│       └── lead_bookings.py      # Lead bookings storage
 │
 ├── tools/                        # 🔧 Agent Tools (Function Calling)
 │   ├── google_workspace.py       # AgentGoogleWorkspace - OAuth wrapper
@@ -99,9 +105,11 @@ v2/
 │   ├── batch_report.py           # Batch campaign reports
 │   ├── lead_extractor.py         # Lead extraction from transcripts
 │   ├── lead_info_extractor.py    # Detailed lead info extraction
+│   ├── lead_bookings_extractor.py# Lead bookings extraction from calls
+│   ├── schedule_calculator.py    # Follow-up schedule calculation
 │   ├── student_extractor.py      # G-Links student extraction
 │   ├── lad_dev.py                # LAD schema analytics
-│   ├── runner.py                 # CLI analytics runner
+│   ├── runner.py                 # CLI analytics runner + vertical routing
 │   ├── logs/                     # Analytics logs
 │   ├── exports/                  # CSV/Excel exports
 │   └── json_exports/             # JSON data exports
@@ -160,12 +168,21 @@ The heart of the voice agent system. Handles LiveKit integration, conversation f
 | `instruction_builder.py` | Agent prompt generation - builds system instructions from templates | worker.py |
 | `cleanup_handler.py` | Post-call cleanup - saves transcripts, calculates costs, updates call status | worker.py |
 
+#### VoiceAssistant Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Graceful Hangup** | When `hangup_call()` is invoked, waits for TTS parting words to complete, then waits 1 second before ending call. |
+| **Interruption Cancellation** | If user speaks during parting words, pending hangup is cancelled and call continues. Uses `_on_agent_speech_end` callback from CallRecorder. |
+| **Silence Monitoring** | Automatic warning prompts and hangup after configurable silence timeout. |
+| **Human Support Handoff** | Blocks `hangup_call` when human support has joined the call. |
+
 #### `agent/providers/` - LLM/TTS Factories
 
 | File | Purpose |
 |------|---------|
 | `llm_builder.py` | Creates LLM instances (Gemini 2.0 Flash, OpenAI GPT-4) |
-| `tts_builder.py` | Creates TTS engines (Google Cloud TTS, ElevenLabs) |
+| `tts_builder.py` | Creates TTS engines (Google Cloud TTS, ElevenLabs, Cartesia) |
 
 ---
 
@@ -273,9 +290,50 @@ Runs after calls complete to extract insights and generate reports.
 | `call_report.py` | Single call report generation |
 | `batch_report.py` | Batch campaign summary reports |
 | `lead_extractor.py` | Extract lead info from transcripts |
+| `lead_bookings_extractor.py` | Extract bookings/follow-ups from calls (Gemini AI) |
+| `schedule_calculator.py` | Calculate follow-up schedules (stage-based timelines) |
 | `student_extractor.py` | G-Links specific student extraction |
 | `lad_dev.py` | LAD schema analytics |
-| `runner.py` | CLI entry point for analytics |
+| `runner.py` | CLI entry point + vertical routing |
+
+---
+
+### Post-Call Cleanup Flow
+
+The cleanup flow is triggered when a call ends (`agent/cleanup_handler.py`). It orchestrates multiple steps:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        cleanup_and_save(ctx)                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│ Step │ Function                        │ File Involved                 │
+├──────┼─────────────────────────────────┼───────────────────────────────┤
+│  1   │ stop_and_save_recording()       │ recording/recorder.py         │
+│      │                                 │ db/storage/calls.py           │
+│  2   │ get_transcription()             │ recording/transcription.py    │
+│  3   │ Load call details               │ db/storage/calls.py           │
+│  4   │ calculate_and_save_cost()       │ utils/usage_tracker.py        │
+│  5   │ update_call_status()            │ db/storage/calls.py           │
+│  6   │ trigger_post_call_analysis()    │ analysis/runner.py            │
+│      │   └── run_post_call_analysis()  │ analysis/merged_analytics.py  │
+│      │       └── route_lead_extraction()│ utils/vertical_routing.py   │
+│  7   │ trigger_lead_bookings_extraction()│ analysis/lead_bookings_extractor.py │
+│      │   └── LeadBookingsExtractor     │ db/lead_bookings_storage.py   │
+│      │       └── ScheduleCalculator    │ analysis/schedule_calculator.py │
+│  8   │ stop_background_audio()         │ (internal audio cleanup)      │
+│  9   │ Release semaphore               │ (concurrency control)         │
+└──────┴─────────────────────────────────┴───────────────────────────────┘
+```
+
+#### Key Cleanup Files
+
+| File | Purpose |
+|------|---------|
+| `agent/cleanup_handler.py` | Orchestrates all cleanup steps, defines `CleanupContext` |
+| `analysis/runner.py` | Routes post-call analysis, calls `route_lead_extraction()` |
+| `analysis/lead_bookings_extractor.py` | Extracts follow-up/consultation bookings using Gemini AI |
+| `analysis/schedule_calculator.py` | Calculates next call time based on lead stage/grade |
+| `db/lead_bookings_storage.py` | Stores bookings to `lad_dev.lead_bookings` table |
 
 ---
 

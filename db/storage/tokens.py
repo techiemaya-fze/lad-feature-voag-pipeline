@@ -74,6 +74,32 @@ class UserTokenStorage:
         """Alias for get_user_by_user_id (UUID is the primary key)."""
         return await self.get_user_by_user_id(user_pk)
 
+    async def get_user_tenant_id(self, user_id: str) -> Optional[str]:
+        """Get primary_tenant_id for a user.
+        
+        Args:
+            user_id: User UUID
+            
+        Returns:
+            primary_tenant_id if found, None otherwise
+        """
+        if not user_id:
+            return None
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT primary_tenant_id FROM lad_dev.users WHERE id = %s",
+                        (user_id,),
+                    )
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        return str(row[0])
+                    return None
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to get tenant for user %s: %s", user_id, exc, exc_info=True)
+            return None
+
     # =========================================================================
     # Identity/Token Lookup Methods
     # =========================================================================

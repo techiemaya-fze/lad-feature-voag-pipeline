@@ -28,10 +28,11 @@ def get_vertical_from_slug(slug: str | None) -> str:
     """
     Determine vertical from tenant slug.
     
-    Format: "{vertical}-{client_name}"
+    Format: "{vertical}_{client}" or "{vertical}-{client}"
     Example: 
+      - "education_glinks" -> "education"
       - "education-glinks" -> "education"
-      - "realestate-agency" -> "realestate"
+      - "realestate_agency" -> "realestate"
       - "general-company" -> "general"
     
     Args:
@@ -45,9 +46,10 @@ def get_vertical_from_slug(slug: str | None) -> str:
         
     normalized = slug.lower().strip()
     
-    if normalized == "g_links" or normalized.startswith("education-"):
+    # Handle both underscore and hyphen formats
+    if normalized == "g_links" or normalized.startswith("education_") or normalized.startswith("education-"):
         return "education"
-    elif normalized.startswith("realestate-"):
+    elif normalized.startswith("realestate_") or normalized.startswith("realestate-"):
         return "realestate"
         
     return "general"

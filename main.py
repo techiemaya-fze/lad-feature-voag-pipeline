@@ -20,8 +20,21 @@ import os
 import logging
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+
+# Load environment variables first
+load_dotenv()
+
+# ============================================================================
+# NON-BLOCKING LOGGING SETUP (MUST BE BEFORE OTHER IMPORTS)
+# ============================================================================
+from utils.logger_config import configure_non_blocking_logging
+
+# MAIN_PY_LOG_LEVEL takes precedence, falls back to LOG_LEVEL
+_main_log_level = os.getenv("MAIN_PY_LOG_LEVEL") or os.getenv("LOG_LEVEL")
+_log_listener = configure_non_blocking_logging(level=_main_log_level)
 
 # Import routes
 from api.routes import (
@@ -139,10 +152,12 @@ if __name__ == "__main__":
     import uvicorn
     
     port = int(os.getenv("PORT", "8000"))
+    workers = int(os.getenv("UVICORN_WORKERS", "1"))
+    
     uvicorn.run(
-        "v2.main:app",
+        "main:app",
         host="0.0.0.0",
         port=port,
-        reload=True,
-        log_level="info",
+        workers=workers,
+        log_level=os.getenv("UVICORN_LOG_LEVEL", "info").lower(),
     )

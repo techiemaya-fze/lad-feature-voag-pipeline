@@ -2645,10 +2645,10 @@ CONFIDENCE: [High/Medium/Low]"""
                 to_text(summary.get("prospect_questions", [])),             # prospect_questions (TEXT)
                 to_text(summary.get("prospect_concerns", [])),              # prospect_concerns (TEXT)
                 summary.get("recommendations", ""),                         # recommendations
-                lead.get("lead_category", ""),                              # lead_category
-                quality.get("engagement_level", ""),                        # engagement_level
+                lead.get("lead_category", ""),                              # lead_category (TEXT)
+                quality.get("engagement_level", ""),                        # engagement_level (TEXT)
                 to_text(stage.get("stages_reached", [])),                   # stages_reached (TEXT)
-                disposition.get("disposition", ""),                         # disposition
+                disposition.get("disposition", ""),                         # disposition (TEXT)
                 disposition.get("recommended_action", ""),                  # recommended_action
                 cost_numeric,                                               # cost (numeric)
                 Json(key_points_data),                                      # key_points (JSONB, NEW)

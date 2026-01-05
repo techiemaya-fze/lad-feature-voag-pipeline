@@ -7,6 +7,13 @@ from typing import Any, Iterable, Mapping
 
 from .merged_analytics import analytics
 
+# Vertical routing for lead extraction to vertical-specific tables
+try:
+    from utils.vertical_routing import route_lead_extraction
+    VERTICAL_ROUTING_AVAILABLE = True
+except ImportError:
+    VERTICAL_ROUTING_AVAILABLE = False
+
 logger = logging.getLogger("post_call_analysis.runner")
 
 
@@ -75,6 +82,7 @@ async def run_post_call_analysis(
     call_details: Mapping[str, Any] | None,
     db_config: Mapping[str, Any] | None,
     tenant_id: str | None = None,  # Multi-tenancy support
+    lead_id: str | None = None,  # Lead ID for vertical routing
 ) -> bool:
     """Invoke the legacy merged analytics pipeline and persist results."""
 
@@ -125,4 +133,30 @@ async def run_post_call_analysis(
         logger.error("Saving analytics failed for call_log_id=%s: %s", call_log_id, exc, exc_info=True)
         return False
 
+    # ===== VERTICAL ROUTING =====
+    # Route lead extraction to vertical-specific tables based on tenant
+    if saved and tenant_id and VERTICAL_ROUTING_AVAILABLE:
+        try:
+            routing_result = await route_lead_extraction(
+                call_log_id=str(call_log_id),
+                tenant_id=tenant_id,
+                conversation=conversation,
+                lead_id=lead_id,
+                db_config=dict(db_config)
+            )
+            if routing_result.routed:
+                logger.info(
+                    "Vertical routing: call_log_id=%s routed to %s (vertical=%s)",
+                    call_log_id, routing_result.target_table, routing_result.vertical
+                )
+            else:
+                logger.debug(
+                    "Vertical routing: call_log_id=%s not routed (vertical=%s, reason=%s)",
+                    call_log_id, routing_result.vertical, routing_result.error or "general vertical"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Vertical routing failed for call_log_id=%s: %s", call_log_id, exc)
+            # Don't fail the overall analysis if vertical routing fails
+
     return bool(saved)
+

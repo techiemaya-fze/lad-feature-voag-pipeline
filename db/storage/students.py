@@ -15,8 +15,8 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
-# Import connection pool manager
-from db.connection_pool import get_raw_connection, return_connection, USE_CONNECTION_POOLING
+# Import connection pool manager (context manager pattern)
+from db.connection_pool import get_db_connection
 # Import centralized DB config (respects USE_LOCAL_DB toggle)
 from db.db_config import get_db_config
 
@@ -34,14 +34,7 @@ class StudentStorage:
         """Initialize database connection using centralized config"""
         self.db_config = get_db_config()
     
-    def _get_connection(self):
-        """Get raw database connection (must be returned with _return_connection)"""
-        return get_raw_connection(self.db_config)
-    
-    def _return_connection(self, conn):
-        """Return connection to pool if pooling is enabled"""
-        if USE_CONNECTION_POOLING:
-            return_connection(conn, self.db_config)
+    # Note: Uses get_db_connection() context manager for automatic cleanup
     
     async def get_student_by_contact(self, parent_contact: str) -> Optional[Dict]:
         """
@@ -53,45 +46,36 @@ class StudentStorage:
         Returns:
             Student dict if found, None otherwise
         """
-        conn = None
-        cursor = None
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
-            
-            cursor.execute(
-                """
-                SELECT id, student_name, parent_name, parent_contact, email,
-                       country_of_residence, grade_year, school_name,
-                       counsellor_meeting_link, tags, stage, status,
-                       counsellor_email, created_at
-                FROM lad_dev.education_students
-                WHERE parent_contact = %s
-                LIMIT 1
-                """,
-                (parent_contact,)
-            )
-            
-            result = cursor.fetchone()
-            cursor.close()
-            self._return_connection(conn)
-            
-            if result:
-                # Convert UUID to string for consistent handling
-                result_dict = dict(result)
-                result_dict['id'] = str(result_dict['id'])
-                logger.info(f"Found existing student: id={result_dict['id']}, contact={parent_contact}")
-                return result_dict
-            else:
-                logger.debug(f"No student found for contact: {parent_contact}")
-                return None
+            with get_db_connection(self.db_config) as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, student_name, parent_name, parent_contact, email,
+                               country_of_residence, grade_year, school_name,
+                               counsellor_meeting_link, tags, stage, status,
+                               counsellor_email, created_at
+                        FROM lad_dev.education_students
+                        WHERE parent_contact = %s
+                        LIMIT 1
+                        """,
+                        (parent_contact,)
+                    )
+                    
+                    result = cursor.fetchone()
+                    
+                    if result:
+                        # Convert UUID to string for consistent handling
+                        result_dict = dict(result)
+                        result_dict['id'] = str(result_dict['id'])
+                        logger.info(f"Found existing student: id={result_dict['id']}, contact={parent_contact}")
+                        return result_dict
+                    else:
+                        logger.debug(f"No student found for contact: {parent_contact}")
+                        return None
                 
         except Exception as e:
             logger.error(f"Error getting student by contact {parent_contact}: {e}", exc_info=True)
-            if cursor:
-                cursor.close()
-            if conn:
-                self._return_connection(conn)
             return None
     
     async def create_student(
@@ -125,79 +109,64 @@ class StudentStorage:
         Returns:
             Student record dict with UUID id if successful, None otherwise
         """
-        conn = None
-        cursor = None
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                """
-                INSERT INTO lad_dev.education_students 
-                (parent_contact, student_name, parent_name, email, 
-                 country_of_residence, lead_source, counsellor_meeting_link,
-                 grade_year, school_name, tags)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (
-                    parent_contact, 
-                    student_name, 
-                    parent_name, 
-                    email,
-                    country_of_residence,
-                    lead_source,
-                    counsellor_meeting_link,
-                    grade_year,
-                    school_name,
-                    tags
-                )
-            )
-            
-            record = cursor.fetchone()
-            student_id = str(record[0]) if record else None  # UUID as string
-            conn.commit()
-            cursor.close()
-            self._return_connection(conn)
-            
-            if student_id is None:
-                logger.warning(f"No student id returned when creating contact={parent_contact}")
-                return None
+            with get_db_connection(self.db_config) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO lad_dev.education_students 
+                        (parent_contact, student_name, parent_name, email, 
+                         country_of_residence, lead_source, counsellor_meeting_link,
+                         grade_year, school_name, tags)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                        """,
+                        (
+                            parent_contact, 
+                            student_name, 
+                            parent_name, 
+                            email,
+                            country_of_residence,
+                            lead_source,
+                            counsellor_meeting_link,
+                            grade_year,
+                            school_name,
+                            tags
+                        )
+                    )
+                    
+                    record = cursor.fetchone()
+                    student_id = str(record[0]) if record else None  # UUID as string
+                    conn.commit()
+                    
+                    if student_id is None:
+                        logger.warning(f"No student id returned when creating contact={parent_contact}")
+                        return None
 
-            logger.info(f"Created new student: id={student_id}, contact={parent_contact}")
-            return {
-                "id": student_id,
-                "parent_contact": parent_contact,
-                "student_name": student_name,
-                "parent_name": parent_name,
-                "email": email,
-                "country_of_residence": country_of_residence,
-                "lead_source": lead_source,
-                "counsellor_meeting_link": counsellor_meeting_link,
-                "grade_year": grade_year,
-                "school_name": school_name,
-                "tags": tags,
-            }
+                    logger.info(f"Created new student: id={student_id}, contact={parent_contact}")
+                    return {
+                        "id": student_id,
+                        "parent_contact": parent_contact,
+                        "student_name": student_name,
+                        "parent_name": parent_name,
+                        "email": email,
+                        "country_of_residence": country_of_residence,
+                        "lead_source": lead_source,
+                        "counsellor_meeting_link": counsellor_meeting_link,
+                        "grade_year": grade_year,
+                        "school_name": school_name,
+                        "tags": tags,
+                    }
             
         except psycopg2.IntegrityError as e:
             # Handle potential duplicates
             logger.warning(f"Student with contact {parent_contact} may already exist: {e}")
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.rollback()
-                self._return_connection(conn)
             # Try to get existing student
             existing = await self.get_student_by_contact(parent_contact)
             return existing
             
         except Exception as e:
             logger.error(f"Error creating student for contact {parent_contact}: {e}", exc_info=True)
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.rollback()
-                self._return_connection(conn)
             return None
 
     async def _set_name_if_missing(self, student_id: str, student_name: str) -> bool:
@@ -205,35 +174,26 @@ class StudentStorage:
         if not student_name:
             return False
 
-        conn = None
-        cursor = None
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE lad_dev.education_students
-                SET student_name = %s
-                WHERE id = %s::uuid
-                AND (student_name IS NULL OR LENGTH(TRIM(student_name)) = 0)
-                RETURNING id
-                """,
-                (student_name, student_id)
-            )
-            updated = cursor.fetchone() is not None
-            conn.commit()
-            cursor.close()
-            self._return_connection(conn)
-            if updated:
-                logger.info(f"Updated missing name for student id={student_id}")
-            return updated
+            with get_db_connection(self.db_config) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE lad_dev.education_students
+                        SET student_name = %s
+                        WHERE id = %s::uuid
+                        AND (student_name IS NULL OR LENGTH(TRIM(student_name)) = 0)
+                        RETURNING id
+                        """,
+                        (student_name, student_id)
+                    )
+                    updated = cursor.fetchone() is not None
+                    conn.commit()
+                    if updated:
+                        logger.info(f"Updated missing name for student id={student_id}")
+                    return updated
         except Exception as e:
             logger.error(f"Error updating missing name for student {student_id}: {e}", exc_info=True)
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.rollback()
-                self._return_connection(conn)
             return False
     
     async def find_or_create_student(
@@ -303,42 +263,33 @@ class StudentStorage:
         Returns:
             Student dict if found, None otherwise
         """
-        conn = None
-        cursor = None
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
-            
-            cursor.execute(
-                """
-                SELECT id, student_name, parent_name, parent_contact, email,
-                       country_of_residence, grade_year, school_name,
-                       counsellor_meeting_link, tags, stage, status,
-                       counsellor_email, created_at
-                FROM lad_dev.education_students
-                WHERE id = %s::uuid
-                """,
-                (student_id,)
-            )
-            
-            result = cursor.fetchone()
-            cursor.close()
-            self._return_connection(conn)
-            
-            if result:
-                result_dict = dict(result)
-                result_dict['id'] = str(result_dict['id'])
-                return result_dict
-            else:
-                logger.debug(f"No student found for id: {student_id}")
-                return None
+            with get_db_connection(self.db_config) as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, student_name, parent_name, parent_contact, email,
+                               country_of_residence, grade_year, school_name,
+                               counsellor_meeting_link, tags, stage, status,
+                               counsellor_email, created_at
+                        FROM lad_dev.education_students
+                        WHERE id = %s::uuid
+                        """,
+                        (student_id,)
+                    )
+                    
+                    result = cursor.fetchone()
+                    
+                    if result:
+                        result_dict = dict(result)
+                        result_dict['id'] = str(result_dict['id'])
+                        return result_dict
+                    else:
+                        logger.debug(f"No student found for id: {student_id}")
+                        return None
                 
         except Exception as e:
             logger.error(f"Error getting student by id {student_id}: {e}", exc_info=True)
-            if cursor:
-                cursor.close()
-            if conn:
-                self._return_connection(conn)
             return None
 
     async def update_student_info(
@@ -381,9 +332,6 @@ class StudentStorage:
                 logger.warning("No fields to update")
                 return False
             
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            
             # Build dynamic UPDATE query
             set_clauses = [f"{key} = %s" for key in updates.keys()]
             params = list(updates.values())
@@ -395,22 +343,19 @@ class StudentStorage:
                 WHERE id = %s::uuid
             """
             
-            cursor.execute(query, params)
-            rows_updated = cursor.rowcount
-            conn.commit()
-            cursor.close()
-            self._return_connection(conn)
-            
-            if rows_updated > 0:
-                logger.info(f"Updated student: id={student_id}")
-                return True
-            else:
-                logger.warning(f"No student found with id={student_id}")
-                return False
+            with get_db_connection(self.db_config) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, params)
+                    rows_updated = cursor.rowcount
+                    conn.commit()
+                    
+                    if rows_updated > 0:
+                        logger.info(f"Updated student: id={student_id}")
+                        return True
+                    else:
+                        logger.warning(f"No student found with id={student_id}")
+                        return False
                 
         except Exception as e:
             logger.error(f"Error updating student {student_id}: {e}", exc_info=True)
-            if conn:
-                conn.rollback()
-                self._return_connection(conn)
             return False

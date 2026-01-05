@@ -618,6 +618,7 @@ CRITICAL RULES WITH EXAMPLES:
                         lead_id_uuid = None
             
             # Prepare INSERT query with tenant_id and lead_id
+            # Use ON CONFLICT to handle duplicates (UPSERT)
             query = """
                 INSERT INTO lad_dev.education_students (
                     tenant_id,
@@ -635,6 +636,17 @@ CRITICAL RULES WITH EXAMPLES:
                 ) VALUES (
                     %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, FALSE
                 )
+                ON CONFLICT (tenant_id, lead_id)
+                DO UPDATE SET
+                    student_parent_name = EXCLUDED.student_parent_name,
+                    parent_designation = EXCLUDED.parent_designation,
+                    program_interested_in = EXCLUDED.program_interested_in,
+                    country_interested = EXCLUDED.country_interested,
+                    intake_year = EXCLUDED.intake_year,
+                    intake_month = EXCLUDED.intake_month,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = CURRENT_TIMESTAMP,
+                    is_deleted = FALSE
             """
             
             values = (
@@ -652,8 +664,13 @@ CRITICAL RULES WITH EXAMPLES:
             cursor.execute(query, values)
             conn.commit()
             
-            logger.info(f"Student information saved to database (call_log_id: {call_log_id})")
-            return True
+            # Check if it was an INSERT or UPDATE
+            if cursor.rowcount > 0:
+                logger.info(f"Student information saved/updated to database (call_log_id: {call_log_id})")
+                return True
+            else:
+                logger.warning(f"No rows affected when saving student info (call_log_id: {call_log_id})")
+                return False
             
         except Exception as e:
             logger.error(f"Database save failed: {e}", exc_info=True)

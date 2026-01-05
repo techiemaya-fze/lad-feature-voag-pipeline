@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from api.models import (
     CallJobResponse,
@@ -41,6 +41,8 @@ from api.services.call_service import (
     DEFAULT_GLINKS_KB_STORE_IDS,
 )
 from db.storage import BatchStorage, VoiceStorage
+from db.connection_pool import get_db_connection
+from db.db_config import get_db_config
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,36 @@ def _get_voice_storage() -> VoiceStorage:
     if _voice_storage is None:
         _voice_storage = VoiceStorage()
     return _voice_storage
+
+
+async def _resolve_tenant_id_from_user(user_id: str | None) -> str | None:
+    """
+    Resolve tenant_id from user's primary_tenant_id in lad_dev.users table.
+    
+    Args:
+        user_id: User UUID (initiated_by)
+        
+    Returns:
+        Tenant UUID or None if not found
+    """
+    if not user_id:
+        return None
+    
+    try:
+        # Use standard connection pattern (same as old code)
+        with get_db_connection(get_db_config()) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT primary_tenant_id FROM lad_dev.users WHERE id = %s",
+                    (user_id,)
+                )
+                result = cur.fetchone()
+                if result and result[0]:
+                    return str(result[0])
+                return None
+    except Exception as e:
+        logger.error(f"Failed to resolve tenant_id for user {user_id}: {e}")
+        return None
 
 
 # E.164 pattern for validation
@@ -245,11 +277,20 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
     # Generate job_id with batch- prefix
     job_id = f"batch-{uuid.uuid4().hex}"
     
+    # Resolve tenant_id from initiator's primary_tenant_id
+    tenant_id = await _resolve_tenant_id_from_user(initiator_id)
+    if not tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not resolve tenant_id for initiated_by user"
+        )
+    
     # Create batch record in database
     batch_id = await batch_storage.create_batch(
-        job_id=job_id,
+        tenant_id=tenant_id,
         total_calls=len(entries),
-        initiated_by=initiator_id,
+        job_id=job_id,
+        initiated_by_user_id=initiator_id,
         agent_id=assigned_agent_id,
         voice_id=voice_context.db_voice_id,
         from_number_id=None,  # Would need _resolve_from_number_id helper
@@ -266,15 +307,29 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
     
     logger.info("Created batch record: batch_id=%s, job_id=%s, total_calls=%d", batch_id, job_id, len(entries))
     
-    # Create batch entry records
+    # Create batch entry records and track their IDs
+    entry_ids: list[str] = []
     for i, entry in enumerate(entries):
-        await batch_storage.create_batch_entry(
+        # Store lead_name in metadata since table uses lead_id (UUID FK)
+        entry_metadata = {"entry_index": i}
+        if entry.lead_name:
+            entry_metadata["lead_name"] = entry.lead_name
+        if entry.context:
+            entry_metadata["added_context"] = entry.context
+        
+        entry_id = await batch_storage.create_batch_entry(
+            tenant_id=tenant_id,
             batch_id=batch_id,
-            entry_index=i,
-            to_number=entry.to_number,
-            lead_name=entry.lead_name,
+            to_phone=entry.to_number,
+            lead_id=None,  # Would need lead resolution
             call_log_id=None,
+            metadata=entry_metadata,
         )
+        if entry_id:
+            entry_ids.append(entry_id)
+        else:
+            logger.warning("Failed to create batch entry %d", i)
+            entry_ids.append("")  # Empty placeholder
 
     # Fire and forget the batch processing
     async def _process_batch():
@@ -282,9 +337,14 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
         batch_storage = _get_batch_storage()
         
         for i, entry in enumerate(entries):
+            entry_id = entry_ids[i] if i < len(entry_ids) else None
+            if not entry_id:
+                logger.warning("Skipping entry %d - no entry_id", i)
+                continue
+            
             try:
                 # Update entry status to running
-                await batch_storage.update_batch_entry_status(batch_id, i, "running")
+                await batch_storage.update_batch_entry_status(entry_id, "running")
                 
                 # Dispatch call
                 result = await call_service.dispatch_call(
@@ -299,30 +359,28 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
                     llm_provider=llm_provider_override,
                     llm_model=llm_model_override,
                     knowledge_base_store_ids=entry.knowledge_base_store_ids,
+                    lead_name=entry.lead_name,  # Pass lead_name from batch entry
                     lead_id_override=entry.lead_id,
+                    batch_id=str(batch_id),  # For worker to track batch completion
+                    entry_id=entry_id,  # For worker to update entry status
                 )
                 
-                # Update entry with call log ID
-                await batch_storage.update_batch_entry(
-                    batch_id, i,
-                    call_log_id=result.call_log_id,
-                    status="dispatched",
-                )
+                # Update entry with call log ID and status
+                await batch_storage.update_batch_entry_call_log(batch_id, entry_id, result.call_log_id)
+                await batch_storage.update_batch_entry_status(entry_id, "dispatched")
                 
-                await batch_storage.increment_batch_counters(batch_id, completed_delta=1)
+                # Don't increment completed_calls here - worker will do it when call ends
                 
             except Exception as exc:
                 logger.exception("Batch entry %d failed: %s", i, exc)
-                await batch_storage.update_batch_entry(
-                    batch_id, i,
-                    status="failed",
-                    error_message=str(exc)[:500],
-                )
+                await batch_storage.update_batch_entry_status(entry_id, "failed", error_message=str(exc)[:500])
                 await batch_storage.increment_batch_counters(batch_id, failed_delta=1)
         
-        # Mark batch as completed
-        await batch_storage.update_batch_status(batch_id, "completed")
-        logger.info("Batch %s completed", job_id)
+        # Mark batch as running (not completed - worker will complete when all calls end)
+        await batch_storage.update_batch_status(batch_id, "running")
+        logger.info("Batch %s dispatched all calls, now running", job_id)
+        
+        # NOTE: Batch report is triggered by cleanup_handler when last call completes
 
     asyncio.create_task(_process_batch())
     
@@ -457,4 +515,77 @@ async def cancel_batch(batch_id: str) -> dict[str, Any]:
     }
 
 
+# =============================================================================
+# POST /batch/entry-completed - Worker callback for entry completion
+# =============================================================================
+
+class EntryCompletedRequest(BaseModel):
+    """Request body for entry completion callback."""
+    batch_id: str = Field(..., description="Batch UUID")
+    entry_id: str = Field(..., description="Entry UUID")
+    call_status: str = Field(..., description="Final call status (ended, failed, etc)")
+
+
+@router.post("/entry-completed")
+async def entry_completed_callback(request: EntryCompletedRequest) -> dict:
+    """
+    Internal endpoint for worker to notify that a batch entry call has completed.
+    
+    This runs in main.py (stable process) so report generation won't be killed.
+    
+    Args:
+        batch_id: Batch UUID
+        entry_id: Entry UUID  
+        call_status: Final call status
+    
+    Returns:
+        Status response with batch completion info
+    """
+    batch_storage = _get_batch_storage()
+    
+    # Map call status to entry status
+    entry_status = "completed" if request.call_status in ("ended", "completed") else "failed"
+    
+    # Update entry status
+    await batch_storage.update_batch_entry_status(request.entry_id, entry_status)
+    logger.info(f"Updated batch entry {request.entry_id} to status={entry_status}")
+    
+    # Increment batch counters
+    if entry_status == "completed":
+        await batch_storage.increment_batch_counters(request.batch_id, completed_delta=1)
+    else:
+        await batch_storage.increment_batch_counters(request.batch_id, failed_delta=1)
+    
+    # Check if batch is complete
+    result = await batch_storage.check_and_complete_batch(request.batch_id)
+    
+    if result.get("should_report"):
+        logger.info(f"Batch {request.batch_id} fully complete - triggering report from main server")
+        # Fire and forget - runs in main.py's event loop (stable process)
+        asyncio.create_task(_generate_and_send_batch_report(request.batch_id))
+    
+    return {
+        "status": "ok",
+        "entry_id": request.entry_id,
+        "entry_status": entry_status,
+        "batch_completed": result.get("completed", False),
+        "report_triggered": result.get("should_report", False),
+    }
+
+
+async def _generate_and_send_batch_report(batch_id: str) -> None:
+    """Generate and send batch report email. Runs in main.py's stable event loop."""
+    try:
+        from analysis.batch_report import generate_batch_report
+        logger.info(f"Starting batch report generation for batch_id={batch_id}")
+        result = await generate_batch_report(batch_id, send_email=True)
+        if result.get("status") == "success":
+            logger.info(f"Batch report sent for batch_id={batch_id}")
+        else:
+            logger.warning(f"Batch report failed for batch_id={batch_id}: {result.get('message')}")
+    except Exception as e:
+        logger.error(f"Error generating batch report: {e}", exc_info=True)
+
+
 __all__ = ["router"]
+

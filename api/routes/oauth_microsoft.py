@@ -21,6 +21,8 @@ from utils.microsoft_oauth import (
     token_response_to_storage_format,
 )
 from db.storage.tokens import UserTokenStorage
+from db.db_config import get_db_config
+from db.connection_pool import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +260,7 @@ class MicrosoftOAuthStatusResponse(BaseModel):
     """Response for Microsoft OAuth status check."""
     connected: bool
     connected_account: str | None = None
+    bookings_accessible: bool = False  # True if Bookings API is accessible
     selected_business_id: str | None = None
     selected_business_name: str | None = None
     default_service_id: str | None = None
@@ -462,10 +465,31 @@ async def microsoft_auth_status(user_id: str) -> MicrosoftOAuthStatusResponse:
     # Extract booking config from provider_data
     provider_data = identity.get("provider_data") or {}
     booking_config = provider_data.get("booking_config") or {}
+    
+    # Test if Bookings API is accessible
+    bookings_accessible = False
+    try:
+        # Load tokens to test Bookings API
+        blob = await storage.get_microsoft_token_blob(canonical_id)
+        if blob:
+            encryptor = _get_encryptor()
+            token_payload = encryptor.decrypt_json(blob)
+            access_token = token_payload.get("access_token")
+            if access_token:
+                # Try fetching businesses - if it works, Bookings is accessible
+                try:
+                    businesses = await _fetch_booking_businesses(access_token)
+                    bookings_accessible = businesses is not None  # Even empty list is OK
+                except Exception:
+                    bookings_accessible = False
+    except Exception as e:
+        logger.debug(f"Error checking Bookings access: {e}")
+        bookings_accessible = False
 
     return MicrosoftOAuthStatusResponse(
         connected=True,
         connected_account=identity.get("provider_user_id") or provider_data.get("connected_account"),
+        bookings_accessible=bookings_accessible,
         selected_business_id=booking_config.get("business_id"),
         selected_business_name=booking_config.get("business_name"),
         default_service_id=booking_config.get("service_id"),
@@ -791,7 +815,7 @@ async def save_booking_config(request: SaveConfigRequest) -> dict[str, str]:
     return {"status": "ok", "message": "Configuration saved"}
 
 
-@router.post("/bookings/tenant-defaults")
+@microsoft_router.post("/bookings/tenant-defaults")
 async def save_tenant_booking_defaults(request: SaveTenantToolConfigRequest):
     """
     Save Microsoft Bookings defaults to tenant_features.config.
@@ -802,8 +826,6 @@ async def save_tenant_booking_defaults(request: SaveTenantToolConfigRequest):
     These defaults are used by the voice agent when auto-booking appointments.
     """
     import json
-    from db.db_config import get_db_config
-    from db.connection_pool import get_db_connection
     
     config_data = {
         "business_id": request.business_id,

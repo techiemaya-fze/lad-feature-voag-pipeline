@@ -28,6 +28,26 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Sequence
 
 from dotenv import load_dotenv
+
+# Load environment variables first
+load_dotenv()
+
+# ============================================================================
+# AGENT LOG LEVEL CONFIGURATION
+# ============================================================================
+# AGENT_LOG_LEVEL takes precedence, falls back to LOG_LEVEL
+def _resolve_log_level(value):
+    if value is None:
+        return logging.INFO
+    level_map = {"DEBUG": logging.DEBUG, "INFO": logging.INFO, 
+                 "WARNING": logging.WARNING, "ERROR": logging.ERROR}
+    return level_map.get(value.strip().upper(), logging.INFO)
+
+_agent_log_level = _resolve_log_level(
+    os.getenv("AGENT_LOG_LEVEL") or os.getenv("LOG_LEVEL")
+)
+logging.basicConfig(level=_agent_log_level, format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
+
 from livekit import agents, api
 from livekit.agents import (
     Agent,
@@ -60,8 +80,8 @@ from db.storage.calls import CallStorage
 from db.storage.agents import AgentStorage
 
 # Recording and transcription (v2 internal)
-from call_recorder import CallRecorder
-from transcription_tracker import attach_transcription_tracker
+from recording.recorder import CallRecorder
+from recording.transcription import attach_transcription_tracker
 
 # Utilities (v2 internal)
 from utils.usage_tracker import UsageCollector, is_component_tracking_enabled
@@ -323,6 +343,10 @@ class VoiceAssistant(Agent):
         self.silence_monitor = silence_monitor
         self._is_glinks_agent = is_glinks_agent
         
+        # Hangup control flags
+        self._hangup_pending = False
+        self._hangup_cancelled = False
+        
         if isinstance(initiating_user_id, int):
             self._initiating_user_id: str | None = str(initiating_user_id)
         elif isinstance(initiating_user_id, str):
@@ -335,13 +359,26 @@ class VoiceAssistant(Agent):
         self._human_joined = False
         self._knowledge_base_store_ids = knowledge_base_store_ids or []
         
+        # Register interruption callback to cancel pending hangup
+        if self.call_recorder and hasattr(self.call_recorder, 'register_agent_speech_end_callback'):
+            self.call_recorder.register_agent_speech_end_callback(self._on_agent_speech_end)
+        
         # Pass tools from tool_builder to parent Agent
         super().__init__(instructions=instructions, tools=tools or [])
+    
+    def _on_agent_speech_end(self, was_interrupted: bool) -> None:
+        """Callback when agent speech ends - cancels pending hangup if interrupted."""
+        if was_interrupted and self._hangup_pending:
+            logger.info("Agent speech interrupted during hangup - cancelling hangup")
+            self._hangup_cancelled = True
 
     @function_tool
     async def hangup_call(self, reason: str = "call_complete") -> str:
         """
         End the current call gracefully.
+        
+        Waits for TTS parting words to complete before hanging up.
+        If human interrupts during parting words, hangup is cancelled.
         
         Args:
             reason: Reason for ending (e.g., "call_complete", "not_interested")
@@ -349,21 +386,64 @@ class VoiceAssistant(Agent):
         Returns:
             Confirmation message
         """
-        logger.info(f"Agent hanging up call (reason: {reason})")
+        import asyncio
         
+        logger.info(f"Agent initiating graceful hangup (reason: {reason})")
+        
+        # Disable silence monitor to prevent timeout during goodbye
         if self.silence_monitor:
             self.silence_monitor.disable()
         
-        if self.job_context and self.job_context.room:
-            try:
-                await self.job_context.api.room.delete_room(
-                    api.DeleteRoomRequest(room=self.job_context.room.name)
-                )
-                logger.info(f"Room {self.job_context.room.name} deleted")
-            except Exception as e:
-                logger.error(f"Error deleting room: {e}")
+        # Mark hangup as pending (for interruption detection)
+        self._hangup_pending = True
+        self._hangup_cancelled = False
         
-        return f"Call ended: {reason}"
+        try:
+            # Wait for TTS parting words to complete (if recorder available)
+            if self.call_recorder:
+                try:
+                    tts_completed = await self.call_recorder.wait_for_tts_playout(timeout=20.0)
+                    if not tts_completed:
+                        logger.warning("TTS playout wait timed out, proceeding with hangup")
+                except Exception as e:
+                    logger.warning(f"Error waiting for TTS playout: {e}")
+            
+            # Check if hangup was cancelled due to interruption
+            if getattr(self, '_hangup_cancelled', False):
+                logger.info("Hangup cancelled - human interrupted during parting words")
+                self._hangup_pending = False
+                return "Hangup cancelled - user is speaking"
+            
+            # Wait 1 second after TTS for natural pause
+            await asyncio.sleep(1.0)
+            
+            # Final check for interruption during the pause
+            if getattr(self, '_hangup_cancelled', False):
+                logger.info("Hangup cancelled during post-TTS pause")
+                self._hangup_pending = False
+                return "Hangup cancelled - user started speaking"
+            
+            # Execute hangup
+            if self.job_context and self.job_context.room:
+                try:
+                    await self.job_context.api.room.delete_room(
+                        api.DeleteRoomRequest(room=self.job_context.room.name)
+                    )
+                    logger.info(f"Room {self.job_context.room.name} deleted after graceful goodbye")
+                except Exception as e:
+                    logger.error(f"Error deleting room: {e}")
+                    return f"Error ending call: {e}"
+            
+            return f"Call ended: {reason}"
+            
+        finally:
+            self._hangup_pending = False
+    
+    def cancel_pending_hangup(self) -> None:
+        """Cancel a pending hangup if human interrupts during parting words."""
+        if getattr(self, '_hangup_pending', False):
+            self._hangup_cancelled = True
+            logger.info("Pending hangup marked for cancellation")
 
     def set_silence_monitor(self, monitor: SilenceMonitor | None) -> None:
         self.silence_monitor = monitor
@@ -416,7 +496,11 @@ async def entrypoint(ctx: agents.JobContext):
     llm_provider_override = None
     llm_model_override = None
     initiating_user_id: str | None = None
+    lead_id: str | None = None  # For vertical routing
     knowledge_base_store_ids: list[str] = []
+    outbound_trunk_id: str | None = None  # SIP trunk ID from number rules
+    batch_id: str | None = None  # Batch call tracking
+    entry_id: str | None = None  # Batch entry tracking
     
     try:
         if ctx.job.metadata:
@@ -425,9 +509,13 @@ async def entrypoint(ctx: agents.JobContext):
             to_number = phone_number
             job_id = dial_info.get("job_id")
             call_log_id = dial_info.get("call_log_id")
+            lead_id = dial_info.get("lead_id")  # For vertical routing
             call_mode = dial_info.get("call_mode", "inbound")
             from_number = dial_info.get("from_number")
             added_context = dial_info.get("added_context")
+            outbound_trunk_id = dial_info.get("outbound_trunk_id")
+            batch_id = dial_info.get("batch_id")  # For batch completion tracking
+            entry_id = dial_info.get("entry_id")  # For batch entry status update
             
             raw_agent_id = dial_info.get("agent_id")
             if isinstance(raw_agent_id, (int, str)):
@@ -441,6 +529,10 @@ async def entrypoint(ctx: agents.JobContext):
                 knowledge_base_store_ids = [s.strip() for s in raw_kb_ids if isinstance(s, str) and s.strip()]
             
             voice_id = dial_info.get("voice_id", voice_id)
+            # Prefer tts_voice_id (provider-specific) over voice_id (DB UUID)
+            tts_voice_id = dial_info.get("tts_voice_id")
+            if tts_voice_id:
+                voice_id = tts_voice_id  # Use the Cartesia/ElevenLabs voice ID
             voice_accent = dial_info.get("voice_accent")
             # Check both tts_provider and voice_provider (call_service uses voice_provider)
             tts_provider_override = dial_info.get("tts_provider") or dial_info.get("voice_provider")
@@ -457,6 +549,14 @@ async def entrypoint(ctx: agents.JobContext):
             )
     except (json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Failed to parse metadata: {e}")
+    
+    # Warn if call_log_id is missing - this should never happen for outbound calls
+    if not call_log_id:
+        logger.warning(
+            "call_log_id is None after metadata parsing. "
+            "job_id=%s, call_mode=%s, agent_id=%s, raw_metadata=%s",
+            job_id, call_mode, agent_id, ctx.job.metadata[:200] if ctx.job.metadata else None
+        )
     
     # Connect to room
     await ctx.connect()
@@ -479,12 +579,19 @@ async def entrypoint(ctx: agents.JobContext):
             if org_id and str(org_id) == VoiceAssistant.GLINKS_ORG_ID:
                 is_glinks_agent = True
     
-    # Phase 4: Get tenant_id for multi-tenancy
+    # Phase 4: Get tenant_id for multi-tenancy (from USER's primary_tenant_id, not agent)
     tenant_id = None
-    if agent_id:
+    if initiating_user_id:
+        from db.storage.tokens import UserTokenStorage
+        token_storage = UserTokenStorage()
+        tenant_id = await token_storage.get_user_tenant_id(initiating_user_id)
+        if tenant_id:
+            logger.debug(f"Resolved tenant_id={tenant_id} from user_id={initiating_user_id}")
+    # Fallback: try agent's tenant if no user (inbound calls)
+    if not tenant_id and agent_id:
         tenant_id = await agent_storage.get_agent_tenant_id(agent_id)
         if tenant_id:
-            logger.debug(f"Resolved tenant_id={tenant_id} for agent_id={agent_id}")
+            logger.debug(f"Resolved tenant_id={tenant_id} from agent_id={agent_id} (fallback)")
     # Resolve LLM configuration
     llm_provider, llm_model = resolve_llm_configuration(
         llm_provider_override, llm_model_override
@@ -520,17 +627,27 @@ async def entrypoint(ctx: agents.JobContext):
         force_cpu=pipeline_config.vad.force_cpu,
     )
     
-    # Create tool config
-    tool_config = ToolConfig()
+    # PHASE 17 FIX: Fetch tools BEFORE building instructions
+    # This ensures tool_config and tenant_id are used in instruction generation
+    tool_config, tool_configs = await get_enabled_tools({}, tenant_id)
+    tool_list = await attach_tools(
+        None,  # Agent not needed here, just building tools
+        tool_config,
+        tool_configs,
+        tenant_id=tenant_id,
+        user_id=initiating_user_id,
+        knowledge_base_store_ids=knowledge_base_store_ids,
+    )
+    logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}")
     
-    # Build instructions
+    # Build instructions - now using proper tool_config from get_enabled_tools()
     instructions = await build_instructions_async(
         system_instructions=system_instructions,
         agent_instructions=agent_instructions,
         added_context=added_context,
         direction=call_mode,
-        tool_config=tool_config,
-        tenant_id=None,
+        tool_config=tool_config,  # Use real tool_config from tenant
+        tenant_id=tenant_id,  # Pass tenant_id for template instructions
     )
     
     # Create call recorder
@@ -572,18 +689,6 @@ async def entrypoint(ctx: agents.JobContext):
         logger=logger,
     )
     
-    # Fetch tools before creating VoiceAssistant
-    tool_config, tool_configs = await get_enabled_tools({}, tenant_id)
-    tool_list = await attach_tools(
-        None,  # Agent not needed here, just building tools
-        tool_config,
-        tool_configs,
-        tenant_id=tenant_id,
-        user_id=initiating_user_id,
-        knowledge_base_store_ids=knowledge_base_store_ids,
-    )
-    logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}")
-    
     # Create voice assistant with tools
     voice_assistant = VoiceAssistant(
         call_recorder=call_recorder,
@@ -617,12 +722,15 @@ async def entrypoint(ctx: agents.JobContext):
         call_recorder=call_recorder,
         call_log_id=call_log_id,
         tenant_id=tenant_id,  # Phase 4: Now included
+        lead_id=lead_id,  # For vertical routing
         call_storage=call_storage,
         silence_monitor=silence_monitor,
         usage_collector=usage_collector,  # Uses the configured one from Phase 1
         call_semaphore=_call_semaphore,
         acquired_call_slot=acquired_call_slot,
         job_id=job_id,
+        batch_id=batch_id,  # For batch completion tracking
+        entry_id=entry_id,  # For batch entry status update
     )
     
     async def shutdown_callback():
@@ -645,8 +753,8 @@ async def entrypoint(ctx: agents.JobContext):
     
     try:
         if call_mode == "outbound" and phone_number:
-            # Outbound call - dial out
-            trunk_id = os.getenv("OUTBOUND_TRUNK_ID")
+            # Outbound call - dial out, use trunk from metadata or env default
+            trunk_id = outbound_trunk_id or os.getenv("OUTBOUND_TRUNK_ID")
             if trunk_id:
                 try:
                     await ctx.api.sip.create_sip_participant(

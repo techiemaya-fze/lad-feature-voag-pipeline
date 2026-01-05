@@ -357,11 +357,20 @@ def create_llm_instance(
         except ImportError:
             logger.warning("google.genai.types not available")
         
-        return google.LLM(
-            model=model,
-            thinking_config=thinking_config,
-            gemini_tools=gemini_tools if gemini_tools else None,
-        )
+        # Try with gemini_tools first (newer versions), fallback without it
+        try:
+            return google.LLM(
+                model=model,
+                thinking_config=thinking_config,
+                gemini_tools=gemini_tools if gemini_tools else None,
+            )
+        except TypeError:
+            # Older livekit-plugins-google version doesn't support gemini_tools
+            logger.warning("gemini_tools not supported in installed version, continuing without native tools")
+            return google.LLM(
+                model=model,
+                thinking_config=thinking_config,
+            )
     
     if normalized == "openai":
         api_key = os.getenv("OPENAI_API_KEY")

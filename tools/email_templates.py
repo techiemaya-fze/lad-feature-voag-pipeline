@@ -27,6 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from livekit.agents.llm import function_tool
+
 
 @dataclass(frozen=True)
 class BuiltinTemplate:
@@ -476,6 +478,7 @@ def create_email_template_tools(tenant_id: str, user_id: str | None = None):  # 
     Returns:
         List of tool functions
     """
+    @function_tool
     async def send_template_email(
         template_key: str,
         to: list[str],
@@ -544,6 +547,7 @@ def create_email_template_tools(tenant_id: str, user_id: str | None = None):  # 
             _logger.error(f"Failed to send template email: {exc}")
             return f"Error sending email: {exc}"
     
+    @function_tool
     async def list_templates(category: str | None = None) -> str:
         """
         List available email templates for this tenant.

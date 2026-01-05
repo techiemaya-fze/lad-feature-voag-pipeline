@@ -125,6 +125,7 @@ AUTH_EXEMPT_ENDPOINTS: frozenset[str] = frozenset({
     "/security/status",  # Monitoring endpoint
     "/auth/google/callback",  # OAuth callback comes from Google, not frontend
     "/auth/microsoft/callback",  # OAuth callback comes from Microsoft, not frontend
+    "/batch/entry-completed",  # Internal worker callback (not public)
 })
 
 # Static file prefixes to skip entirely

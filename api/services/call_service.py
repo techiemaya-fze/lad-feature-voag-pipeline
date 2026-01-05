@@ -16,6 +16,10 @@ from typing import Any, Mapping, Optional
 
 from livekit import api
 
+# Call routing validation
+from utils.call_routing import validate_and_format_call
+from db.db_config import get_db_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,6 +74,7 @@ class DispatchResult:
     lead_name: str | None = None
     added_context: str | None = None
     call_log_id: str | None = None
+    error: str | None = None  # Error message for routing failures
 
 
 # =============================================================================
@@ -148,7 +153,12 @@ def _augment_context_with_lead(
     context: str | None,
     lead_name: str | None,
     lead_notes: str | None,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    email: str | None = None,
+    company: str | None = None,
 ) -> str | None:
+    """Augment context with lead information for the agent."""
     def _append_line(existing: str | None, line: str | None) -> str | None:
         if not line:
             return existing
@@ -160,13 +170,34 @@ def _augment_context_with_lead(
         return line
 
     updated = (context or None)
-    if lead_name:
-        lead_line = f'The lead\'s name is "{lead_name}".'
+    
+    # Add lead name (combined or from first/last)
+    name_to_use = lead_name
+    if not name_to_use and (first_name or last_name):
+        parts = [n for n in [first_name, last_name] if n]
+        name_to_use = " ".join(parts) if parts else None
+    
+    if name_to_use:
+        lead_line = f'The lead\'s name is "{name_to_use}".'
         updated = _append_line(updated, lead_line)
-    if lead_notes:
-        notes_line = f"Lead notes: {lead_notes}"
+    
+    # Add email if available
+    if email and email.strip():
+        email_line = f'Lead email: {email.strip()}'
+        updated = _append_line(updated, email_line)
+    
+    # Add company if available
+    if company and company.strip():
+        company_line = f'Lead company: {company.strip()}'
+        updated = _append_line(updated, company_line)
+    
+    # Add notes if available
+    if lead_notes and lead_notes.strip():
+        notes_line = f"Lead notes: {lead_notes.strip()}"
         updated = _append_line(updated, notes_line)
+    
     return updated.rstrip() if isinstance(updated, str) else updated
+
 
 
 def _combine_contexts(*contexts: Optional[str]) -> str | None:
@@ -233,16 +264,19 @@ class CallService:
         self._agent_storage = None
         self._voice_storage = None
         self._number_storage = None  # For from_number_id lookup
+        self._user_storage = None  # For user tenant lookup
     
     async def _ensure_storage(self):
         """Lazy-initialize storage instances."""
         if not self._storage_initialized:
             from db.storage import CallStorage, LeadStorage, AgentStorage, VoiceStorage, NumberStorage
+            from db.storage.tokens import UserTokenStorage
             self._call_storage = CallStorage()
             self._lead_storage = LeadStorage()
             self._agent_storage = AgentStorage()
             self._voice_storage = VoiceStorage()
             self._number_storage = NumberStorage()
+            self._user_storage = UserTokenStorage()
             self._storage_initialized = True
     
     async def resolve_voice(self, voice_id: str, agent_id: int | None) -> tuple[str, VoiceContext]:
@@ -346,7 +380,10 @@ class CallService:
         llm_provider: str | None = None,
         llm_model: str | None = None,
         knowledge_base_store_ids: list[str] | None = None,
+        lead_name: str | None = None,  # For lead creation/update
         lead_id_override: str | None = None,  # UUID
+        batch_id: str | None = None,  # Batch call tracking
+        entry_id: str | None = None,  # Batch entry tracking
     ) -> DispatchResult:
         """
         Dispatch a single outbound call via LiveKit.
@@ -358,47 +395,103 @@ class CallService:
         url, api_key, api_secret = _validate_livekit_credentials()
         voice_log_id = _coerce_uuid_string(voice_context.db_voice_id)
         
-        # Resolve lead - need tenant_id from agent
+        # Resolve tenant_id - prefer user's tenant, fall back to agent's tenant
         tenant_id = None
-        if agent_id:
+        if initiated_by:
+            tenant_id = await self._user_storage.get_user_tenant_id(initiated_by)
+        if not tenant_id and agent_id:
             tenant_id = await self._agent_storage.get_agent_tenant_id(agent_id)
+            logger.debug("Resolved tenant_id from agent_id=%s (user tenant not found)", agent_id)
         
         lead_record = None
+        request_lead_name = lead_name  # Save the name from API request
         if tenant_id:
             lead_record = await self._lead_storage.find_or_create_lead(
                 tenant_id=tenant_id,
                 phone_number=to_number,
                 user_id=initiated_by,
-                name=None,
+                name=lead_name,  # Pass lead_name from API (will save if table empty)
             )
         else:
-            logger.warning(f"No tenant_id for agent {agent_id}, skipping lead lookup")
+            logger.warning("No tenant_id found for user=%s agent=%s, skipping lead lookup", initiated_by, agent_id)
         
         lead_id = lead_id_override
-        lead_name = None
+        # Determine lead info for agent context
+        lead_name_for_agent = None
         lead_notes = None
+        lead_first_name = None
+        lead_last_name = None
+        lead_email = None
+        lead_company = None
         
         if lead_record:
             lead_id = lead_id or lead_record.get("id")
-            lead_name_raw = lead_record.get("name")
-            if isinstance(lead_name_raw, str) and lead_name_raw.strip():
-                lead_name = lead_name_raw.strip()
+            
+            # Get fields from lead record
+            lead_first_name = lead_record.get("first_name")
+            lead_last_name = lead_record.get("last_name")
+            lead_email = lead_record.get("email")
+            lead_company = lead_record.get("company")
+            
+            # Get table name (combined)
+            table_name_raw = lead_record.get("name")
+            table_name = None
+            if isinstance(table_name_raw, str) and table_name_raw.strip():
+                table_name = table_name_raw.strip()
+            
+            # Priority: request name > table name (for agent context)
+            if request_lead_name and request_lead_name.strip():
+                lead_name_for_agent = request_lead_name.strip()
+                if table_name and table_name != lead_name_for_agent:
+                    logger.info(f"Using request name '{lead_name_for_agent}' for agent (table has '{table_name}')")
+            elif table_name:
+                lead_name_for_agent = table_name
+            
             lead_notes_raw = lead_record.get("notes")
             if isinstance(lead_notes_raw, str) and lead_notes_raw.strip():
                 lead_notes = lead_notes_raw.strip()
         
-        # Augment context with lead info
-        final_context = _augment_context_with_lead(context, lead_name, lead_notes)
+        # Augment context with lead info (name, email, company, notes)
+        final_context = _augment_context_with_lead(
+            context=context,
+            lead_name=lead_name_for_agent,
+            lead_notes=lead_notes,
+            first_name=lead_first_name,
+            last_name=lead_last_name,
+            email=lead_email,
+            company=lead_company,
+        )
         
         # Generate room name
         room_name = f"call-{job_id}-{uuid.uuid4().hex[:8]}"
         
+        # ===== CALL ROUTING VALIDATION =====
+        # Validate and format to_number based on from_number's carrier rules
+        routing_result = validate_and_format_call(
+            from_number=from_number,
+            to_number=to_number,
+            db_config=get_db_config()
+        )
+        
+        if not routing_result.success:
+            logger.error(f"Call routing failed: {routing_result.error_message}")
+            # Return error result instead of raising
+            return DispatchResult(
+                room_name="",
+                dispatch_id="",
+                call_log_id="",
+                error=routing_result.error_message
+            )
+        
+        # Use the formatted number for dialing
+        dial_number = routing_result.formatted_to_number or to_number
+        logger.info(f"Call routing: {to_number} -> {dial_number} (carrier: {routing_result.carrier_name})")
+        
         # Lookup from_number_id from voice_agent_numbers table
         from_number_id = None
         if from_number:
-            from_number_record = await self._number_storage.find_number_by_phone(from_number)
-            if from_number_record:
-                from_number_id = str(from_number_record.get("id"))
+            from_number_id = await self._number_storage.find_number_by_phone(from_number)
+            if from_number_id:
                 logger.debug(f"Resolved from_number {from_number} to from_number_id={from_number_id}")
             else:
                 logger.warning(f"Could not find from_number_id for from_number={from_number}")
@@ -432,8 +525,9 @@ class CallService:
                 "tts_voice_id": voice_context.tts_voice_id,
                 "voice_provider": voice_context.provider,
                 "call_log_id": call_log_id,
-                "to_number": to_number,
-                "phone_number": to_number,  # Worker expects this key for dialing
+                "lead_id": lead_id,  # For vertical routing
+                "to_number": to_number,  # Original number for display/logging
+                "phone_number": dial_number,  # Formatted number for SIP dialing
                 "call_mode": "outbound",  # Tell worker this is outbound
                 "from_number": from_number,
             }
@@ -446,6 +540,17 @@ class CallService:
                 metadata["knowledge_base_store_ids"] = ",".join(knowledge_base_store_ids)
             if final_context:
                 metadata["added_context"] = final_context[:500]  # Truncate for safety
+            
+            # Use trunk ID from routing rules, or fall back to env default
+            outbound_trunk = routing_result.outbound_trunk_id or os.getenv("OUTBOUND_TRUNK_ID")
+            if outbound_trunk:
+                metadata["outbound_trunk_id"] = outbound_trunk
+            
+            # Batch call tracking - worker uses these to update entry status on completion
+            if batch_id:
+                metadata["batch_id"] = batch_id
+            if entry_id:
+                metadata["entry_id"] = entry_id
             
             import json
             participant_metadata = json.dumps(metadata)

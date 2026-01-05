@@ -500,6 +500,7 @@ async def trigger_single_call(payload: SingleCallPayload, request: Request) -> C
                 llm_provider=llm_provider_override,
                 llm_model=llm_model_override,
                 knowledge_base_store_ids=resolved_kb_store_ids,
+                lead_name=payload.lead_name,  # For lead creation/update
                 lead_id_override=payload.lead_id,
             )
             

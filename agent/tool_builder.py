@@ -22,6 +22,10 @@ from typing import Any, Callable
 
 from livekit.agents.llm import function_tool
 
+# Import DB connection utilities at top level
+from db.db_config import get_db_config
+from db.connection_pool import get_db_connection
+
 logger = logging.getLogger(__name__)
 
 # =============================================================================
@@ -206,7 +210,7 @@ def get_tool_instructions(config: "ToolConfig") -> str:
     if config.gmail:
         sections.append(TOOL_INSTRUCTIONS["gmail"])
     
-    if config.microsoft_bookings:
+    if config.microsoft_bookings_auto or config.microsoft_bookings_manual:
         sections.append(TOOL_INSTRUCTIONS["microsoft_bookings"])
     
     if config.email_templates or config.glinks_email:
@@ -367,9 +371,6 @@ async def _get_tools_from_tenant_features(tenant_id: str | None) -> tuple["ToolC
     }
     
     try:
-        from db.db_config import get_db_config
-        from db.connection_pool import get_db_connection
-        
         config = get_db_config()
         with get_db_connection(config) as conn:
             with conn.cursor() as cur:
@@ -436,15 +437,10 @@ async def _get_tenant_kb_stores(tenant_id: str) -> list[str]:
         return []
     
     try:
-        from db.db_config import get_db_config
-        from db.connection_pool import get_db_connection, return_connection, USE_CONNECTION_POOLING
-        import psycopg2
         from psycopg2.extras import RealDictCursor
         
         db_config = get_db_config()
-        conn = get_db_connection(db_config)
-        
-        try:
+        with get_db_connection(db_config) as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
                     SELECT gemini_store_name
@@ -464,9 +460,6 @@ async def _get_tenant_kb_stores(tenant_id: str) -> list[str]:
                     logger.debug(f"No default KB stores for tenant {tenant_id}")
                 
                 return store_names
-        finally:
-            if USE_CONNECTION_POOLING:
-                return_connection(conn, db_config)
     except Exception as e:
         logger.error(f"Failed to get KB stores for tenant {tenant_id}: {e}")
         return []
@@ -834,6 +827,7 @@ def build_human_support_tools(
     return tools
 
 
+
 # =============================================================================
 # MAIN TOOL ATTACHMENT
 # =============================================================================
@@ -931,9 +925,9 @@ async def attach_tools(
     tool_configs = tool_configs or {}
     attached_tools = []
     
-    # hangup_call is ALWAYS attached, regardless of tenant
-    # The VoiceAssistant already has this as a method, just log it
-    logger.info("hangup_call: Always available (built into VoiceAssistant)")
+    # NOTE: hangup_call is provided by VoiceAssistant class as @function_tool method
+    # Do NOT add it here to avoid duplicate function name error
+    logger.info("hangup_call: Provided by VoiceAssistant class (always available)")
     
     # Google Workspace tools (Calendar + Gmail)
     if config.google_workspace or config.google_calendar or config.gmail:
@@ -983,7 +977,7 @@ async def attach_tools(
     # Email Templates
     if config.email_templates:
         try:
-            tools = await build_email_template_tools(tenant_id) if tenant_id else []
+            tools = build_email_template_tools(tenant_id) if tenant_id else []
             attached_tools.extend(tools)
             logger.info(f"Attached Email Template tools: {len(tools) if tools else 0} functions")
         except Exception as e:

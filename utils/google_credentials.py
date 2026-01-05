@@ -67,7 +67,8 @@ class GoogleCredentialResolver:
             record = await self._storage.get_user_by_user_id(clean)
         if not record:
             raise GoogleCredentialError(f"User {clean} not found", status_code=404)
-        canonical = str(record.get("user_id") or "").strip()
+        # lad_dev.users uses 'id' as the primary key (UUID)
+        canonical = str(record.get("id") or "").strip()
         if not canonical:
             raise GoogleCredentialError(
                 "User record missing canonical identifier",
@@ -77,7 +78,8 @@ class GoogleCredentialResolver:
 
     async def load_credentials(self, identifier: str | int | None) -> Credentials:
         canonical_id, record = await self.resolve_user(identifier)
-        blob = _coerce_db_blob(record.get("google_oauth_tokens"))
+        # Tokens are stored in user_identities table, not users table
+        blob = await self._storage.get_google_token_blob(canonical_id)
         if not blob:
             raise GoogleCredentialError(
                 "User has not authorized Google access",

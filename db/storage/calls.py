@@ -761,6 +761,11 @@ class CallStorage:
         Returns:
             True if successful, False otherwise
         """
+        # Guard: Validate call_log_id
+        if not call_log_id or call_log_id == "None":
+            logger.warning("save_call_usage called with invalid call_log_id: %s", call_log_id)
+            return False
+        
         try:
             # Calculate costs if pricing provided
             cost_breakdown = {
