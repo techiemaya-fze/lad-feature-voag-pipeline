@@ -67,103 +67,6 @@ class InstructionBuilder:
         self.tool_config = tool_config
         self.tenant_id = tenant_id
     
-    def build(self) -> str:
-        """
-        Build the complete instruction set.
-        
-        Phase 17c: Fully dynamic - no hardcoded tool guides.
-        
-        Order:
-        1. System instructions
-        2. Direction instructions (inbound OR outbound)
-        3. Agent instructions  
-        4. Tool instructions (from ToolConfig via tool_builder)
-        5. Template instructions (from DB for tenant)
-        6. Added context
-        
-        Returns:
-            Combined instructions string
-        """
-        sections: list[str] = []
-        
-        # 0. Current Time Context (CRITICAL for scheduling)
-        # Include Gulf Standard Time (GST = UTC+4) as the reference time
-        gst_now = datetime.now(GST_TIMEZONE)
-        time_block = f"""# CURRENT TIME REFERENCE (CRITICAL)
-**Current Date & Time (Gulf Standard Time / GST / UTC+4):**
-- Date: {gst_now.strftime('%A, %B %d, %Y')}
-- Time: {gst_now.strftime('%I:%M %p')} GST
-- Day of Week: {gst_now.strftime('%A')}
-
-⚠️ IMPORTANT: You MUST use this time as your reference for ALL scheduling, appointments, and time-related discussions. This is the customer's local time. Do NOT guess the time or use any other time source."""
-        sections.append(time_block)
-        logger.debug(f"Added GST time context: {gst_now.strftime('%Y-%m-%d %H:%M:%S')} GST")
-        
-        # 1. System instructions
-        system_block = (self.system_instructions or "").strip()
-        if system_block:
-            sections.append("# System Instructions\n" + system_block)
-        
-        # 2. Direction-specific instructions (Phase 17)
-        direction_block = self._get_direction_instructions()
-        if direction_block:
-            sections.append(
-                f"####################\n# {self.direction.title()} Call Instructions\n" + direction_block
-            )
-        
-        # 3. Agent instructions
-        agent_block = (self.agent_instructions or "").strip()
-        if agent_block:
-            sections.append("####################\n# Agent Instructions\n" + agent_block)
-        
-        # 4. Tool instructions (Phase 17: from ToolConfig - REQUIRED)
-        if self.tool_config:
-            from agent.tool_builder import get_tool_instructions
-            tool_guide = get_tool_instructions(self.tool_config)
-            if tool_guide:
-                sections.append(
-                    "####################\n# Available Tools Reference\n" + tool_guide
-                )
-        else:
-            # No tool_config means no tools attached - log warning
-            logger.warning("No tool_config provided - no tool instructions will be included")
-        
-        # 5. Template instructions (Phase 17b: dynamic from DB if templates enabled)
-        if self.tool_config and self.tenant_id:
-            if getattr(self.tool_config, 'email_templates', False) or getattr(self.tool_config, 'glinks_email', False):
-                # Import here to avoid circular imports
-                import asyncio
-                from agent.tool_builder import get_template_instructions_for_tenant
-                
-                try:
-                    # Run async function synchronously (safe in this context)
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # We're in an async context, can't run synchronously
-                        # Schedule for later - this path should be avoided
-                        logger.warning("Cannot fetch template instructions in running loop")
-                    else:
-                        template_guide = loop.run_until_complete(
-                            get_template_instructions_for_tenant(self.tenant_id)
-                        )
-                        if template_guide:
-                            sections.append(
-                                "####################\n# Email Template Guide\n" + template_guide
-                            )
-                except Exception as exc:
-                    logger.error(f"Failed to get template instructions: {exc}")
-        
-        # 6. Added context
-        if isinstance(self.added_context, str):
-            context_block = self.added_context.strip()
-            if context_block:
-                sections.append(
-                    "####################\n# Added Context For This Call\n" + context_block
-                )
-                logger.info("Added context: %d chars", len(context_block))
-        
-        return "\n\n".join(sections) if sections else ""
-    
     async def build_async(self) -> str:
         """
         Build instructions asynchronously (for use in async contexts).
@@ -255,44 +158,6 @@ This is an INBOUND call - the customer called you.
 """
 
 
-def build_instructions(
-    system_instructions: str | None = None,
-    agent_instructions: str | None = None,
-    added_context: str | None = None,
-    vertical: str | None = None,
-    direction: str = "outbound",
-    tool_config: Any | None = None,
-    tenant_id: str | None = None,
-) -> str:
-    """
-    Convenience function to build agent instructions.
-    
-    Phase 17c: Updated to pass all params to InstructionBuilder.
-    
-    Args:
-        system_instructions: High-level behavioral rules
-        agent_instructions: Detailed conversation flow
-        added_context: Call-specific context
-        vertical: Business vertical (legacy, largely ignored now)
-        direction: 'inbound' or 'outbound'
-        tool_config: ToolConfig for enabled tools
-        tenant_id: Tenant UUID for template lookup
-        
-    Returns:
-        Combined instruction string
-    """
-    builder = InstructionBuilder(
-        system_instructions=system_instructions,
-        agent_instructions=agent_instructions,
-        added_context=added_context,
-        vertical=vertical,
-        direction=direction,
-        tool_config=tool_config,
-        tenant_id=tenant_id,
-    )
-    return builder.build()
-
-
 async def build_instructions_async(
     system_instructions: str | None = None,
     agent_instructions: str | None = None,
@@ -325,6 +190,5 @@ async def build_instructions_async(
 
 __all__ = [
     "InstructionBuilder",
-    "build_instructions",
     "build_instructions_async",
 ]
