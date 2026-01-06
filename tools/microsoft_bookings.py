@@ -91,6 +91,7 @@ class AgentMicrosoftBookings:
         # Support both user_identifier and user_id for backwards compatibility
         actual_user_id = user_id or user_identifier
         self._user_id = self._normalize_identifier(actual_user_id)
+        logger.debug("AgentMicrosoftBookings: user_id=%s (from user_id=%r, user_identifier=%r)", self._user_id, user_id, user_identifier)
         self._storage = UserTokenStorage()
         self._user_record: dict[str, Any] | None = None
         self._encryptor: TokenEncryptor | None = None
@@ -116,14 +117,21 @@ class AgentMicrosoftBookings:
 
         # Try numeric ID first
         record = None
+        logger.debug("_load_user_record: Looking up user_id=%r (isdigit=%s)", self._user_id, self._user_id.isdigit() if self._user_id else False)
         if self._user_id.isdigit():
             record = await self._storage.get_user_by_primary_id(int(self._user_id))
+            logger.debug("_load_user_record: get_user_by_primary_id(%s) returned %s", self._user_id, "found" if record else "None")
         if record is None:
             record = await self._storage.get_user_by_user_id(self._user_id)
+            logger.debug("_load_user_record: get_user_by_user_id(%s) returned %s", self._user_id, "found" if record else "None")
 
         if not record:
+            logger.error("_load_user_record: No record found for user_id=%r - raising MicrosoftCredentialError", self._user_id)
             raise MicrosoftCredentialError(self._user_id)
 
+        # Log what we found (redact sensitive data)
+        logger.debug("_load_user_record: Found user record - id=%s, user_id=%s, has_ms_tokens=%s, selected_business=%s",
+            record.get("id"), record.get("user_id"), bool(record.get("microsoft_oauth_tokens")), record.get("selected_booking_business_id"))
         self._user_record = record
         return record
 
@@ -136,8 +144,9 @@ class AgentMicrosoftBookings:
 
     async def _get_access_token(self) -> str:
         """Get access token for Microsoft Graph API, auto-refreshing if expired."""
-        record = await self._load_user_record()
-        blob = record.get("microsoft_oauth_tokens")
+        # Get token blob from user_identities table (not user record!)
+        blob = await self._storage.get_microsoft_token_blob(self._user_id)
+        logger.debug("_get_access_token: blob for user_id=%s is %s", self._user_id, "present" if blob else "None")
 
         if not blob:
             raise MicrosoftCredentialError(self._user_id)
@@ -165,14 +174,12 @@ class AgentMicrosoftBookings:
                 ms_service = MicrosoftAuthService()
                 new_tokens = ms_service.refresh_token(refresh_token)
                 
-                # Convert and store new tokens - use record's user_id column, not PK
-                actual_user_id = record.get("user_id") or self._user_id
+                # Convert and store new tokens
                 new_payload = token_response_to_storage_format(new_tokens)
                 encrypted = encryptor.encrypt_json(new_payload)
-                await self._storage.store_microsoft_token_blob(actual_user_id, encrypted)
+                await self._storage.store_microsoft_token_blob(self._user_id, encrypted)
                 
                 token_payload = new_payload
-                self._user_record = None  # Clear cache
                 logger.info("Successfully refreshed Microsoft token for user %s", self._user_id)
             except ValueError as exc:
                 logger.warning("Token refresh failed for user %s: %s", self._user_id, exc)
@@ -197,8 +204,13 @@ class AgentMicrosoftBookings:
         if self._config_business_id:
             return self._config_business_id
         
-        record = await self._load_user_record()
-        business_id = record.get("selected_booking_business_id")
+        # Get booking config from user_identities table
+        config = await self._storage.get_booking_config(self._user_id)
+        logger.debug("_get_default_business_id: user_id=%s, config=%s", self._user_id, config)
+        if not config:
+            raise MicrosoftConfigError(self._user_id, "no default booking business selected")
+        
+        business_id = config.get("business_id")
         if not business_id:
             raise MicrosoftConfigError(self._user_id, "no default booking business selected")
         return business_id
@@ -210,8 +222,11 @@ class AgentMicrosoftBookings:
         if self._config_service_id:
             return self._config_service_id
         
-        record = await self._load_user_record()
-        return record.get("default_service_id")
+        # Get booking config from user_identities table
+        config = await self._storage.get_booking_config(self._user_id)
+        if not config:
+            return None
+        return config.get("service_id")
 
     async def _get_default_staff_member_id(self) -> str | None:
         """Get default staff member ID from config override or database."""
@@ -219,8 +234,11 @@ class AgentMicrosoftBookings:
         if self._config_staff_id:
             return self._config_staff_id
         
-        record = await self._load_user_record()
-        return record.get("default_staff_member_id")
+        # Get booking config from user_identities table
+        config = await self._storage.get_booking_config(self._user_id)
+        if not config:
+            return None
+        return config.get("staff_member_id")
 
     def _extract_available_slots(self, availability: list[dict]) -> list[str]:
         """

@@ -764,6 +764,14 @@ async def entrypoint(ctx: agents.JobContext):
             trunk_id = outbound_trunk_id or os.getenv("OUTBOUND_TRUNK_ID")
             if trunk_id:
                 try:
+                    # Update status to ringing before dialing
+                    if call_log_id:
+                        await call_storage.update_call_status(
+                            call_log_id=call_log_id,
+                            status="ringing"
+                        )
+                        logger.info(f"Call {call_log_id} status updated to ringing")
+                    
                     await ctx.api.sip.create_sip_participant(
                         api.CreateSIPParticipantRequest(
                             room_name=ctx.room.name,
@@ -774,6 +782,13 @@ async def entrypoint(ctx: agents.JobContext):
                             krisp_enabled=True,
                         )
                     )
+                    # Call is now answered - update status to ongoing
+                    if call_log_id:
+                        await call_storage.update_call_status(
+                            call_log_id=call_log_id,
+                            status="ongoing"
+                        )
+                        logger.info(f"Call {call_log_id} status updated to ongoing")
                     
                     await session_start_task
                     
@@ -808,6 +823,14 @@ async def entrypoint(ctx: agents.JobContext):
         else:
             # Inbound call
             await session_start_task
+            
+            # Inbound call is now active - update status to ongoing
+            if call_log_id:
+                await call_storage.update_call_status(
+                    call_log_id=call_log_id,
+                    status="ongoing"
+                )
+                logger.info(f"Inbound call {call_log_id} status updated to ongoing")
             
             if call_recorder:
                 attach_transcription_tracker(session, call_recorder)

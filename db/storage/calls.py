@@ -259,7 +259,7 @@ class CallStorage:
                             direction,
                             from_number_id,
                             initiated_by_user_id,
-                            "pending",
+                            "in_queue",
                             datetime.utcnow(),
                             self._prepare_jsonb(metadata),
                         )

@@ -1423,8 +1423,8 @@ CRITICAL RULES:
 4. Gatekeeper (can't share details) = C (nurture)
 5. "Don't want/need" or "not interested" = D (don't pursue)
 6. Asked about pricing/cost = A or B (interested)
-7. Score ≥7 + strong interest = A
-8. Score <3 + negative = D
+7. Strong interest signals = A
+8. Negative sentiment with no positive signals = D
 
 Respond in this EXACT format:
 DISPOSITION: [A/B/C/D]
@@ -1677,14 +1677,55 @@ CONFIDENCE: [High/Medium/Low]"""
                 disposition = "FOLLOW UP IN 3 DAYS"
                 action = "Try again when less busy"
         
-        if next_steps and len(next_steps) > 0 and next_steps[0] != "None":
-            reasoning.append("Next steps were agreed upon - positive signal")
-        
         return {
             "disposition": disposition,
             "recommended_action": action,
             "reasoning": " | ".join(reasoning),
             "decision_confidence": "High" if has_red_flag or has_green_flag else "Medium"
+        }
+    
+    def _calculate_lead_score_from_disposition(self, disposition: Dict) -> Dict:
+        """
+        Calculate lead_score and lead_category based on disposition.
+        
+        Mapping:
+        - "PROCEED IMMEDIATELY" → lead_score = 10/10, lead_category = "Hot Lead"
+        - "FOLLOW UP IN 3 DAYS" → lead_score = 8/10, lead_category = "Hot Lead"
+        - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "Warm Lead"
+        - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Cold Lead"
+        """
+        disposition_str = disposition.get('disposition', '').upper()
+        
+        if disposition_str == 'PROCEED IMMEDIATELY':
+            lead_score = 10.0
+            lead_category = "Hot Lead"
+            priority = "High"
+        elif disposition_str == 'FOLLOW UP IN 3 DAYS':
+            lead_score = 8.0
+            lead_category = "Hot Lead"
+            priority = "High"
+        elif disposition_str in ['FOLLOW UP IN 7 DAYS', 'NURTURE (7 DAYS)', 'NURTURE']:
+            lead_score = 6.0
+            lead_category = "Warm Lead"
+            priority = "Medium"
+        elif disposition_str == "DON'T PURSUE" or disposition_str == "DONT PURSUE":
+            lead_score = 4.0
+            lead_category = "Cold Lead"
+            priority = "Low"
+        else:
+            # Default/Unknown disposition
+            lead_score = 5.0
+            lead_category = "Warm Lead"
+            priority = "Medium"
+        
+        return {
+            "lead_score": lead_score,
+            "max_score": 10.0,
+            "lead_category": lead_category,
+            "priority": priority,
+            "scoring_breakdown": {
+                "disposition_based": f"Score calculated from disposition: {disposition_str}"
+            }
         }
     
     def _enhance_recommendations(self, base_rec: str, lead_score: Dict, sentiment: Dict, quality: Dict, stage: Dict, duration: int) -> str:
