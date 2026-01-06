@@ -1075,9 +1075,13 @@ async def attach_tools(
             logger.error(f"Failed to build Email Template tools: {e}")
     
     # Human Support (phone from config with env fallback)
+    logger.info(f"[HumanSupport] config.human_support={config.human_support}")
     if config.human_support:
         cfg = tool_configs.get("voice-agent-tool-human-support", {})
-        phone = cfg.get("phone_number") or os.getenv("HUMAN_SUPPORT_NUMBER")
+        logger.info(f"[HumanSupport] tool_configs entry: {cfg}")
+        # Check both potential key names
+        phone = cfg.get("human_agent_number") or cfg.get("phone_number") or os.getenv("HUMAN_SUPPORT_NUMBER")
+        logger.info(f"[HumanSupport] Resolved phone: {phone[:4] if phone else 'None'}***")
         if phone:
             try:
                 tools = build_human_support_tools(
@@ -1089,7 +1093,12 @@ async def attach_tools(
                 attached_tools.extend(tools)
                 logger.info(f"Attached Human Support tools: {len(tools)} functions (trunk={'set' if sip_trunk_id else 'env'})")
             except Exception as e:
-                logger.error(f"Failed to build Human Support tools: {e}")
+                logger.error(f"Failed to build Human Support tools: {e}", exc_info=True)
+        else:
+            logger.warning("[HumanSupport] SKIPPED: No phone number found in config or HUMAN_SUPPORT_NUMBER env")
+    else:
+        logger.info("[HumanSupport] SKIPPED: config.human_support is False")
+
     
     logger.info(f"Total tools attached: {len(attached_tools)}")
     return attached_tools
