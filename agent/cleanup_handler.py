@@ -280,29 +280,37 @@ def determine_final_status(existing_status: str | None) -> str:
         existing_status: Current call status
         
     Returns:
-        Final status string (standardized: pending, in_progress, ended, declined, failed)
+        Final status string (standardized: in_queue, ringing, ongoing, ended, declined, cancelled, failed)
     """
     # Standardized status values:
-    # - pending: call created, not yet connected
-    # - in_progress: call is active/connected  
+    # - in_queue: call created, waiting to be dialed
+    # - ringing: call is dialing/ringing recipient
+    # - ongoing: call is active, conversation happening
     # - ended: call completed normally
-    # - declined: call was rejected/declined by recipient
+    # - declined: call was rejected/declined by recipient (no_answer, busy, rejected)
+    # - cancelled: call was cancelled via cancel endpoint
     # - failed: technical failure or unreachable
     
     # Map synonyms to standardized statuses
     declined_synonyms = {"declined", "rejected", "no_answer", "busy"}
-    failed_synonyms = {"failed", "error", "not_reachable", "canceled", "cancelled"}
-    in_progress_synonyms = {"in_progress", "ongoing", "running", "started", "ringing"}
-    pending_synonyms = {"pending", "in_queue", "queued"}
+    failed_synonyms = {"failed", "error", "not_reachable"}
+    cancelled_synonyms = {"cancelled", "canceled"}  # Keep cancelled separate from failed
+    ongoing_synonyms = {"ongoing", "in_progress", "running", "started"}
+    ringing_synonyms = {"ringing"}
+    in_queue_synonyms = {"in_queue", "pending", "queued"}
     
     if existing_status in declined_synonyms:
         return "declined"
     if existing_status in failed_synonyms:
         return "failed"
-    if existing_status in in_progress_synonyms:
-        return "ended"  # Was in progress, now ending
-    if existing_status in pending_synonyms:
-        return "ended"  # Was pending, now ending
+    if existing_status in cancelled_synonyms:
+        return "cancelled"  # Keep as cancelled, not mapped to failed
+    if existing_status in ringing_synonyms:
+        return "ended"  # Was ringing, call ended (unanswered goes to declined above)
+    if existing_status in ongoing_synonyms:
+        return "ended"  # Was ongoing, now ending
+    if existing_status in in_queue_synonyms:
+        return "ended"  # Was queued, now ending
     return existing_status or "ended"
 
 
