@@ -366,15 +366,23 @@ class LeadBookingsStorage:
                     if not scheduled_at:
                         scheduled_at = datetime.now()
                     
+                    # Parse buffer_until if it's a string
+                    buffer_until = booking_data.get('buffer_until')
+                    if isinstance(buffer_until, str):
+                        try:
+                            buffer_until = datetime.fromisoformat(buffer_until.replace('Z', '+00:00'))
+                        except ValueError:
+                            buffer_until = None
+                    
                     cur.execute(f"""
                         INSERT INTO {SCHEMA}.{LEAD_BOOKINGS_TABLE} (
                             id, tenant_id, lead_id, assigned_user_id, booking_type, booking_source,
                             scheduled_at, timezone, status, retry_count, parent_booking_id,
-                            notes, metadata, created_by, is_deleted
+                            notes, metadata, created_by, is_deleted, buffer_until
                         ) VALUES (
                             %s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s,
                             %s, %s, %s, %s, %s::uuid,
-                            %s, %s, %s::uuid, %s
+                            %s, %s, %s::uuid, %s, %s
                         )
                         RETURNING id
                     """, (
@@ -392,7 +400,8 @@ class LeadBookingsStorage:
                         booking_data.get('notes'),
                         json.dumps(booking_data.get('metadata', {})),
                         booking_data.get('created_by'),
-                        booking_data.get('is_deleted', False)
+                        booking_data.get('is_deleted', False),
+                        buffer_until
                     ))
                     
                     row = cur.fetchone()
