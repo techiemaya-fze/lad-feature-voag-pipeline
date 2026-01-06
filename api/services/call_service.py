@@ -239,6 +239,50 @@ def _build_student_context_summary(student_record: dict) -> str | None:
     )
 
 
+def _build_education_student_context(student_record: dict) -> str | None:
+    """
+    Build context summary from lad_dev.education_students table.
+    
+    Uses correct column names: student_parent_name, parent_designation,
+    program_interested_in, country_interested, intake_year, intake_month, metadata
+    """
+    if not student_record:
+        return None
+    
+    # Fields to include (column_name: display_label)
+    fields_to_include = [
+        ("student_parent_name", "Student/Parent Name"),
+        ("parent_designation", "Parent Designation"),
+        ("program_interested_in", "Program Interested In"),
+        ("country_interested", "Country Interested"),
+        ("intake_year", "Intake Year"),
+        ("intake_month", "Intake Month"),
+    ]
+    
+    details = []
+    for col_name, label in fields_to_include:
+        value = student_record.get(col_name)
+        if value and str(value).strip() and str(value).strip().lower() not in ("unknown", "none", "null", ""):
+            details.append(f"- {label}: {value}")
+    
+    # Handle metadata JSON - extract useful fields
+    metadata = student_record.get("metadata")
+    if metadata and isinstance(metadata, dict):
+        for key, value in metadata.items():
+            if value and str(value).strip() and str(value).strip().lower() not in ("unknown", "none", "null", ""):
+                # Make key human-readable
+                label = key.replace("_", " ").title()
+                details.append(f"- {label}: {value}")
+    
+    if not details:
+        return None
+    
+    return (
+        "\n\n[Previous Contact Info - DO NOT ask for these details again]:\n" +
+        "\n".join(details)
+    )
+
+
 
 def _combine_contexts(*contexts: Optional[str]) -> str | None:
     parts = [segment.strip() for segment in contexts if segment and segment.strip()]
@@ -458,23 +502,45 @@ class CallService:
         # ===== EDUCATION VERTICAL: STUDENT DATA ENRICHMENT =====
         # For education tenants, look up existing student data to avoid re-asking known details
         student_context_addition = None
-        if tenant_id:
+        if tenant_id and lead_record:
             try:
                 is_edu = await is_education_tenant(tenant_id)
                 logger.info(f"[Education] Vertical check: tenant_id={tenant_id[:8]}..., is_education={is_edu}")
                 if is_edu:
-                    from db.storage.students import StudentStorage
-                    student_storage = StudentStorage()
-                    existing_student = await student_storage.get_student_by_contact(to_number)
-                    if existing_student:
-                        logger.info(f"[Education] Found existing student: id={existing_student.get('id')}, name={existing_student.get('student_name')}")
-                        student_context_addition = _build_student_context_summary(existing_student)
-                        if student_context_addition:
-                            logger.info(f"[Education] Adding to context for {to_number[:4]}***:\n{student_context_addition}")
+                    # Query lad_dev.education_students by lead_id (correct schema)
+                    from db.connection_pool import get_db_connection
+                    from psycopg2.extras import RealDictCursor
+                    lead_uuid = lead_record.get("id")
+                    if lead_uuid:
+                        db_config = get_db_config()
+                        with get_db_connection(db_config) as conn:
+                            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                                cur.execute("""
+                                    SELECT 
+                                        student_parent_name,
+                                        parent_designation,
+                                        program_interested_in,
+                                        country_interested,
+                                        intake_year,
+                                        intake_month,
+                                        metadata
+                                    FROM lad_dev.education_students
+                                    WHERE lead_id = %s::uuid
+                                    LIMIT 1
+                                """, (lead_uuid,))
+                                existing_student = cur.fetchone()
+                        
+                        if existing_student:
+                            existing_student = dict(existing_student)
+                            logger.info(f"[Education] Found existing student: parent={existing_student.get('student_parent_name')}, program={existing_student.get('program_interested_in')}")
+                            # Build context from education_students columns
+                            student_context_addition = _build_education_student_context(existing_student)
+                            if student_context_addition:
+                                logger.info(f"[Education] Adding to context for {to_number[:4]}***:\n{student_context_addition}")
+                            else:
+                                logger.info(f"[Education] Student found but no enrichable data (all fields empty)")
                         else:
-                            logger.info(f"[Education] Student found but no enrichable data (all fields empty/unknown)")
-                    else:
-                        logger.info(f"[Education] No existing student found for {to_number[:4]}*** - this is first contact")
+                            logger.info(f"[Education] No existing student record for lead_id={lead_uuid[:8]}... - first contact")
             except Exception as e:
                 logger.warning(f"[Education] Error looking up student data: {e}")
         
