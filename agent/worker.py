@@ -700,6 +700,10 @@ async def entrypoint(ctx: agents.JobContext):
     )
     
     # Create voice assistant with tools (tools already fetched above before instruction building)
+    # DEBUG: Log tool names to verify invite_human_agent is in the list
+    tool_names = [getattr(t, '__name__', getattr(t, 'name', str(t))) for t in tool_list]
+    logger.info(f"[DEBUG] tool_list contents ({len(tool_list)} tools): {tool_names}")
+    
     voice_assistant = VoiceAssistant(
         call_recorder=call_recorder,
         job_context=ctx,
