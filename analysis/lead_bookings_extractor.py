@@ -412,6 +412,10 @@ Respond ONLY in JSON format:
             # Process scheduled_at based on booking_type
             # PRIORITY 1: If time is explicitly mentioned in the call, use that time directly (no stages)
             # PRIORITY 2: If no time mentioned, use appropriate timeline pattern based on transcription length and grade
+
+            # Initialize scheduled_at and buffer_until to None before conditional logic
+            scheduled_at = None
+            buffer_until = None
             
             # First, try to extract time directly from conversation if Gemini didn't extract it
             if not scheduled_at_str or scheduled_at_str.strip() == "":
@@ -638,6 +642,20 @@ Respond ONLY in JSON format:
                     parent_booking_id = None
             
             logger.info(f"Final retry count for call_id {original_call_id}: {retry_count}")
+
+            # Ensure buffer_until is always calculated if scheduled_at exists
+            # This is a safety check to ensure buffer_until is set correctly even if code paths are missed
+            if scheduled_at and not buffer_until:
+                buffer_until = scheduled_at + timedelta(minutes=15)
+                logger.info(f"Recalculated buffer_until from scheduled_at: {buffer_until}")
+            elif scheduled_at and buffer_until:
+                # Verify buffer_until is correct (should be scheduled_at + 15 minutes)
+                expected_buffer = scheduled_at + timedelta(minutes=15)
+                if abs((buffer_until - expected_buffer).total_seconds()) > 60:  # More than 1 minute difference
+                    logger.warning(f"buffer_until ({buffer_until}) doesn't match expected ({expected_buffer}), recalculating")
+                    buffer_until = expected_buffer
+            
+            logger.info(f"scheduled_at: {scheduled_at}, buffer_until: {buffer_until}")
             
             # Create booking data (always create, even if no booking found)
             # Generate new UUID for booking id (auto-generated)
