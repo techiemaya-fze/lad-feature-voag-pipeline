@@ -624,6 +624,15 @@ CRITICAL RULES WITH EXAMPLES:
                 ) VALUES (
                     %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, FALSE
                 )
+                ON CONFLICT (tenant_id, lead_id) DO UPDATE SET
+                    student_parent_name = COALESCE(EXCLUDED.student_parent_name, lad_dev.education_students.student_parent_name),
+                    parent_designation = COALESCE(EXCLUDED.parent_designation, lad_dev.education_students.parent_designation),
+                    program_interested_in = COALESCE(EXCLUDED.program_interested_in, lad_dev.education_students.program_interested_in),
+                    country_interested = COALESCE(EXCLUDED.country_interested, lad_dev.education_students.country_interested),
+                    intake_year = COALESCE(EXCLUDED.intake_year, lad_dev.education_students.intake_year),
+                    intake_month = COALESCE(EXCLUDED.intake_month, lad_dev.education_students.intake_month),
+                    metadata = EXCLUDED.metadata,
+                    updated_at = CURRENT_TIMESTAMP
             """
             
             values = (
