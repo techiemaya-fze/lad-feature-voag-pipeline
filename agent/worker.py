@@ -644,6 +644,9 @@ async def entrypoint(ctx: agents.JobContext):
         tenant_id=tenant_id,
         user_id=initiating_user_id,
         knowledge_base_store_ids=knowledge_base_store_ids,
+        job_context=ctx,  # For human support SIP transfer
+        sip_trunk_id=outbound_trunk_id,  # SIP trunk from call routing
+        from_number=from_number,  # For number validation in human support
     )
     logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}, user_id={'set' if initiating_user_id else 'None'}")
     

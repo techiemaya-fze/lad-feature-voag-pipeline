@@ -785,17 +785,29 @@ def build_email_template_tools(
 def build_human_support_tools(
     phone_number: str,
     job_context: Any = None,
+    sip_trunk_id: str | None = None,
+    from_number: str | None = None,
 ) -> list[Callable]:
     """
     Build human support tools for transferring calls to a human agent.
     
     Args:
-        phone_number: Phone number for human support
-        job_context: LiveKit job context for SIP transfer
+        phone_number: Phone number for human support (from tenant_features config)
+        job_context: LiveKit job context for SIP transfer API access
+        sip_trunk_id: SIP trunk ID from current call (from voice_agent_numbers.rules)
+        from_number: From number of current call (for validation/logging)
         
     Returns:
         List of @function_tool decorated functions
     """
+    # Import here to avoid circular imports
+    from livekit import api
+    from utils.call_routing import validate_and_format_number
+    
+    # State tracking for the transfer
+    _transfer_pending = False
+    _transfer_complete = False
+    
     @function_tool
     async def request_human_agent(reason: str = "customer_request") -> str:
         """
@@ -810,22 +822,85 @@ def build_human_support_tools(
         Returns:
             Status message about the transfer
         """
-        try:
-            logger.info(f"Transferring to human agent: phone={phone_number[:4]}***, reason={reason}")
-            
-            if job_context and hasattr(job_context, 'room'):
-                # Initiate SIP transfer to human support number
-                # This would trigger a SIP INVITE to the support number
-                logger.info("Human support transfer initiated")
-                return f"I'm transferring you to a human agent now. Please hold."
-            
+        nonlocal _transfer_pending, _transfer_complete
+        
+        # Prevent duplicate transfers
+        if _transfer_pending:
+            logger.info("Human support transfer already pending")
+            return "A human support agent is already being connected. Please hold."
+        
+        if _transfer_complete:
+            logger.info("Human support already transferred")
+            return "A human support agent has already joined this call."
+        
+        # Validate we have required context
+        if not job_context:
+            logger.error("No job context available for human support transfer")
             return "I'm sorry, I cannot transfer you at this time. Please call back and ask for a human agent."
+        
+        # Get trunk ID - prefer call-specific, fallback to env
+        trunk_id = sip_trunk_id or os.getenv("OUTBOUND_TRUNK_ID")
+        if not trunk_id:
+            logger.error("No SIP trunk ID available for human support transfer")
+            return "I'm sorry, I cannot transfer you at this time due to a configuration issue."
+        
+        # Validate and format the human agent number using same rules as outbound calls
+        try:
+            # Get db_config for number validation
+            db_config = {
+                "host": os.getenv("DB_HOST"),
+                "port": int(os.getenv("DB_PORT", 5432)),
+                "database": os.getenv("DB_NAME"),
+                "user": os.getenv("DB_USER"),
+                "password": os.getenv("DB_PASSWORD"),
+            }
+            
+            # Use from_number routing rules if available, otherwise just use direct number
+            if from_number and db_config.get("host"):
+                routing_result = validate_and_format_number(phone_number, from_number, db_config)
+                if not routing_result.success:
+                    logger.error(f"Human agent number validation failed: {routing_result.error_message}")
+                    return f"I'm sorry, I cannot transfer you to that number: {routing_result.error_message}"
+                dial_number = routing_result.formatted_to_number
+            else:
+                # Direct dial without validation
+                dial_number = phone_number
         except Exception as e:
-            logger.error(f"Failed to transfer to human: {e}")
-            return f"Sorry, I couldn't connect you to a human agent: {str(e)}"
+            logger.warning(f"Number validation error, using direct number: {e}")
+            dial_number = phone_number
+        
+        # Mark as pending
+        _transfer_pending = True
+        
+        try:
+            logger.info(f"Initiating SIP transfer to human support: {dial_number[:4]}***, trunk={trunk_id[:8]}..., reason={reason}")
+            
+            # Create SIP participant for the human agent
+            await job_context.api.sip.create_sip_participant(
+                api.CreateSIPParticipantRequest(
+                    room_name=job_context.room.name,
+                    sip_trunk_id=trunk_id,
+                    sip_call_to=dial_number,
+                    participant_identity=f"support-{dial_number}",
+                    participant_name="Human Support Agent",
+                    wait_until_answered=True,  # Wait for answer to confirm join
+                    krisp_enabled=True,
+                )
+            )
+            
+            logger.info("Human support agent connected successfully")
+            _transfer_complete = True
+            _transfer_pending = False
+            
+            return "Great news! I have our support specialist joining us now to help you further. I'll stay on the line to take notes."
+            
+        except Exception as e:
+            _transfer_pending = False
+            logger.error(f"Failed to transfer to human support: {e}")
+            return f"I'm sorry, I couldn't connect you to a human agent. Please try calling back and asking for a human directly."
     
     tools = [request_human_agent]
-    logger.info(f"Human Support tools built: phone={phone_number[:4]}***")
+    logger.info(f"Human Support tools built: phone={phone_number[:4]}***, trunk={'set' if sip_trunk_id else 'env'}")
     return tools
 
 
@@ -908,6 +983,9 @@ async def attach_tools(
     user_id: str | int | None = None,
     vertical: str | None = None,
     knowledge_base_store_ids: list[str] | None = None,
+    job_context: Any = None,
+    sip_trunk_id: str | None = None,
+    from_number: str | None = None,
 ) -> list[Any]:
     """
     Attach tools to VoiceAssistant based on configuration.
@@ -920,6 +998,9 @@ async def attach_tools(
         user_id: User ID for OAuth
         vertical: Tenant vertical (e.g. 'education')
         knowledge_base_store_ids: KB store IDs
+        job_context: LiveKit job context for SIP tools (human support)
+        sip_trunk_id: SIP trunk ID from current call routing
+        from_number: From number of current call
         
     Returns:
         List of attached tool functions
@@ -991,9 +1072,14 @@ async def attach_tools(
         phone = cfg.get("phone_number") or os.getenv("HUMAN_SUPPORT_NUMBER")
         if phone:
             try:
-                tools = build_human_support_tools(phone)
+                tools = build_human_support_tools(
+                    phone,
+                    job_context=job_context,
+                    sip_trunk_id=sip_trunk_id,
+                    from_number=from_number,
+                )
                 attached_tools.extend(tools)
-                logger.info(f"Attached Human Support tools: {len(tools)} functions")
+                logger.info(f"Attached Human Support tools: {len(tools)} functions (trunk={'set' if sip_trunk_id else 'env'})")
             except Exception as e:
                 logger.error(f"Failed to build Human Support tools: {e}")
     
