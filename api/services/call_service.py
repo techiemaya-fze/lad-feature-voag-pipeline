@@ -461,14 +461,20 @@ class CallService:
         if tenant_id:
             try:
                 is_edu = await is_education_tenant(tenant_id)
+                logger.info(f"[Education] Vertical check: tenant_id={tenant_id[:8]}..., is_education={is_edu}")
                 if is_edu:
                     from db.storage.students import StudentStorage
                     student_storage = StudentStorage()
                     existing_student = await student_storage.get_student_by_contact(to_number)
                     if existing_student:
+                        logger.info(f"[Education] Found existing student: id={existing_student.get('id')}, name={existing_student.get('student_name')}")
                         student_context_addition = _build_student_context_summary(existing_student)
                         if student_context_addition:
-                            logger.info(f"[Education] Found existing student data for {to_number[:4]}***, adding to context")
+                            logger.info(f"[Education] Adding to context for {to_number[:4]}***:\n{student_context_addition}")
+                        else:
+                            logger.info(f"[Education] Student found but no enrichable data (all fields empty/unknown)")
+                    else:
+                        logger.info(f"[Education] No existing student found for {to_number[:4]}*** - this is first contact")
             except Exception as e:
                 logger.warning(f"[Education] Error looking up student data: {e}")
         
