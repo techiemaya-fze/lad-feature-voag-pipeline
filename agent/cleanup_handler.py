@@ -280,17 +280,29 @@ def determine_final_status(existing_status: str | None) -> str:
         existing_status: Current call status
         
     Returns:
-        Final status string
+        Final status string (standardized: pending, in_progress, ended, declined, failed)
     """
-    unchanged_terminal_statuses = {
-        "failed", "declined", "rejected", "not_reachable",
-        "no_answer", "busy", "error", "canceled", "cancelled",
-    }
+    # Standardized status values:
+    # - pending: call created, not yet connected
+    # - in_progress: call is active/connected  
+    # - ended: call completed normally
+    # - declined: call was rejected/declined by recipient
+    # - failed: technical failure or unreachable
     
-    if existing_status in unchanged_terminal_statuses:
-        return existing_status
-    if existing_status in {"ongoing", "running", "pending", "in_queue", "started"}:
-        return "ended"
+    # Map synonyms to standardized statuses
+    declined_synonyms = {"declined", "rejected", "no_answer", "busy"}
+    failed_synonyms = {"failed", "error", "not_reachable", "canceled", "cancelled"}
+    in_progress_synonyms = {"in_progress", "ongoing", "running", "started", "ringing"}
+    pending_synonyms = {"pending", "in_queue", "queued"}
+    
+    if existing_status in declined_synonyms:
+        return "declined"
+    if existing_status in failed_synonyms:
+        return "failed"
+    if existing_status in in_progress_synonyms:
+        return "ended"  # Was in progress, now ending
+    if existing_status in pending_synonyms:
+        return "ended"  # Was pending, now ending
     return existing_status or "ended"
 
 
