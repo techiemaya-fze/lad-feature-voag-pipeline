@@ -221,7 +221,11 @@ class UserTokenStorage:
         blob: bytes,
         connected_account: str | None = None,
     ) -> None:
-        """Store encrypted Microsoft OAuth token blob for user."""
+        """Store encrypted Microsoft OAuth token blob for user.
+        
+        IMPORTANT: Uses JSONB merge (||) to preserve existing booking_config
+        when only updating the token_blob.
+        """
         import base64
         provider = "microsoft"
         blob_b64 = base64.b64encode(blob).decode('utf-8')
@@ -236,18 +240,20 @@ class UserTokenStorage:
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
+                    # Use JSONB merge (||) to preserve existing data like booking_config
+                    # New data takes precedence for overlapping keys
                     cur.execute(
                         """INSERT INTO lad_dev.user_identities 
                                (user_id, provider, provider_user_id, provider_data, updated_at)
-                           VALUES (%s, %s, %s, %s, NOW())
+                           VALUES (%s, %s, %s, %s::jsonb, NOW())
                            ON CONFLICT (user_id, provider) DO UPDATE SET
                                provider_user_id = EXCLUDED.provider_user_id,
-                               provider_data = EXCLUDED.provider_data,
+                               provider_data = lad_dev.user_identities.provider_data || EXCLUDED.provider_data,
                                updated_at = NOW()""",
                         (user_id, provider, provider_user_id, json.dumps(provider_data)),
                     )
                 conn.commit()
-                logger.info("Stored Microsoft OAuth tokens for user_id=%s", user_id)
+                logger.info("Stored Microsoft OAuth tokens for user_id=%s (merged with existing data)", user_id)
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to persist Microsoft tokens for %s: %s", user_id, exc, exc_info=True)
             raise
