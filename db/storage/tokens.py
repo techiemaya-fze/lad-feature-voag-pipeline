@@ -123,6 +123,7 @@ class UserTokenStorage:
                         (user_id, provider),
                     )
                     row = cur.fetchone()
+                    logger.debug("get_identity: user_id=%s, provider=%s, found=%s", user_id, provider, bool(row))
                     return dict(row) if row else None
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to get identity for user=%s provider=%s: %s", user_id, provider, exc, exc_info=True)
@@ -325,8 +326,24 @@ class UserTokenStorage:
     async def get_booking_config(self, user_id: str) -> Optional[dict[str, Any]]:
         """Get booking configuration from Microsoft identity."""
         identity = await self.get_identity(user_id, "microsoft")
+        logger.debug("get_booking_config: user_id=%s, identity_found=%s", user_id, bool(identity))
         if not identity:
             return None
         
-        provider_data = identity.get("provider_data") or {}
-        return provider_data.get("booking_config")
+        provider_data = identity.get("provider_data")
+        logger.debug("get_booking_config: raw provider_data type=%s, value=%r", type(provider_data).__name__, str(provider_data)[:200] if provider_data else None)
+        
+        # Handle case where provider_data is a JSON string instead of dict
+        if isinstance(provider_data, str):
+            try:
+                provider_data = json.loads(provider_data)
+            except json.JSONDecodeError:
+                logger.error("get_booking_config: Failed to parse provider_data as JSON")
+                return None
+        
+        if not provider_data:
+            return None
+            
+        booking_config = provider_data.get("booking_config")
+        logger.debug("get_booking_config: booking_config=%r", booking_config)
+        return booking_config
