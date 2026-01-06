@@ -18,6 +18,7 @@ from livekit import api
 
 # Call routing validation
 from utils.call_routing import validate_and_format_call
+from utils.tenant_utils import is_education_tenant
 from db.db_config import get_db_config
 
 logger = logging.getLogger(__name__)
@@ -197,6 +198,45 @@ def _augment_context_with_lead(
         updated = _append_line(updated, notes_line)
     
     return updated.rstrip() if isinstance(updated, str) else updated
+
+
+def _build_student_context_summary(student_record: dict) -> str | None:
+    """
+    Build context summary from existing student data for education vertical.
+    
+    Returns a formatted string with existing student details that the agent
+    should NOT ask for again, or None if no meaningful data exists.
+    """
+    if not student_record:
+        return None
+    
+    # Fields to include (column_name: display_label)
+    fields_to_include = [
+        ("student_name", "Student Name"),
+        ("parent_name", "Parent Name"),
+        ("email", "Email"),
+        ("grade_year", "Grade/Year"),
+        ("school_name", "School"),
+        ("country_of_residence", "Country"),
+        ("counsellor_meeting_link", "Meeting Link"),
+        ("tags", "Lead Tag"),
+        ("stage", "Stage"),
+        ("status", "Status"),
+    ]
+    
+    details = []
+    for col_name, label in fields_to_include:
+        value = student_record.get(col_name)
+        if value and str(value).strip() and str(value).strip().lower() not in ("unknown", "none", "null", ""):
+            details.append(f"- {label}: {value}")
+    
+    if not details:
+        return None
+    
+    return (
+        "\n\n[Previous Contact Info - DO NOT ask for these details again]:\n" +
+        "\n".join(details)
+    )
 
 
 
@@ -415,6 +455,23 @@ class CallService:
         else:
             logger.warning("No tenant_id found for user=%s agent=%s, skipping lead lookup", initiated_by, agent_id)
         
+        # ===== EDUCATION VERTICAL: STUDENT DATA ENRICHMENT =====
+        # For education tenants, look up existing student data to avoid re-asking known details
+        student_context_addition = None
+        if tenant_id:
+            try:
+                is_edu = await is_education_tenant(tenant_id)
+                if is_edu:
+                    from db.storage.students import StudentStorage
+                    student_storage = StudentStorage()
+                    existing_student = await student_storage.get_student_by_contact(to_number)
+                    if existing_student:
+                        student_context_addition = _build_student_context_summary(existing_student)
+                        if student_context_addition:
+                            logger.info(f"[Education] Found existing student data for {to_number[:4]}***, adding to context")
+            except Exception as e:
+                logger.warning(f"[Education] Error looking up student data: {e}")
+        
         lead_id = lead_id_override
         # Determine lead info for agent context
         lead_name_for_agent = None
@@ -461,6 +518,10 @@ class CallService:
             email=lead_email,
             company=lead_company,
         )
+        
+        # Append student context for education vertical (if found)
+        if student_context_addition:
+            final_context = (final_context or "") + student_context_addition
         
         # Generate room name
         room_name = f"call-{job_id}-{uuid.uuid4().hex[:8]}"
