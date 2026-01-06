@@ -107,6 +107,214 @@ class LeadBookingsExtractor:
             logger.error(f"Gemini API error: {e}")
             return None
     
+    def extract_last_timestamp(self, transcriptions_data) -> Optional[datetime]:
+        """
+        Extract the last timestamp from transcriptions (UTC +00) and convert to GST
+        Returns None if no timestamp found
+        """
+        try:
+            UTC = pytz.timezone('UTC')
+            messages_list = None
+            
+            # Extract messages/segments list from various formats
+            if isinstance(transcriptions_data, dict):
+                # Check for 'messages' field
+                if 'messages' in transcriptions_data and isinstance(transcriptions_data['messages'], list):
+                    messages_list = transcriptions_data['messages']
+                    logger.debug(f"Found 'messages' field with {len(messages_list)} entries")
+                # Check for 'segments' field (alternative structure)
+                elif 'segments' in transcriptions_data and isinstance(transcriptions_data['segments'], list):
+                    messages_list = transcriptions_data['segments']
+                    logger.debug(f"Found 'segments' field with {len(messages_list)} entries")
+            elif isinstance(transcriptions_data, list):
+                messages_list = transcriptions_data
+                logger.debug(f"Transcriptions is a list with {len(messages_list)} entries")
+            
+            if not messages_list:
+                logger.warning(f"No messages/segments list found in transcriptions. Type: {type(transcriptions_data)}")
+                return None
+            
+            # Find the last message with a timestamp
+            last_timestamp = None
+            for idx, entry in enumerate(reversed(messages_list)):  # Start from the end
+                if not isinstance(entry, dict):
+                    continue
+                    
+                # Try various timestamp field names (timestamp is the primary one)
+                timestamp = (entry.get('timestamp') or entry.get('created_at') or 
+                           entry.get('time') or entry.get('date') or 
+                           entry.get('timestamp_utc') or entry.get('time_utc'))
+                
+                if timestamp:
+                    try:
+                        logger.debug(f"Processing timestamp entry #{idx}: {timestamp} (type: {type(timestamp)})")
+                        
+                        # Handle different timestamp formats
+                        if isinstance(timestamp, str):
+                            timestamp_str = timestamp.strip()
+                            logger.debug(f"Parsing timestamp string: {timestamp_str}")
+                            
+                            # Try ISO format first - handles: "2026-01-06T15:56:04.594238+00:00"
+                            try:
+                                # datetime.fromisoformat handles ISO format with microseconds and timezone
+                                dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                                logger.debug(f"Successfully parsed ISO format: {dt}")
+                            except ValueError as e:
+                                logger.debug(f"ISO format failed: {e}, trying strptime formats")
+                                # Try parsing with strptime for various formats
+                                formats = [
+                                    '%Y-%m-%dT%H:%M:%S.%f%z',  # "2026-01-06T15:56:04.594238+00:00"
+                                    '%Y-%m-%dT%H:%M:%S%z',      # "2026-01-06T15:56:04+00:00"
+                                    '%Y-%m-%d %H:%M:%S.%f%z',   # Space separator with microseconds
+                                    '%Y-%m-%d %H:%M:%S%z',      # Space separator with timezone
+                                    '%Y-%m-%dT%H:%M:%S.%fZ',    # ISO with Z
+                                    '%Y-%m-%dT%H:%M:%SZ',       # ISO with Z
+                                    '%Y-%m-%d %H:%M:%S',        # No timezone (assume UTC)
+                                    '%Y-%m-%dT%H:%M:%S',        # ISO no timezone (assume UTC)
+                                ]
+                                
+                                dt = None
+                                for fmt in formats:
+                                    try:
+                                        dt = datetime.strptime(timestamp_str, fmt)
+                                        logger.debug(f"Successfully parsed with format {fmt}: {dt}")
+                                        break
+                                    except ValueError:
+                                        continue
+                                
+                                if not dt:
+                                    logger.warning(f"Could not parse timestamp: {timestamp_str}")
+                                    continue
+                        elif isinstance(timestamp, datetime):
+                            dt = timestamp
+                            logger.debug(f"Timestamp is already datetime: {dt}")
+                        else:
+                            logger.debug(f"Unknown timestamp type: {type(timestamp)}")
+                            continue
+                        
+                        # Ensure UTC timezone (+00)
+                        if dt.tzinfo is None:
+                            # No timezone info - assume UTC (as per user's requirement "+00")
+                            dt = UTC.localize(dt)
+                            logger.debug(f"Localized to UTC: {dt}")
+                        elif dt.tzinfo != UTC:
+                            # Convert to UTC first
+                            dt = dt.astimezone(UTC)
+                            logger.debug(f"Converted to UTC: {dt}")
+                        
+                        last_timestamp = dt
+                        logger.info(f"Found last timestamp in transcription: {timestamp} -> {dt} (UTC)")
+                        break  # Found the last timestamp
+                    except Exception as e:
+                        logger.warning(f"Error parsing timestamp {timestamp}: {e}", exc_info=True)
+                        continue
+            
+            if last_timestamp:
+                # Convert from UTC to GST
+                gst_timestamp = last_timestamp.astimezone(GST)
+                logger.info(f"Extracted last timestamp from transcriptions: {last_timestamp} (UTC) -> {gst_timestamp} (GST)")
+                return self._normalize_datetime(gst_timestamp)
+            else:
+                logger.warning(f"No valid timestamp found in {len(messages_list)} transcription entries")
+                # Log first few entries for debugging
+                for i, entry in enumerate(messages_list[:3]):
+                    logger.debug(f"Entry {i} keys: {list(entry.keys()) if isinstance(entry, dict) else 'Not a dict'}")
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Error extracting last timestamp from transcriptions: {e}", exc_info=True)
+            return None
+    
+    def extract_first_timestamp(self, transcriptions_data) -> Optional[datetime]:
+        """
+        Extract the first timestamp from transcriptions (UTC +00) and convert to GST
+        Returns None if no timestamp found
+        """
+        try:
+            UTC = pytz.timezone('UTC')
+            messages_list = None
+            
+            # Extract messages/segments list from various formats
+            if isinstance(transcriptions_data, dict):
+                # Check for 'messages' field
+                if 'messages' in transcriptions_data and isinstance(transcriptions_data['messages'], list):
+                    messages_list = transcriptions_data['messages']
+                # Check for 'segments' field (alternative structure)
+                elif 'segments' in transcriptions_data and isinstance(transcriptions_data['segments'], list):
+                    messages_list = transcriptions_data['segments']
+            elif isinstance(transcriptions_data, list):
+                messages_list = transcriptions_data
+            
+            if not messages_list:
+                return None
+            
+            # Find the first message with a timestamp (iterate forward from start)
+            first_timestamp = None
+            for idx, entry in enumerate(messages_list):
+                if not isinstance(entry, dict):
+                    continue
+                    
+                # Try various timestamp field names
+                timestamp = (entry.get('timestamp') or entry.get('created_at') or 
+                           entry.get('time') or entry.get('date') or 
+                           entry.get('timestamp_utc') or entry.get('time_utc'))
+                
+                if timestamp:
+                    try:
+                        # Handle different timestamp formats (same logic as extract_last_timestamp)
+                        if isinstance(timestamp, str):
+                            timestamp_str = timestamp.strip()
+                            try:
+                                dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                            except ValueError:
+                                formats = [
+                                    '%Y-%m-%dT%H:%M:%S.%f%z',
+                                    '%Y-%m-%dT%H:%M:%S%z',
+                                    '%Y-%m-%d %H:%M:%S.%f%z',
+                                    '%Y-%m-%d %H:%M:%S%z',
+                                    '%Y-%m-%dT%H:%M:%S.%fZ',
+                                    '%Y-%m-%dT%H:%M:%SZ',
+                                    '%Y-%m-%d %H:%M:%S',
+                                    '%Y-%m-%dT%H:%M:%S',
+                                ]
+                                dt = None
+                                for fmt in formats:
+                                    try:
+                                        dt = datetime.strptime(timestamp_str, fmt)
+                                        break
+                                    except ValueError:
+                                        continue
+                                if not dt:
+                                    continue
+                        elif isinstance(timestamp, datetime):
+                            dt = timestamp
+                        else:
+                            continue
+                        
+                        # Ensure UTC timezone
+                        if dt.tzinfo is None:
+                            dt = UTC.localize(dt)
+                        elif dt.tzinfo != UTC:
+                            dt = dt.astimezone(UTC)
+                        
+                        first_timestamp = dt
+                        logger.info(f"Found first timestamp in transcription: {timestamp} -> {dt} (UTC)")
+                        break  # Found the first timestamp
+                    except Exception as e:
+                        logger.debug(f"Error parsing first timestamp {timestamp}: {e}")
+                        continue
+            
+            if first_timestamp:
+                # Convert from UTC to GST
+                gst_timestamp = first_timestamp.astimezone(GST)
+                logger.info(f"Extracted first timestamp from transcriptions: {first_timestamp} (UTC) -> {gst_timestamp} (GST)")
+                return self._normalize_datetime(gst_timestamp)
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Error extracting first timestamp from transcriptions: {e}")
+            return None
+    
     def parse_transcription(self, transcriptions_data) -> str:
         """Parse transcription from various formats - processes ALL conversations without limit"""
         if isinstance(transcriptions_data, dict):
@@ -292,8 +500,25 @@ Respond ONLY in JSON format:
         
         return normalized
     
-    async def calculate_scheduled_at(self, booking_type: str, scheduled_at_str: str, reference_time: datetime) -> Optional[datetime]:
-        """Calculate scheduled_at using schedule_calculator based on booking_type (async-compatible)"""
+    def _normalize_datetime(self, dt: datetime) -> datetime:
+        """Remove microseconds from datetime to keep format as YYYY-MM-DD HH:MM:SS"""
+        if dt:
+            return dt.replace(microsecond=0)
+        return dt
+    
+    async def calculate_scheduled_at(self, booking_type: str, scheduled_at_str: str, reference_time: datetime, conversation_text: Optional[str] = None, transcriptions_data: Optional[Dict] = None, started_at: Optional[datetime] = None) -> Optional[datetime]:
+        """
+        Calculate scheduled_at using schedule_calculator based on booking_type (async-compatible)
+        For simple "X minutes" patterns, uses direct calculation to ensure correct time
+        
+        Args:
+            booking_type: Type of booking (auto_followup or auto_consultation)
+            scheduled_at_str: Time string extracted from conversation
+            reference_time: Reference time for calculations (usually last transcription timestamp)
+            conversation_text: Full conversation text to check for "tomorrow" or date mentions
+            transcriptions_data: Raw transcriptions data to extract first timestamp
+            started_at: Call start time (fallback if no transcription timestamp found)
+        """
         if not booking_type or not scheduled_at_str:
             return None
         
@@ -305,6 +530,184 @@ Respond ONLY in JSON format:
             logger.warning(f"Error normalizing time string '{scheduled_at_str}': {e}, using original string")
             normalized_time_str = scheduled_at_str  # Fallback to original if normalization fails
         
+        # Check if "tomorrow" is mentioned IN RELATION TO the specific time phrase
+        # Only check if explicitly mentioned with the time, not anywhere in conversation
+        is_tomorrow_mentioned = False
+        is_today_mentioned = False
+        specific_date = None
+        
+        # FIRST: Check the normalized scheduled_at_str itself for "tomorrow" mentions
+        # This is the most reliable indicator - if Gemini extracted "tomorrow at 6:30", it's in the string
+        normalized_lower = normalized_time_str.lower()
+        if 'tomorrow' in normalized_lower or 'next day' in normalized_lower:
+            is_tomorrow_mentioned = True
+            logger.info(f"Found 'tomorrow' directly in scheduled_at_str: '{scheduled_at_str}'")
+        elif 'today' in normalized_lower or 'this day' in normalized_lower:
+            is_today_mentioned = True
+            logger.info(f"Found 'today' directly in scheduled_at_str: '{scheduled_at_str}'")
+        
+        # SECOND: If not found in scheduled_at_str, check conversation context ONLY around time mentions
+        # Look for patterns like "call me tomorrow at 6:30" or "tomorrow after 10 minutes"
+        # BUT: Only check if it's clearly related to the booking time, not just mentioned anywhere
+        if not is_tomorrow_mentioned and conversation_text:
+            conversation_lower = conversation_text.lower()
+            
+            # Look for "tomorrow" in context with time phrases
+            # Patterns: "tomorrow at [time]", "call [me/you] tomorrow at [time]", "tomorrow [time]"
+            tomorrow_context_patterns = [
+                r'tomorrow\s+(?:at|in|after|around)?\s*(?:\d{1,2}[:.]\d{2}|\d+\s*(?:mins?|minutes?|hours?))',  # "tomorrow at 6:30" or "tomorrow in 20 minutes"
+                r'(?:call|ring|phone|will\s+call)\s+(?:me|you)?\s+tomorrow\s+(?:at|in|after)?',  # "call me tomorrow at" or "will call you tomorrow"
+                r'tomorrow\s+(?:we|i|let)\s+(?:will|shall)?\s*(?:call|ring|phone)',  # "tomorrow we will call"
+            ]
+            
+            for pattern in tomorrow_context_patterns:
+                if re.search(pattern, conversation_lower):
+                    is_tomorrow_mentioned = True
+                    logger.info(f"Found 'tomorrow' in context with time phrase: '{pattern}'")
+                    break
+            
+            # Only check for "today" if we didn't find tomorrow
+            if not is_tomorrow_mentioned:
+                today_context_patterns = [
+                    r'today\s+(?:at|in|after|around)?\s*(?:\d{1,2}[:.]\d{2}|\d+\s*(?:mins?|minutes?|hours?))',
+                    r'(?:call|ring|phone|will\s+call)\s+(?:me|you)?\s+today\s+(?:at|in|after)?',
+                ]
+                for pattern in today_context_patterns:
+                    if re.search(pattern, conversation_lower):
+                        is_today_mentioned = True
+                        logger.info(f"Found 'today' in context with time phrase: '{pattern}'")
+                        break
+        
+        # PRIORITY 1: Check for absolute time patterns (e.g., "6:20", "6:20 PM", "6:20 GST", "18:20")
+        # These should be used as-is without relative calculation
+        absolute_time_patterns = [
+            r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "6:20", "6:20 PM", "6:20 GST" - group 1=hour, 2=min, 3=AM/PM
+            r'\b(\d{1,2}):(\d{2})\s*(?:GST|IST|UTC)\b',  # "6:20 GST" - group 1=hour, 2=min
+            r'\b(\d{1,2})\.(\d{2})\s*(AM|PM|am|pm)?\b',  # "6.20 PM" - group 1=hour, 2=min, 3=AM/PM
+            r'(?:^|\s)at\s+(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\b',  # "at 6:20 PM" - group 1=hour, 2=min, 3=AM/PM
+            r'(?:^|\s)at\s+(\d{1,2}):(\d{2})\s*(?:GST|IST|UTC)\b',  # "at 6:20 GST" - group 1=hour, 2=min
+        ]
+        
+        for pattern in absolute_time_patterns:
+            time_match = re.search(pattern, normalized_time_str, re.IGNORECASE)
+            if time_match:
+                try:
+                    # Groups 1 and 2 are always hour and minute
+                    hour = int(time_match.group(1))
+                    minute = int(time_match.group(2))
+                    
+                    # Check for AM/PM in group 3 (if present) or in full match
+                    is_pm = False
+                    is_am = False
+                    
+                    # Check if group 3 exists and contains AM/PM
+                    if len(time_match.groups()) >= 3 and time_match.group(3):
+                        ampm_str = time_match.group(3).upper()
+                        if ampm_str == 'PM':
+                            is_pm = True
+                        elif ampm_str == 'AM':
+                            is_am = True
+                    
+                    # Fallback: check full match text for AM/PM
+                    if not is_pm and not is_am:
+                        matched_text = time_match.group(0).upper()
+                        if 'PM' in matched_text:
+                            is_pm = True
+                        elif 'AM' in matched_text:
+                            is_am = True
+                    
+                    # Convert to 24-hour format if AM/PM is specified
+                    if is_pm and hour != 12:
+                        hour = hour + 12
+                    elif is_am and hour == 12:
+                        hour = 0
+                    elif not is_am and not is_pm:
+                        # No AM/PM specified - assume 24-hour format if hour > 12, else assume current context
+                        if hour > 12:
+                            # Already 24-hour format
+                            pass
+                        else:
+                            # Could be 12-hour format without AM/PM - use as-is and let schedule_calculator handle it
+                            pass
+                    
+                    # Validate time
+                    if 0 <= hour <= 23 and 0 <= minute <= 59:
+                        # Build datetime from reference_time date with the specified time
+                        target_time_today = reference_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                        
+                        # For absolute times like "6:30 GST", use the time directly
+                        # Only schedule for tomorrow if explicitly mentioned "tomorrow at 6:30"
+                        if is_tomorrow_mentioned:
+                            # Explicitly mentioned "tomorrow" with the time - schedule for tomorrow
+                            target_time = target_time_today + timedelta(days=1)
+                            logger.info(f"Absolute time {hour:02d}:{minute:02d} - 'tomorrow' explicitly mentioned, scheduling for: {target_time}")
+                        elif is_today_mentioned:
+                            # Explicitly mentioned "today" - schedule for today even if time has passed
+                            target_time = target_time_today
+                            logger.info(f"Absolute time {hour:02d}:{minute:02d} - 'today' explicitly mentioned, scheduling for: {target_time}")
+                        else:
+                            # No explicit date mentioned - use the time as-is for TODAY
+                            # Even if time has passed, schedule for today (same day as conversation)
+                            target_time = target_time_today
+                            if target_time_today < reference_time:
+                                logger.info(f"Absolute time {hour:02d}:{minute:02d} has passed, but no 'tomorrow' mentioned - scheduling for today: {target_time}")
+                            else:
+                                logger.info(f"Absolute time {hour:02d}:{minute:02d} is later today, scheduling for: {target_time}")
+                        
+                        logger.info(f"Absolute time detected: '{normalized_time_str}' -> {target_time}")
+                        return self._normalize_datetime(target_time)
+                except (ValueError, IndexError, AttributeError) as e:
+                    logger.debug(f"Error parsing absolute time from '{normalized_time_str}': {e}")
+                    continue
+        
+        # PRIORITY 2: Direct calculation for simple "X minutes" patterns (relative time)
+        # This ensures correct time calculation for "in 20 minutes", "after 30 minutes", etc.
+        # For relative times, use FIRST TIMESTAMP DATE (or started_at) + the relative time
+        direct_minutes_match = re.search(r'(?:after|in|within)\s+(\d+)\s*(?:mins?|minutes?)', normalized_time_str.lower())
+        if direct_minutes_match:
+            try:
+                minutes = int(direct_minutes_match.group(1))
+                # Validate reasonable range (1 minute to 7 days = 10080 minutes)
+                if 1 <= minutes <= 10080:
+                    # For relative times, use FIRST TIMESTAMP DATE (or started_at) as the base date
+                    base_time = None
+                    
+                    # Get the date from first transcription timestamp (or started_at as fallback)
+                    if transcriptions_data:
+                        first_timestamp = self.extract_first_timestamp(transcriptions_data)
+                        if first_timestamp:
+                            base_time = first_timestamp
+                            logger.info(f"Using first transcription timestamp as base for relative time: {base_time}")
+                    
+                    # Fallback to started_at if no transcription timestamp
+                    if not base_time and started_at:
+                        if started_at.tzinfo is None:
+                            base_time = GST.localize(started_at)
+                        else:
+                            base_time = started_at.astimezone(GST)
+                        logger.info(f"Using started_at as base for relative time: {base_time}")
+                    
+                    # Final fallback to reference_time (last timestamp)
+                    if not base_time:
+                        base_time = reference_time
+                        logger.info(f"Using reference_time (last timestamp) as base for relative time: {base_time}")
+                    
+                    # Calculate relative time from base_time
+                    if is_tomorrow_mentioned:
+                        # User said "tomorrow after X minutes" - schedule for tomorrow
+                        calculated_time = base_time + timedelta(days=1, minutes=minutes)
+                        logger.info(f"Relative time '{normalized_time_str}' with 'tomorrow' mentioned: {base_time} + 1 day + {minutes} minutes = {calculated_time}")
+                    else:
+                        # Normal relative time - add minutes to base_time (first timestamp or started_at)
+                        calculated_time = base_time + timedelta(minutes=minutes)
+                        logger.info(f"Relative time (same day): '{normalized_time_str}' = {base_time} + {minutes} minutes = {calculated_time}")
+                    return self._normalize_datetime(calculated_time)
+                else:
+                    logger.warning(f"Minutes value {minutes} out of reasonable range (1-10080), trying schedule_calculator")
+            except (ValueError, TypeError) as e:
+                logger.debug(f"Could not parse minutes from '{normalized_time_str}': {e}, trying schedule_calculator")
+        
+        # For complex patterns or if direct calculation fails, use schedule_calculator
         try:
             # Wrap CPU-bound calculations in asyncio.to_thread to avoid blocking event loop
             def _calculate():
@@ -332,16 +735,123 @@ Respond ONLY in JSON format:
                 return calculator.calculate_next_call(outcome, outcome_details, None)
             
             scheduled_at = await asyncio.to_thread(_calculate)
-            return scheduled_at
+            
+            # CRITICAL: Only combine with first timestamp for RELATIVE times (not absolute times)
+            # Check if this is a relative time pattern (if absolute time, it would have been caught earlier)
+            is_relative_time = direct_minutes_match is not None or any(keyword in normalized_time_str.lower() for keyword in ['after', 'in', 'within', 'minutes', 'mins'])
+            is_absolute_time = bool(re.search(r'\b\d{1,2}[:.]\d{2}', normalized_time_str))  # Contains time pattern like "7:45"
+            
+            if scheduled_at:
+                # If absolute time is explicitly mentioned, use schedule_calculator result as-is (don't combine with first timestamp)
+                if is_absolute_time and not is_relative_time:
+                    logger.info(f"Absolute time detected in '{normalized_time_str}', using schedule_calculator result as-is: {scheduled_at}")
+                    return self._normalize_datetime(scheduled_at)
+                
+                # For relative times, combine with first timestamp date
+                try:
+                    # Get the date from first transcription timestamp (or started_at as fallback)
+                    first_timestamp_date = None
+                    if transcriptions_data:
+                        first_timestamp = self.extract_first_timestamp(transcriptions_data)
+                        if first_timestamp:
+                            first_timestamp_date = first_timestamp.date()
+                            logger.info(f"Using first transcription timestamp date for relative time: {first_timestamp_date}")
+                    
+                    # Fallback to started_at if no transcription timestamp
+                    if not first_timestamp_date and started_at:
+                        if started_at.tzinfo is None:
+                            started_at_gst = GST.localize(started_at)
+                        else:
+                            started_at_gst = started_at.astimezone(GST)
+                        first_timestamp_date = started_at_gst.date()
+                        logger.info(f"Using started_at date as fallback for relative time: {first_timestamp_date}")
+                    
+                    # If we have a date from first timestamp, use it with the time from schedule_calculator
+                    if first_timestamp_date:
+                        # Extract time (hour, minute) from schedule_calculator result
+                        calc_hour = scheduled_at.hour
+                        calc_minute = scheduled_at.minute
+                        
+                        # Combine first timestamp date with schedule_calculator time
+                        combined_time = GST.localize(datetime.combine(first_timestamp_date, scheduled_at.time().replace(second=0, microsecond=0)))
+                        logger.info(f"Combined first timestamp date ({first_timestamp_date}) with schedule_calculator time ({calc_hour:02d}:{calc_minute:02d}) = {combined_time}")
+                        return self._normalize_datetime(combined_time)
+                    else:
+                        # No first timestamp or started_at - use schedule_calculator result as-is
+                        logger.warning(f"No first timestamp or started_at found, using schedule_calculator result as-is: {scheduled_at}")
+                        return self._normalize_datetime(scheduled_at)
+                except Exception as e:
+                    logger.warning(f"Error combining first timestamp date with schedule_calculator time: {e}, using schedule_calculator result as-is")
+                    return self._normalize_datetime(scheduled_at)
+            
+            # Validate that schedule_calculator result is reasonable (for relative times)
+            if scheduled_at and direct_minutes_match:
+                try:
+                    minutes = int(direct_minutes_match.group(1))
+                    expected_time = reference_time + timedelta(minutes=minutes)
+                    time_diff = abs((scheduled_at - expected_time).total_seconds())
+                    # If schedule_calculator result differs by more than 1 hour from expected, use direct calculation
+                    if time_diff > 3600:  # More than 1 hour difference
+                        logger.warning(f"schedule_calculator returned {scheduled_at} but expected {expected_time} for '{normalized_time_str}', using direct calculation")
+                        return self._normalize_datetime(expected_time)
+                except Exception as e:
+                    logger.debug(f"Error validating schedule_calculator result: {e}")
+            
+            return self._normalize_datetime(scheduled_at) if scheduled_at else None
             
         except Exception as e:
             logger.error(f"Error calculating scheduled_at using schedule_calculator: {e}")
+            # Final fallback: try direct calculation if we have minutes
+            if direct_minutes_match:
+                try:
+                    minutes = int(direct_minutes_match.group(1))
+                    if 1 <= minutes <= 10080:
+                            return self._normalize_datetime(reference_time + timedelta(minutes=minutes))
+                except Exception:
+                    pass
             # Fallback to simple parsing with normalized string
             try:
                 def _parse():
                     calculator = ScheduleCalculator()
                     return calculator.parse_callback_time(normalized_time_str, reference_time)  # Use normalized string
-                return await asyncio.to_thread(_parse)
+                fallback_result = await asyncio.to_thread(_parse)
+                
+                # CRITICAL: Only combine with first timestamp for RELATIVE times (not absolute times)
+                if fallback_result:
+                    # Check if this is a relative time pattern
+                    is_relative_time_fallback = direct_minutes_match is not None or any(keyword in normalized_time_str.lower() for keyword in ['after', 'in', 'within', 'minutes', 'mins'])
+                    is_absolute_time_fallback = bool(re.search(r'\b\d{1,2}[:.]\d{2}', normalized_time_str))
+                    
+                    # If absolute time, use result as-is
+                    if is_absolute_time_fallback and not is_relative_time_fallback:
+                        logger.info(f"Absolute time in fallback, using result as-is: {fallback_result}")
+                        return self._normalize_datetime(fallback_result)
+                    
+                    # For relative times, combine with first timestamp date
+                    try:
+                        # Get the date from first transcription timestamp (or started_at as fallback)
+                        first_timestamp_date = None
+                        if transcriptions_data:
+                            first_timestamp = self.extract_first_timestamp(transcriptions_data)
+                            if first_timestamp:
+                                first_timestamp_date = first_timestamp.date()
+                        
+                        if not first_timestamp_date and started_at:
+                            if started_at.tzinfo is None:
+                                started_at_gst = GST.localize(started_at)
+                            else:
+                                started_at_gst = started_at.astimezone(GST)
+                            first_timestamp_date = started_at_gst.date()
+                        
+                        if first_timestamp_date:
+                            # Combine first timestamp date with fallback result time
+                            combined_time = GST.localize(datetime.combine(first_timestamp_date, fallback_result.time().replace(second=0, microsecond=0)))
+                            logger.info(f"Combined first timestamp date ({first_timestamp_date}) with fallback parse time = {combined_time}")
+                            return self._normalize_datetime(combined_time)
+                    except Exception as e:
+                        logger.warning(f"Error combining date with fallback result: {e}")
+                
+                return self._normalize_datetime(fallback_result) if fallback_result else None
             except Exception as e2:
                 logger.error(f"Error in fallback parsing: {e2}")
                 return None
@@ -481,12 +991,27 @@ Respond ONLY in JSON format:
                 logger.info(f"Student grade not mentioned in conversation, will use default Grade 12+ timeline")
             
             # Get reference time for calculations
-            reference_time = datetime.now(GST)
+            # IMPORTANT: Use the LAST TIMESTAMP from transcriptions (UTC) converted to GST
+            # This ensures scheduling is based on when the conversation actually happened, not when it's processed
+            reference_time = None
+            last_transcript_timestamp = self.extract_last_timestamp(transcripts)
+            
+            if last_transcript_timestamp:
+                reference_time = last_transcript_timestamp
+                logger.info(f"Using last transcription timestamp as reference_time: {reference_time} (GST)")
+            else:
+                # Fallback to current time if no timestamp found in transcriptions
+                reference_time = self._normalize_datetime(datetime.now(GST))
+                logger.warning(f"No timestamp found in transcriptions, using current time as reference_time: {reference_time}")
+            
+            # For logging purposes, we still track the original call start time
+            call_start_time = None
             if started_at:
                 if started_at.tzinfo is None:
-                    reference_time = GST.localize(started_at)
+                    call_start_time = GST.localize(started_at)
                 else:
-                    reference_time = started_at.astimezone(GST)
+                    call_start_time = started_at.astimezone(GST)
+                logger.debug(f"Call started at: {call_start_time}, using transcription timestamp {reference_time} as reference for scheduling")
             
             # Process scheduled_at based on booking_type
             # PRODUCTION-READY MULTI-LAYER TIME EXTRACTION STRATEGY:
@@ -505,7 +1030,26 @@ Respond ONLY in JSON format:
             use_glinks_scheduler = False
 
             # Determine whether an explicit time phrase was provided by Gemini or fallback extraction
+            # Also check if the time is "confirmed" vs "uncertain/unconfirmed" (e.g., questions like "within next ten minutes?")
             explicit_time_mentioned = bool(scheduled_at_str and str(scheduled_at_str).strip())
+            time_is_confirmed = False
+            
+            # Check if time is confirmed (not a question or uncertainty)
+            if explicit_time_mentioned:
+                time_str_lower = str(scheduled_at_str).strip().lower()
+                # Check for uncertainty indicators
+                uncertainty_indicators = ['?', 'maybe', 'perhaps', 'possibly', 'might', 'could', 'should', 'may', 'not sure', 'uncertain']
+                is_uncertain = any(indicator in time_str_lower for indicator in uncertainty_indicators)
+                # Check for question patterns
+                is_question = time_str_lower.endswith('?') or '?' in time_str_lower
+                
+                if is_uncertain or is_question:
+                    logger.info(f"Time phrase '{scheduled_at_str}' contains uncertainty/question - treating as UNCONFIRMED time")
+                    time_is_confirmed = False
+                    explicit_time_mentioned = False  # Treat as if no time was mentioned
+                else:
+                    time_is_confirmed = True
+                    logger.info(f"Time phrase '{scheduled_at_str}' is CONFIRMED")
 
             # Comprehensive time extraction function - Production-ready with robust error handling
             def extract_time_from_conversation(text: str) -> Optional[str]:
@@ -664,7 +1208,58 @@ Respond ONLY in JSON format:
                             logger.debug(f"Error processing written number pattern #{idx+1}: {e}")
                             continue
                     
-                    # Pattern 2: "next Sunday", "tomorrow", etc.
+                    # Pattern 2: Absolute times (e.g., "7:45 PM GST", "6:30 PM", "at 7:45")
+                    # These should be extracted directly from conversation
+                    absolute_time_patterns = [
+                        r'(?:call|ring|phone|reach|connect)\s+(?:you|me|him|her|them|us)?\s+(?:at|around|about)?\s*(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "call you at 7:45 PM GST"
+                        r'(?:at|around|about)\s+(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "at 7:45 PM GST"
+                        r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)\b',  # "7:45 PM GST", "6:30 PM GST"
+                        r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)\b',  # "7:45 PM", "6:30 AM"
+                        r'\b(\d{1,2}):(\d{2})\s*(?:GST|IST|UTC)\b',  # "7:45 GST"
+                        r'\b(\d{1,2})\.(\d{2})\s*(AM|PM|am|pm)?\b',  # "7.45 PM"
+                    ]
+                    
+                    for idx, pattern in enumerate(absolute_time_patterns):
+                        try:
+                            match = re.search(pattern, text_lower, re.IGNORECASE)
+                            if match:
+                                hour = match.group(1)
+                                minute = match.group(2)
+                                ampm = match.group(3) if len(match.groups()) >= 3 and match.group(3) else None
+                                
+                                # Validate hour and minute
+                                try:
+                                    hour_int = int(hour)
+                                    minute_int = int(minute)
+                                    if not (0 <= hour_int <= 23 and 0 <= minute_int <= 59):
+                                        logger.debug(f"Invalid time values: hour={hour_int}, minute={minute_int}, skipping")
+                                        continue
+                                except ValueError:
+                                    logger.debug(f"Could not parse hour/minute: hour={hour}, minute={minute}")
+                                    continue
+                                
+                                # Build time string
+                                if ampm:
+                                    result = f"{hour}:{minute} {ampm.upper()}"
+                                else:
+                                    result = f"{hour}:{minute}"
+                                
+                                # Check if GST/IST/UTC is in the match
+                                matched_text = match.group(0).upper()
+                                if 'GST' in matched_text:
+                                    result += " GST"
+                                elif 'IST' in matched_text:
+                                    result += " IST"
+                                elif 'UTC' in matched_text:
+                                    result += " UTC"
+                                
+                                logger.info(f"Extracted absolute time from conversation using pattern #{idx+1} '{pattern[:60]}...': matched '{match.group(0)}' -> '{result}'")
+                                return result
+                        except (ValueError, IndexError, AttributeError) as e:
+                            logger.debug(f"Error processing absolute time pattern #{idx+1}: {e}")
+                            continue
+                    
+                    # Pattern 3: "next Sunday", "tomorrow", etc.
                     day_patterns = [
                         r'(?:book|schedule|meeting|call).*?next\s+(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|sunday|monday|tuesday|wednesday|thursday|friday|saturday)',
                         r'(?:book|schedule|meeting|call).*?tomorrow',
@@ -697,11 +1292,11 @@ Respond ONLY in JSON format:
                     scheduled_at_str = extracted_time
                     explicit_time_mentioned = True
                     logger.info(f"Extracted time from conversation text (fallback): '{scheduled_at_str}'")
-            # If an explicit time phrase was provided, calculate scheduled_at using schedule_calculator
-            if explicit_time_mentioned:
+            # If an explicit CONFIRMED time phrase was provided, calculate scheduled_at using schedule_calculator
+            if explicit_time_mentioned and time_is_confirmed:
                 # Time is explicitly mentioned - use it directly, no stage-based calculation
                 logger.info(f"Time explicitly mentioned in conversation: '{scheduled_at_str}' - using this time directly (no stage-based calculation)")
-                scheduled_at = await self.calculate_scheduled_at(booking_type, scheduled_at_str, reference_time)
+                scheduled_at = await self.calculate_scheduled_at(booking_type, scheduled_at_str, reference_time, conversation_text, transcripts, started_at)
                 if not scheduled_at:
                     logger.warning(f"Could not calculate scheduled_at from: '{scheduled_at_str}'")
                     logger.info("Trying to extract time from conversation directly...")
@@ -725,12 +1320,47 @@ Respond ONLY in JSON format:
                                 def _parse_time():
                                     calculator = ScheduleCalculator()
                                     return calculator.parse_callback_time(normalized_extracted_time, reference_time)
-                                scheduled_at = await asyncio.to_thread(_parse_time)
+                                calc_result = await asyncio.to_thread(_parse_time)
+                                
+                                # Only combine with first timestamp for RELATIVE times
+                                is_relative_check = any(keyword in normalized_extracted_time.lower() for keyword in ['after', 'in', 'within', 'minutes', 'mins'])
+                                is_absolute_check = bool(re.search(r'\b\d{1,2}[:.]\d{2}', normalized_extracted_time))
+                                
+                                # If absolute time, use result as-is
+                                if is_absolute_check and not is_relative_check:
+                                    scheduled_at = calc_result
+                                    logger.info(f"Absolute time detected, using schedule_calculator result as-is: {scheduled_at}")
+                                elif calc_result and transcripts:
+                                    # For relative times, combine with first timestamp date
+                                    try:
+                                        first_timestamp = self.extract_first_timestamp(transcripts)
+                                        if first_timestamp:
+                                            first_timestamp_date = first_timestamp.date()
+                                            combined_time = GST.localize(datetime.combine(first_timestamp_date, calc_result.time().replace(second=0, microsecond=0)))
+                                            scheduled_at = self._normalize_datetime(combined_time)
+                                            logger.info(f"Combined first timestamp date with schedule_calculator time: {scheduled_at}")
+                                        elif started_at:
+                                            if started_at.tzinfo is None:
+                                                started_at_gst = GST.localize(started_at)
+                                            else:
+                                                started_at_gst = started_at.astimezone(GST)
+                                            first_timestamp_date = started_at_gst.date()
+                                            combined_time = GST.localize(datetime.combine(first_timestamp_date, calc_result.time().replace(second=0, microsecond=0)))
+                                            scheduled_at = self._normalize_datetime(combined_time)
+                                            logger.info(f"Combined started_at date with schedule_calculator time: {scheduled_at}")
+                                        else:
+                                            scheduled_at = self._normalize_datetime(calc_result)
+                                    except Exception as e:
+                                        logger.warning(f"Error combining date with schedule_calculator result: {e}, using as-is")
+                                        scheduled_at = self._normalize_datetime(calc_result)
+                                else:
+                                    scheduled_at = self._normalize_datetime(calc_result)
+                                
                                 logger.info(f"Extracted time from conversation using schedule_calculator: {scheduled_at}")
                             except Exception as e:
                                 logger.warning(f"schedule_calculator failed: {e}, using direct calculation")
                                 # Fallback to direct timedelta calculation
-                                scheduled_at = reference_time + timedelta(minutes=minutes)
+                                scheduled_at = self._normalize_datetime(reference_time + timedelta(minutes=minutes))
                                 logger.info(f"Extracted time from conversation (fallback): {scheduled_at}")
                         else:
                             # Try schedule_calculator with the normalized extracted phrase
@@ -738,7 +1368,42 @@ Respond ONLY in JSON format:
                                 def _parse_time():
                                     calculator = ScheduleCalculator()
                                     return calculator.parse_callback_time(normalized_extracted_time, reference_time)
-                                scheduled_at = await asyncio.to_thread(_parse_time)
+                                calc_result = await asyncio.to_thread(_parse_time)
+                                
+                                # Only combine with first timestamp for RELATIVE times
+                                is_relative_check = any(keyword in normalized_extracted_time.lower() for keyword in ['after', 'in', 'within', 'minutes', 'mins'])
+                                is_absolute_check = bool(re.search(r'\b\d{1,2}[:.]\d{2}', normalized_extracted_time))
+                                
+                                # If absolute time, use result as-is
+                                if is_absolute_check and not is_relative_check:
+                                    scheduled_at = calc_result
+                                    logger.info(f"Absolute time detected, using schedule_calculator result as-is: {scheduled_at}")
+                                elif calc_result and transcripts:
+                                    # For relative times, combine with first timestamp date
+                                    try:
+                                        first_timestamp = self.extract_first_timestamp(transcripts)
+                                        if first_timestamp:
+                                            first_timestamp_date = first_timestamp.date()
+                                            combined_time = GST.localize(datetime.combine(first_timestamp_date, calc_result.time().replace(second=0, microsecond=0)))
+                                            scheduled_at = self._normalize_datetime(combined_time)
+                                            logger.info(f"Combined first timestamp date with schedule_calculator time: {scheduled_at}")
+                                        elif started_at:
+                                            if started_at.tzinfo is None:
+                                                started_at_gst = GST.localize(started_at)
+                                            else:
+                                                started_at_gst = started_at.astimezone(GST)
+                                            first_timestamp_date = started_at_gst.date()
+                                            combined_time = GST.localize(datetime.combine(first_timestamp_date, calc_result.time().replace(second=0, microsecond=0)))
+                                            scheduled_at = self._normalize_datetime(combined_time)
+                                            logger.info(f"Combined started_at date with schedule_calculator time: {scheduled_at}")
+                                        else:
+                                            scheduled_at = self._normalize_datetime(calc_result)
+                                    except Exception as e:
+                                        logger.warning(f"Error combining date with schedule_calculator result: {e}, using as-is")
+                                        scheduled_at = self._normalize_datetime(calc_result)
+                                else:
+                                    scheduled_at = self._normalize_datetime(calc_result)
+                                
                                 logger.info(f"Extracted time from conversation using schedule_calculator: {scheduled_at}")
                             except Exception as e:
                                 logger.warning(f"Could not parse extracted time '{normalized_extracted_time}': {e}")
@@ -749,54 +1414,68 @@ Respond ONLY in JSON format:
                         scheduled_at = None
                 
                 # Calculate buffer_until (scheduled_at + 15 minutes)
-                buffer_until = scheduled_at + timedelta(minutes=15) if scheduled_at else None
+                buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15)) if scheduled_at else None
             else:
-                # No explicit time phrase mentioned by Gemini - try one final extraction attempt
-                # This is a production safety net to catch any time mentions that might have been missed
-                logger.info(f"No explicit time from Gemini, attempting final extraction from conversation text...")
-                final_extracted_time = extract_time_from_conversation(conversation_text)
-                if final_extracted_time:
-                    logger.info(f"Final extraction successful! Found time: '{final_extracted_time}'")
-                    scheduled_at_str = final_extracted_time
-                    # Try to calculate scheduled_at using the extracted time
-                    scheduled_at = await self.calculate_scheduled_at(booking_type, scheduled_at_str, reference_time)
-                    if scheduled_at:
-                        buffer_until = scheduled_at + timedelta(minutes=15)
-                        explicit_time_mentioned = True
-                        logger.info(f"Successfully calculated scheduled_at from final extraction: {scheduled_at}")
-                    else:
-                        # Try direct calculation if schedule_calculator fails
-                        # CRITICAL: Normalize extracted time first (convert written numbers to numeric)
-                        try:
-                            normalized_final_time = self.normalize_time_string(final_extracted_time)
-                        except Exception as e:
-                            logger.warning(f"Error normalizing final extracted time '{final_extracted_time}': {e}, using as-is")
-                            normalized_final_time = final_extracted_time
-                        minutes_match = re.search(r'(\d+)\s*(?:mins?|minutes?)', normalized_final_time.lower())
-                        if minutes_match:
+                # No explicit CONFIRMED time phrase mentioned by Gemini - try one final extraction attempt
+                # But skip if time was mentioned but not confirmed (uncertain/question)
+                if not time_is_confirmed and scheduled_at_str:
+                    logger.info(f"Time mentioned but not confirmed ('{scheduled_at_str}'), skipping final extraction - will use first transcription time with schedule_calculator date")
+                    use_glinks_scheduler = True
+                    scheduled_at = None
+                    buffer_until = None
+                else:
+                    # This is a production safety net to catch any time mentions that might have been missed
+                    logger.info(f"No explicit time from Gemini, attempting final extraction from conversation text...")
+                    logger.debug(f"Conversation text sample (first 500 chars): {conversation_text[:500] if conversation_text else 'None'}")
+                    final_extracted_time = extract_time_from_conversation(conversation_text)
+                    if final_extracted_time:
+                        logger.info(f"Final extraction successful! Found time: '{final_extracted_time}'")
+                        scheduled_at_str = final_extracted_time
+                        # Try to calculate scheduled_at using the extracted time
+                        scheduled_at = await self.calculate_scheduled_at(booking_type, scheduled_at_str, reference_time, conversation_text, transcripts, started_at)
+                        if scheduled_at:
+                            buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
+                            explicit_time_mentioned = True
+                            logger.info(f"Successfully calculated scheduled_at from final extraction: {scheduled_at}")
+                        else:
+                            # Try direct calculation if schedule_calculator fails
+                            # CRITICAL: Normalize extracted time first (convert written numbers to numeric)
                             try:
-                                minutes = int(minutes_match.group(1))
-                                # Validate reasonable range
-                                if 1 <= minutes <= 10080:  # 1 minute to 7 days
-                                    scheduled_at = reference_time + timedelta(minutes=minutes)
-                                    buffer_until = scheduled_at + timedelta(minutes=15)
-                                    explicit_time_mentioned = True
-                                    logger.info(f"Calculated scheduled_at using direct timedelta: {scheduled_at}")
-                                else:
-                                    logger.warning(f"Extracted time out of reasonable range: {minutes} minutes")
+                                normalized_final_time = self.normalize_time_string(final_extracted_time)
+                            except Exception as e:
+                                logger.warning(f"Error normalizing final extracted time '{final_extracted_time}': {e}, using as-is")
+                                normalized_final_time = final_extracted_time
+                            minutes_match = re.search(r'(\d+)\s*(?:mins?|minutes?)', normalized_final_time.lower())
+                            if minutes_match:
+                                try:
+                                    minutes = int(minutes_match.group(1))
+                                    # Validate reasonable range
+                                    if 1 <= minutes <= 10080:  # 1 minute to 7 days
+                                        scheduled_at = self._normalize_datetime(reference_time + timedelta(minutes=minutes))
+                                        buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
+                                        explicit_time_mentioned = True
+                                        logger.info(f"Calculated scheduled_at using direct timedelta: {scheduled_at}")
+                                    else:
+                                        logger.warning(f"Extracted time out of reasonable range: {minutes} minutes")
+                                        scheduled_at = None
+                                        buffer_until = None
+                                except (ValueError, TypeError) as e:
+                                    logger.warning(f"Could not parse minutes from extracted time: {e}")
                                     scheduled_at = None
                                     buffer_until = None
-                            except (ValueError, TypeError) as e:
-                                logger.warning(f"Could not parse minutes from extracted time: {e}")
+                            else:
                                 scheduled_at = None
                                 buffer_until = None
-                        else:
-                            scheduled_at = None
-                            buffer_until = None
-                
-                # If still no time found after all attempts, delegate to Glinks scheduler
-                if not explicit_time_mentioned or not scheduled_at:
-                    logger.info(f"No explicit time found after all extraction attempts — delegating scheduling to Glinks scheduler for call {call_id}")
+                    
+                    # If still no time found after all attempts, or time is not confirmed, delegate to Glinks scheduler
+                if not explicit_time_mentioned or not time_is_confirmed or not scheduled_at:
+                    if explicit_time_mentioned and not time_is_confirmed:
+                        logger.info(f"Time mentioned but not confirmed (uncertain/question), will combine first transcription time with schedule_calculator date for call {call_id}")
+                    else:
+                        logger.warning(f"No explicit confirmed time found after all extraction attempts for call {call_id}")
+                        logger.info(f"Conversation text length: {len(conversation_text) if conversation_text else 0} chars")
+                        logger.debug(f"Full conversation text: {conversation_text}")
+                    logger.info(f"Delegating scheduling to Glinks scheduler (will combine first transcription time with schedule_calculator date) for call {call_id}")
                     use_glinks_scheduler = True
                     scheduled_at = None
                     buffer_until = None
@@ -915,14 +1594,70 @@ Respond ONLY in JSON format:
             
             logger.info(f"Final retry count for call_id {original_call_id}: {retry_count}")
 
+            # If no time was confirmed and use_glinks_scheduler is True, combine first transcription time with schedule_calculator date
+            if use_glinks_scheduler and not scheduled_at and booking_type:
+                try:
+                    logger.info("No time confirmed - combining first transcription time with schedule_calculator date")
+                    
+                    # Get the time from first transcription timestamp
+                    first_transcript_timestamp = self.extract_first_timestamp(transcripts)
+                    if first_transcript_timestamp:
+                        first_time = first_transcript_timestamp.time()  # Extract just the time
+                        logger.info(f"Extracted time from first transcription: {first_time}")
+                        
+                        # Get the date from schedule_calculator based on booking_type and retry_count
+                        def _get_schedule_date():
+                            calculator = ScheduleCalculator()
+                            
+                            # Determine outcome based on booking_type
+                            if booking_type == "auto_followup":
+                                outcome = "callback_requested"
+                                outcome_details = {}  # No specific time - will use default schedule
+                            elif booking_type == "auto_consultation":
+                                outcome = "meeting_booked"
+                                outcome_details = {}  # No specific time - will use default schedule
+                            else:
+                                outcome = "callback_requested"
+                                outcome_details = {}
+                            
+                            # Calculate next call date using schedule calculator
+                            # Pass lead_info with retry_count to influence the schedule
+                            lead_info = {
+                                "retry_count": retry_count,
+                                "stage": 1  # Default stage
+                            }
+                            schedule_result = calculator.calculate_next_call(outcome, outcome_details, lead_info)
+                            return schedule_result
+                        
+                        schedule_datetime = await asyncio.to_thread(_get_schedule_date)
+                        
+                        if schedule_datetime:
+                            # Extract date from schedule_calculator result
+                            schedule_date = schedule_datetime.date()
+                            logger.info(f"Got date from schedule_calculator: {schedule_date}")
+                            
+                            # Combine schedule_calculator date with first transcription time
+                            combined_datetime = GST.localize(datetime.combine(schedule_date, first_time.replace(second=0, microsecond=0)))
+                            scheduled_at = self._normalize_datetime(combined_datetime)
+                            buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
+                            use_glinks_scheduler = False  # We've scheduled it, so don't delegate to Glinks
+                            
+                            logger.info(f"Combined schedule_calculator date ({schedule_date}) with first transcription time ({first_time}) = {scheduled_at}")
+                        else:
+                            logger.warning("schedule_calculator returned None, cannot combine with first transcription time")
+                    else:
+                        logger.warning("No first transcription timestamp found, cannot extract time for combination")
+                except Exception as e:
+                    logger.error(f"Error combining first transcription time with schedule_calculator date: {e}", exc_info=True)
+
             # Ensure buffer_until is always calculated if scheduled_at exists
             # This is a safety check to ensure buffer_until is set correctly even if code paths are missed
             if scheduled_at and not buffer_until:
-                buffer_until = scheduled_at + timedelta(minutes=15)
+                buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
                 logger.info(f"Recalculated buffer_until from scheduled_at: {buffer_until}")
             elif scheduled_at and buffer_until:
                 # Verify buffer_until is correct (should be scheduled_at + 15 minutes)
-                expected_buffer = scheduled_at + timedelta(minutes=15)
+                expected_buffer = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
                 if abs((buffer_until - expected_buffer).total_seconds()) > 60:  # More than 1 minute difference
                     logger.warning(f"buffer_until ({buffer_until}) doesn't match expected ({expected_buffer}), recalculating")
                     buffer_until = expected_buffer
@@ -951,8 +1686,8 @@ Respond ONLY in JSON format:
                     "call_id": original_call_id  # Store current call's call_id (voice_call_logs.id) in metadata
                 } if original_call_id else {},  # Fresh lead: metadata = {"call_id": <current_call_id>}. Follow-up: metadata = {"call_id": <current_call_id>}
                 "created_by": str(voice_id) if voice_id else None,
-                "created_at": datetime.now(GST).isoformat(),
-                "updated_at": datetime.now(GST).isoformat(),
+                "created_at": datetime.now(GST).replace(microsecond=0).isoformat(),
+                "updated_at": datetime.now(GST).replace(microsecond=0).isoformat(),
                 "is_deleted": False,
                 "buffer_until": buffer_until.strftime("%Y-%m-%d %H:%M:%S") if buffer_until else None
             }
