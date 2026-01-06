@@ -802,7 +802,6 @@ def build_human_support_tools(
     """
     # Import here to avoid circular imports
     from livekit import api
-    from utils.call_routing import validate_and_format_number
     
     # State tracking for the transfer
     _transfer_pending = False
@@ -865,8 +864,10 @@ def build_human_support_tools(
             
             # Use from_number routing rules if available, otherwise just use direct number
             if from_number and db_config.get("host"):
-                logger.info(f"[HumanSupport] Validating number using from_number={from_number[:4]}*** routing rules")
-                routing_result = validate_and_format_number(phone_number, from_number, db_config)
+                logger.info(f"[HumanSupport] Validating number using from_number={from_number[:4] if from_number else 'None'}*** routing rules")
+                # Import here to avoid circular imports
+                from utils.call_routing import validate_and_format_call
+                routing_result = validate_and_format_call(from_number, phone_number, db_config)
                 if not routing_result.success:
                     logger.error(f"[HumanSupport] FAILED: Number validation failed: {routing_result.error_message}")
                     return f"I'm sorry, I cannot transfer you to that number: {routing_result.error_message}"
