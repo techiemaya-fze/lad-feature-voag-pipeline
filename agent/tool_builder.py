@@ -600,6 +600,7 @@ def build_microsoft_bookings_tools(
     """
     if bookings_client is None:
         from tools.microsoft_bookings import AgentMicrosoftBookings
+        logger.debug("build_microsoft_bookings_tools: user_id=%r, business_id=%r", user_id, business_id)
         bookings_client = AgentMicrosoftBookings(
             user_id=user_id,
             default_business_id=business_id,
