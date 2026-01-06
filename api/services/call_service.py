@@ -530,6 +530,7 @@ class CallService:
                 "phone_number": dial_number,  # Formatted number for SIP dialing
                 "call_mode": "outbound",  # Tell worker this is outbound
                 "from_number": from_number,
+                "initiated_by": initiated_by,  # User ID for OAuth tools
             }
             
             if llm_provider:
