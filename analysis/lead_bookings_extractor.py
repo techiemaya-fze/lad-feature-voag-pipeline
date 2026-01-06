@@ -226,10 +226,84 @@ Respond ONLY in JSON format:
             logger.error(f"JSON decode error: {e}, Response: {response}")
             return {"booking_type": "auto_followup", "scheduled_at": None, "student_grade": None, "call_id": None}
     
+    def normalize_time_string(self, time_str: str) -> str:
+        """
+        Normalize time string by converting written numbers to numeric format.
+        This handles cases like "in twenty minutes" -> "in 20 minutes"
+        
+        Production-safe: Handles None, empty strings, and non-string inputs gracefully.
+        """
+        if not time_str:
+            return "" if time_str is None else str(time_str)
+        
+        # Ensure time_str is a string (handle any non-string input)
+        if not isinstance(time_str, str):
+            try:
+                time_str = str(time_str)
+            except Exception as e:
+                logger.warning(f"Could not convert time_str to string: {e}, returning original")
+                return str(time_str) if time_str is not None else ""
+        
+        # Dictionary mapping written numbers to digits (for common time expressions)
+        written_numbers = {
+            'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
+            'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9',
+            'ten': '10', 'eleven': '11', 'twelve': '12', 'thirteen': '13',
+            'fourteen': '14', 'fifteen': '15', 'sixteen': '16', 'seventeen': '17',
+            'eighteen': '18', 'nineteen': '19', 'twenty': '20', 'thirty': '30',
+            'forty': '40', 'fifty': '50', 'sixty': '60', 'seventy': '70',
+            'eighty': '80', 'ninety': '90', 'hundred': '100'
+        }
+        
+        # Handle compound numbers like "twenty-one", "thirty-five", etc.
+        def convert_written_to_number(text: str) -> str:
+            text_lower = text.lower()
+            
+            # Handle compound numbers (twenty-one, thirty-five, etc.)
+            compound_pattern = r'(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[-\s]?(one|two|three|four|five|six|seven|eight|nine)'
+            def replace_compound(match):
+                tens = match.group(1)
+                ones = match.group(2)
+                tens_num = written_numbers.get(tens, '0')
+                ones_num = written_numbers.get(ones, '0')
+                try:
+                    result = str(int(tens_num) + int(ones_num))
+                    logger.debug(f"Converted compound number '{match.group(0)}' to '{result}'")
+                    return result
+                except:
+                    return match.group(0)
+            
+            text_lower = re.sub(compound_pattern, replace_compound, text_lower)
+            
+            # Replace simple written numbers
+            for written, numeric in written_numbers.items():
+                # Use word boundaries to avoid partial matches
+                pattern = r'\b' + re.escape(written) + r'\b'
+                if re.search(pattern, text_lower):
+                    text_lower = re.sub(pattern, numeric, text_lower)
+                    logger.debug(f"Converted written number '{written}' to '{numeric}'")
+            
+            return text_lower
+        
+        normalized = convert_written_to_number(time_str)
+        
+        if normalized != time_str.lower():
+            logger.info(f"Normalized time string: '{time_str}' -> '{normalized}'")
+        
+        return normalized
+    
     async def calculate_scheduled_at(self, booking_type: str, scheduled_at_str: str, reference_time: datetime) -> Optional[datetime]:
         """Calculate scheduled_at using schedule_calculator based on booking_type (async-compatible)"""
         if not booking_type or not scheduled_at_str:
             return None
+        
+        # Normalize time string to convert written numbers to numeric format
+        # e.g., "in twenty minutes" -> "in 20 minutes"
+        try:
+            normalized_time_str = self.normalize_time_string(scheduled_at_str)
+        except Exception as e:
+            logger.warning(f"Error normalizing time string '{scheduled_at_str}': {e}, using original string")
+            normalized_time_str = scheduled_at_str  # Fallback to original if normalization fails
         
         try:
             # Wrap CPU-bound calculations in asyncio.to_thread to avoid blocking event loop
@@ -241,18 +315,18 @@ Respond ONLY in JSON format:
                     # Use callback_requested outcome for auto_followup
                     outcome = "callback_requested"
                     outcome_details = {
-                        "callback_time": scheduled_at_str
+                        "callback_time": normalized_time_str  # Use normalized string
                     }
                 elif booking_type == "auto_consultation":
                     # Use meeting_booked outcome for auto_consultation
                     outcome = "meeting_booked"
                     outcome_details = {
-                        "callback_time": scheduled_at_str,
-                        "followup_time": scheduled_at_str
+                        "callback_time": normalized_time_str,  # Use normalized string
+                        "followup_time": normalized_time_str  # Use normalized string
                     }
                 else:
                     # Fallback: just parse the time string
-                    return calculator.parse_callback_time(scheduled_at_str, reference_time)
+                    return calculator.parse_callback_time(normalized_time_str, reference_time)  # Use normalized string
                 
                 # Calculate next call time using schedule calculator
                 return calculator.calculate_next_call(outcome, outcome_details, None)
@@ -262,11 +336,11 @@ Respond ONLY in JSON format:
             
         except Exception as e:
             logger.error(f"Error calculating scheduled_at using schedule_calculator: {e}")
-            # Fallback to simple parsing
+            # Fallback to simple parsing with normalized string
             try:
                 def _parse():
                     calculator = ScheduleCalculator()
-                    return calculator.parse_callback_time(scheduled_at_str, reference_time)
+                    return calculator.parse_callback_time(normalized_time_str, reference_time)  # Use normalized string
                 return await asyncio.to_thread(_parse)
             except Exception as e2:
                 logger.error(f"Error in fallback parsing: {e2}")
@@ -361,8 +435,13 @@ Respond ONLY in JSON format:
             
             # Extract booking info using Gemini first
             logger.info(f"Extracting booking info from conversation (length: {len(conversation_text)} chars)")
-            booking_info = await self.extract_booking_info(conversation_text)
-            logger.info(f"Extracted booking info: {booking_info}")
+            try:
+                booking_info = await self.extract_booking_info(conversation_text)
+                logger.info(f"Extracted booking info: {booking_info}")
+            except Exception as e:
+                logger.error(f"Gemini API extraction failed: {e}, will use fallback extraction", exc_info=True)
+                # Fallback to empty booking info - will trigger regex extraction
+                booking_info = {"booking_type": "auto_followup", "scheduled_at": None, "student_grade": None, "call_id": None}
             
             # parent_booking_id: Stores the call_id from metadata of the first booking (where retry_count = 0, parent_booking_id IS NULL)
             # Store call_id in metadata for reference
@@ -410,29 +489,216 @@ Respond ONLY in JSON format:
                     reference_time = started_at.astimezone(GST)
             
             # Process scheduled_at based on booking_type
+            # PRODUCTION-READY MULTI-LAYER TIME EXTRACTION STRATEGY:
+            # Layer 1: Gemini API extraction (primary method)
+            # Layer 2: Regex pattern extraction if Gemini fails or misses time
+            # Layer 3: Final extraction attempt before delegating to Glinks scheduler
+            # This ensures any time mentioned in conversation is captured, even if Gemini API fails
+            #
             # PRIORITY 1: If time is explicitly mentioned in the call, use that time directly (no stages)
-            # PRIORITY 2: If no time mentioned, use appropriate timeline pattern based on transcription length and grade
+            # PRIORITY 2: If no explicit time mentioned, DO NOT auto-generate a scheduled_at here —
+            #             send the booking to the Glinks scheduler instead (booking_source='glinks')
 
             # Initialize scheduled_at and buffer_until to None before conditional logic
             scheduled_at = None
             buffer_until = None
-            
+            use_glinks_scheduler = False
+
+            # Determine whether an explicit time phrase was provided by Gemini or fallback extraction
+            explicit_time_mentioned = bool(scheduled_at_str and str(scheduled_at_str).strip())
+
+            # Comprehensive time extraction function - Production-ready with robust error handling
+            def extract_time_from_conversation(text: str) -> Optional[str]:
+                """Extract time phrases from conversation text with multiple patterns - Production hardened"""
+                if not text or not isinstance(text, str):
+                    logger.warning("extract_time_from_conversation: Invalid text input")
+                    return None
+                
+                # Local helper function to normalize written numbers (duplicated from class method for nested function access)
+                def normalize_written_numbers(time_str: str) -> str:
+                    """Normalize written numbers to numeric format - Production-safe with error handling"""
+                    if not time_str:
+                        return "" if time_str is None else str(time_str) if not isinstance(time_str, str) else time_str
+                    
+                    try:
+                        # Ensure input is string
+                        if not isinstance(time_str, str):
+                            time_str = str(time_str)
+                        
+                        written_numbers = {
+                            'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
+                            'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9',
+                            'ten': '10', 'eleven': '11', 'twelve': '12', 'thirteen': '13',
+                            'fourteen': '14', 'fifteen': '15', 'sixteen': '16', 'seventeen': '17',
+                            'eighteen': '18', 'nineteen': '19', 'twenty': '20', 'thirty': '30',
+                            'forty': '40', 'fifty': '50', 'sixty': '60', 'seventy': '70',
+                            'eighty': '80', 'ninety': '90', 'hundred': '100'
+                        }
+                        
+                        text_lower = time_str.lower()
+                        
+                        # Handle compound numbers (twenty-one, thirty-five, etc.)
+                        compound_pattern = r'(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[-\s]?(one|two|three|four|five|six|seven|eight|nine)'
+                        def replace_compound(match):
+                            try:
+                                tens = match.group(1)
+                                ones = match.group(2)
+                                tens_num = written_numbers.get(tens, '0')
+                                ones_num = written_numbers.get(ones, '0')
+                                return str(int(tens_num) + int(ones_num))
+                            except (ValueError, IndexError, AttributeError):
+                                return match.group(0)  # Return original if conversion fails
+                        
+                        text_lower = re.sub(compound_pattern, replace_compound, text_lower)
+                        
+                        # Replace simple written numbers
+                        for written, numeric in written_numbers.items():
+                            try:
+                                pattern = r'\b' + re.escape(written) + r'\b'
+                                text_lower = re.sub(pattern, numeric, text_lower)
+                            except Exception:
+                                continue  # Skip this replacement if it fails, continue with others
+                        
+                        return text_lower
+                    except Exception as e:
+                        logger.debug(f"Error in normalize_written_numbers for '{time_str}': {e}, returning original")
+                        return str(time_str) if not isinstance(time_str, str) else time_str
+                
+                try:
+                    # Normalize text: remove extra whitespace, handle quotes, punctuation
+                    text_cleaned = re.sub(r'\s+', ' ', text)  # Normalize whitespace
+                    text_lower = text_cleaned.lower()
+                    
+                    # Pattern 1: "call me after/in/within X mins/minutes" (with or without "me")
+                    # Enhanced patterns to handle various formats and edge cases
+                    patterns = [
+                        # "call me after 5 mins", "call after 5 mins", "just call me after 5 mins"
+                        r'(?:just\s+)?(?:call\s+(?:me\s+)?|calling\s+)(?:back\s+)?(?:after|in|within)\s+(\d+)\s*(?:mins?|minutes?)',
+                        # "after 5 mins", "in 5 mins", "within 5 mins" (standalone, with punctuation)
+                        r'(?:^|[.\s,\'"])(?:after|in|within)\s+(\d+)\s*(?:mins?|minutes?)(?:\s|\.|$|,|;|\'|")',
+                        # "5 mins later", "5 minutes later"
+                        r'(\d+)\s*(?:mins?|minutes?)\s+later',
+                        # "call me in 5", "call after 5" (without mins/minutes, context-dependent)
+                        r'(?:just\s+)?(?:call\s+(?:me\s+)?|calling\s+)(?:back\s+)?(?:after|in|within)\s+(\d+)(?:\s|\.|$|,|;|\'|")(?!\s*(?:hours?|hrs?|days?|weeks?|months?))',
+                        # "after 5", "in 5" (standalone, likely means minutes if context suggests it)
+                        r'(?:^|[.\s,\'"])(?:after|in|within)\s+(\d+)(?:\s|\.|$|,|;|\'|")(?!\s*(?:hours?|hrs?|days?|weeks?|months?))',
+                        # "call me 5 mins", "call 5 mins" (time before "mins")
+                        r'(?:just\s+)?(?:call\s+(?:me\s+)?|calling\s+)(?:back\s+)?(\d+)\s*(?:mins?|minutes?)',
+                        # "ring me after 5 mins", "phone me after 5 mins" (alternative verbs)
+                        r'(?:ring|phone|reach)\s+(?:me\s+)?(?:after|in|within)\s+(\d+)\s*(?:mins?|minutes?)',
+                        # "get back to me in 5 mins"
+                        r'get\s+back\s+(?:to\s+)?(?:me\s+)?(?:after|in|within)\s+(\d+)\s*(?:mins?|minutes?)',
+                        # "connect in 5 mins", "reach out in 5 mins"
+                        r'(?:connect|reach\s+out)\s+(?:after|in|within)\s+(\d+)\s*(?:mins?|minutes?)',
+                    ]
+                    
+                    # Pattern 1b: Written numbers (e.g., "twenty minutes", "thirty minutes")
+                    written_number_patterns = [
+                        # "call me in twenty minutes", "after twenty minutes"
+                        r'(?:just\s+)?(?:call\s+(?:me\s+)?|calling\s+)(?:back\s+)?(?:after|in|within)\s+(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|thirty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|forty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|fifty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine))\s*(?:mins?|minutes?)',
+                        # "in twenty minutes", "after thirty minutes" (standalone)
+                        r'(?:^|[.\s,\'"])(?:after|in|within)\s+(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|thirty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|forty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|fifty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine))\s*(?:mins?|minutes?)(?:\s|\.|$|,|;|\'|")',
+                    ]
+                    
+                    for idx, pattern in enumerate(patterns):
+                        try:
+                            match = re.search(pattern, text_lower)
+                            if match:
+                                minutes_str = match.group(1)
+                                if not minutes_str or not minutes_str.isdigit():
+                                    continue
+                                
+                                minutes = int(minutes_str)
+                                
+                                # Validation: reasonable time range (1 minute to 7 days = 10080 minutes)
+                                # Production safety: cap at reasonable maximum
+                                MAX_MINUTES = 10080  # 7 days
+                                MIN_MINUTES = 1
+                                
+                                if minutes < MIN_MINUTES:
+                                    logger.warning(f"Extracted invalid minutes value: {minutes} (too small), skipping")
+                                    continue
+                                if minutes > MAX_MINUTES:
+                                    logger.warning(f"Extracted very large minutes value: {minutes}, capping at {MAX_MINUTES}")
+                                    minutes = MAX_MINUTES
+                                
+                                # Use "after X mins" format as it's most common and well-handled
+                                result = f"after {minutes} mins"
+                                logger.info(f"Extracted time from conversation using pattern #{idx+1} '{pattern[:50]}...': '{result}'")
+                                return result
+                        except (ValueError, IndexError, AttributeError) as e:
+                            logger.debug(f"Error processing pattern #{idx+1}: {e}")
+                            continue
+                    
+                    # Pattern 1b: Process written number patterns (e.g., "twenty minutes")
+                    for idx, pattern in enumerate(written_number_patterns):
+                        try:
+                            match = re.search(pattern, text_lower)
+                            if match:
+                                # Extract the matched text and normalize it
+                                matched_text = match.group(0).strip()
+                                # Normalize written numbers to numeric format
+                                normalized_text = normalize_written_numbers(matched_text)
+                                
+                                # Extract numeric minutes from normalized text
+                                minutes_match = re.search(r'(\d+)\s*(?:mins?|minutes?)', normalized_text.lower())
+                                if minutes_match:
+                                    minutes = int(minutes_match.group(1))
+                                    
+                                    # Validation: reasonable time range
+                                    MAX_MINUTES = 10080  # 7 days
+                                    MIN_MINUTES = 1
+                                    
+                                    if minutes < MIN_MINUTES:
+                                        logger.warning(f"Extracted invalid minutes value from written number: {minutes} (too small), skipping")
+                                        continue
+                                    if minutes > MAX_MINUTES:
+                                        logger.warning(f"Extracted very large minutes value from written number: {minutes}, capping at {MAX_MINUTES}")
+                                        minutes = MAX_MINUTES
+                                    
+                                    # Use "after X mins" format
+                                    result = f"after {minutes} mins"
+                                    logger.info(f"Extracted time from conversation using written number pattern #{idx+1} '{pattern[:50]}...': '{matched_text}' -> '{result}'")
+                                    return result
+                        except (ValueError, IndexError, AttributeError) as e:
+                            logger.debug(f"Error processing written number pattern #{idx+1}: {e}")
+                            continue
+                    
+                    # Pattern 2: "next Sunday", "tomorrow", etc.
+                    day_patterns = [
+                        r'(?:book|schedule|meeting|call).*?next\s+(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|sunday|monday|tuesday|wednesday|thursday|friday|saturday)',
+                        r'(?:book|schedule|meeting|call).*?tomorrow',
+                        r'next\s+(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|sunday|monday|tuesday|wednesday|thursday|friday|saturday)',
+                        r'tomorrow(?:\s+at)?\s*(\d{1,2})?\s*(?:AM|PM|am|pm)?',
+                    ]
+                    
+                    for idx, pattern in enumerate(day_patterns):
+                        try:
+                            match = re.search(pattern, text_lower)
+                            if match:
+                                result = match.group(0).strip()
+                                logger.info(f"Extracted time from conversation using day pattern #{idx+1} '{pattern[:50]}...': '{result}'")
+                                return result
+                        except (AttributeError, IndexError) as e:
+                            logger.debug(f"Error processing day pattern #{idx+1}: {e}")
+                            continue
+                    
+                    logger.debug("No time pattern matched in conversation text")
+                    return None
+                    
+                except Exception as e:
+                    logger.error(f"Error in extract_time_from_conversation: {e}", exc_info=True)
+                    return None
+
             # First, try to extract time directly from conversation if Gemini didn't extract it
-            if not scheduled_at_str or scheduled_at_str.strip() == "":
-                # Try to extract time directly from conversation text as fallback
-                time_match = re.search(r'(?:call me|calling|call back|book|schedule).*?(?:after|in|within)\s+(\d+)\s*(?:mins?|minutes?)', conversation_text.lower())
-                if time_match:
-                    minutes = int(time_match.group(1))
-                    scheduled_at_str = f"after {minutes} mins"
+            if not explicit_time_mentioned:
+                extracted_time = extract_time_from_conversation(conversation_text)
+                if extracted_time:
+                    scheduled_at_str = extracted_time
+                    explicit_time_mentioned = True
                     logger.info(f"Extracted time from conversation text (fallback): '{scheduled_at_str}'")
-                else:
-                    # Try to find "next Sunday", "tomorrow", etc.
-                    next_sunday_match = re.search(r'(?:book|schedule|meeting).*?next\s+(?:Sunday|sunday)', conversation_text.lower())
-                    if next_sunday_match:
-                        scheduled_at_str = "next Sunday"
-                        logger.info(f"Extracted time from conversation text (fallback): '{scheduled_at_str}'")
-            
-            if scheduled_at_str and scheduled_at_str.strip() != "":
+            # If an explicit time phrase was provided, calculate scheduled_at using schedule_calculator
+            if explicit_time_mentioned:
                 # Time is explicitly mentioned - use it directly, no stage-based calculation
                 logger.info(f"Time explicitly mentioned in conversation: '{scheduled_at_str}' - using this time directly (no stage-based calculation)")
                 scheduled_at = await self.calculate_scheduled_at(booking_type, scheduled_at_str, reference_time)
@@ -440,94 +706,100 @@ Respond ONLY in JSON format:
                     logger.warning(f"Could not calculate scheduled_at from: '{scheduled_at_str}'")
                     logger.info("Trying to extract time from conversation directly...")
                     # Try to extract time directly from conversation if schedule_calculator didn't work
-                    time_match = re.search(r'(?:within|after|in)\s+(\d+)\s*(?:mins?|minutes?)', conversation_text.lower())
-                    if time_match:
-                        minutes = int(time_match.group(1))
-                        # Use schedule_calculator for this too
+                    extracted_time = extract_time_from_conversation(conversation_text)
+                    if extracted_time:
+                        # CRITICAL: Normalize extracted time (convert written numbers to numeric)
+                        # This handles cases where extraction finds "in twenty minutes" etc.
                         try:
-                            def _parse_time():
-                                calculator = ScheduleCalculator()
-                                temp_str = f"within {minutes} minutes"
-                                return calculator.parse_callback_time(temp_str, reference_time)
-                            scheduled_at = await asyncio.to_thread(_parse_time)
-                            logger.info(f"Extracted time from conversation using schedule_calculator: {scheduled_at}")
-                        except:
-                            scheduled_at = reference_time + timedelta(minutes=minutes)
-                            logger.info(f"Extracted time from conversation (fallback): {scheduled_at}")
+                            normalized_extracted_time = self.normalize_time_string(extracted_time)
+                        except Exception as e:
+                            logger.warning(f"Error normalizing extracted time '{extracted_time}': {e}, using as-is")
+                            normalized_extracted_time = extracted_time
+                        
+                        # Try to extract minutes value for direct calculation
+                        minutes_match = re.search(r'(\d+)\s*(?:mins?|minutes?)', normalized_extracted_time.lower())
+                        if minutes_match:
+                            minutes = int(minutes_match.group(1))
+                            # Try schedule_calculator first with normalized time
+                            try:
+                                def _parse_time():
+                                    calculator = ScheduleCalculator()
+                                    return calculator.parse_callback_time(normalized_extracted_time, reference_time)
+                                scheduled_at = await asyncio.to_thread(_parse_time)
+                                logger.info(f"Extracted time from conversation using schedule_calculator: {scheduled_at}")
+                            except Exception as e:
+                                logger.warning(f"schedule_calculator failed: {e}, using direct calculation")
+                                # Fallback to direct timedelta calculation
+                                scheduled_at = reference_time + timedelta(minutes=minutes)
+                                logger.info(f"Extracted time from conversation (fallback): {scheduled_at}")
+                        else:
+                            # Try schedule_calculator with the normalized extracted phrase
+                            try:
+                                def _parse_time():
+                                    calculator = ScheduleCalculator()
+                                    return calculator.parse_callback_time(normalized_extracted_time, reference_time)
+                                scheduled_at = await asyncio.to_thread(_parse_time)
+                                logger.info(f"Extracted time from conversation using schedule_calculator: {scheduled_at}")
+                            except Exception as e:
+                                logger.warning(f"Could not parse extracted time '{normalized_extracted_time}': {e}")
+                                scheduled_at = None
                     else:
                         logger.warning("Could not extract time from conversation. Falling back to stage-based timeline.")
+                        # Could not compute exact scheduled_at even though time phrase existed; leave scheduled_at None
                         scheduled_at = None
                 
                 # Calculate buffer_until (scheduled_at + 15 minutes)
                 buffer_until = scheduled_at + timedelta(minutes=15) if scheduled_at else None
-            elif not scheduled_at_str or scheduled_at_str.strip() == "":
-                if is_transcription_missing:
-                    # Use Stage 1 timeline pattern for non-responsive/declined calls
-                    logger.info(f"No time mentioned and transcription missing/short for booking_type '{booking_type}', using Stage 1 timeline pattern")
-                    try:
-                        def _calculate_stage1():
-                            calculator = ScheduleCalculator()
-                            lead_info = {
-                                "stage": 1,
-                                "last_call_time": reference_time,
-                                "call_count": 1,
-                                "created_at": reference_time  # Needed for Stage 1 calculation
-                            }
-                            # Stage 1: Non-responsive lead follow-up schedule
-                            return calculator.calculate_stage1_schedule(lead_info, reference_time)
-                        
-                        scheduled_at = await asyncio.to_thread(_calculate_stage1)
-                        logger.info(f"Generated scheduled_at using Stage 1 timeline: {scheduled_at}")
-                        buffer_until = scheduled_at + timedelta(minutes=15) if scheduled_at else None
-                    except Exception as e:
-                        logger.error(f"Error calculating Stage 1 timeline: {e}")
-                        scheduled_at = None
-                        buffer_until = None
-                else:
-                    # Use grade-based timeline pattern if grade is mentioned, otherwise use Grade 12+ as default
-                    if student_grade:
-                        # Use Stage 2 schedule with the mentioned grade
-                        logger.info(f"No time mentioned in transcription for booking_type '{booking_type}', using Stage 2 timeline with Grade {student_grade}")
-                        try:
-                            def _calculate_stage2_with_grade():
-                                calculator = ScheduleCalculator()
-                                lead_info = {
-                                    "stage": 2,
-                                    "stage2_start": reference_time,
-                                    "last_call_time": reference_time,
-                                    "student_grade": student_grade  # Use the grade mentioned by student
-                                }
-                                return calculator.calculate_stage2_schedule(lead_info, reference_time)
-                            
-                            scheduled_at = await asyncio.to_thread(_calculate_stage2_with_grade)
-                            logger.info(f"Generated scheduled_at using Stage 2 timeline with Grade {student_grade}: {scheduled_at}")
-                            buffer_until = scheduled_at + timedelta(minutes=15) if scheduled_at else None
-                        except Exception as e:
-                            logger.error(f"Error calculating Stage 2 timeline with Grade {student_grade}: {e}")
-                            scheduled_at = None
-                            buffer_until = None
+            else:
+                # No explicit time phrase mentioned by Gemini - try one final extraction attempt
+                # This is a production safety net to catch any time mentions that might have been missed
+                logger.info(f"No explicit time from Gemini, attempting final extraction from conversation text...")
+                final_extracted_time = extract_time_from_conversation(conversation_text)
+                if final_extracted_time:
+                    logger.info(f"Final extraction successful! Found time: '{final_extracted_time}'")
+                    scheduled_at_str = final_extracted_time
+                    # Try to calculate scheduled_at using the extracted time
+                    scheduled_at = await self.calculate_scheduled_at(booking_type, scheduled_at_str, reference_time)
+                    if scheduled_at:
+                        buffer_until = scheduled_at + timedelta(minutes=15)
+                        explicit_time_mentioned = True
+                        logger.info(f"Successfully calculated scheduled_at from final extraction: {scheduled_at}")
                     else:
-                        # No grade mentioned - use Grade 12+ timeline as default
-                        logger.info(f"No time mentioned and no grade mentioned in transcription for booking_type '{booking_type}', using default Grade 12+ timeline pattern")
+                        # Try direct calculation if schedule_calculator fails
+                        # CRITICAL: Normalize extracted time first (convert written numbers to numeric)
                         try:
-                            # Wrap CPU-bound calculation in asyncio.to_thread
-                            def _calculate_grade12():
-                                calculator = ScheduleCalculator()
-                                lead_info = {
-                                    "stage": 2,
-                                    "stage2_start": reference_time,
-                                    "last_call_time": reference_time,
-                                    "student_grade": 12  # Use Grade 12+ pattern as default
-                                }
-                                return calculator.calculate_grade12_timeline(lead_info, reference_time)
-                            
-                            scheduled_at = await asyncio.to_thread(_calculate_grade12)
-                            logger.info(f"Generated scheduled_at using default Grade 12+ timeline: {scheduled_at}")
-                            buffer_until = scheduled_at + timedelta(minutes=15) if scheduled_at else None
+                            normalized_final_time = self.normalize_time_string(final_extracted_time)
                         except Exception as e:
-                            logger.error(f"Error calculating Grade 12+ timeline: {e}")
+                            logger.warning(f"Error normalizing final extracted time '{final_extracted_time}': {e}, using as-is")
+                            normalized_final_time = final_extracted_time
+                        minutes_match = re.search(r'(\d+)\s*(?:mins?|minutes?)', normalized_final_time.lower())
+                        if minutes_match:
+                            try:
+                                minutes = int(minutes_match.group(1))
+                                # Validate reasonable range
+                                if 1 <= minutes <= 10080:  # 1 minute to 7 days
+                                    scheduled_at = reference_time + timedelta(minutes=minutes)
+                                    buffer_until = scheduled_at + timedelta(minutes=15)
+                                    explicit_time_mentioned = True
+                                    logger.info(f"Calculated scheduled_at using direct timedelta: {scheduled_at}")
+                                else:
+                                    logger.warning(f"Extracted time out of reasonable range: {minutes} minutes")
+                                    scheduled_at = None
+                                    buffer_until = None
+                            except (ValueError, TypeError) as e:
+                                logger.warning(f"Could not parse minutes from extracted time: {e}")
+                                scheduled_at = None
+                                buffer_until = None
+                        else:
                             scheduled_at = None
                             buffer_until = None
+                
+                # If still no time found after all attempts, delegate to Glinks scheduler
+                if not explicit_time_mentioned or not scheduled_at:
+                    logger.info(f"No explicit time found after all extraction attempts — delegating scheduling to Glinks scheduler for call {call_id}")
+                    use_glinks_scheduler = True
+                    scheduled_at = None
+                    buffer_until = None
             
             # Get voice_id from agent_id using storage
             voice_id = await self.storage.get_voice_id_from_agent_id(agent_id)
@@ -667,7 +939,7 @@ Respond ONLY in JSON format:
                 "lead_id": lead_id,  # Already converted to string above
                 "assigned_user_id": initiated_by_user_id,  # Already converted to string above
                 "booking_type": booking_type,  # Can be null if no booking found
-                "booking_source": "system" if scheduled_at else None,  # "system" only if scheduled_at is filled
+                "booking_source": ("system" if scheduled_at else ("glinks" if use_glinks_scheduler else None)),  # "system" only if scheduled_at is filled, otherwise delegate to Glinks
                 "scheduled_at": scheduled_at.strftime("%Y-%m-%d %H:%M:%S") if scheduled_at else None,
                 "timezone": "GST",
                 "status": "scheduled" if booking_type else None,  # Only scheduled if booking exists
