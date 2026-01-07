@@ -325,13 +325,29 @@ def _resolve_voice_context(voice_id: str, voice_record: Optional[Mapping[str, An
         tts_voice_id = str(db_id) if db_id else voice_id
     
     # Extract TTS overrides from provider_config (JSONB column)
-    # Supports: speed, stability, similarity_boost, pitch, model, language, etc.
+    # ONLY extract speed and pitch - other fields (encoding, sample_rate, etc.) can break TTS
+    # Different providers use different names: speed, speaking_rate, pitch
     tts_overrides: dict[str, str] = {}
     provider_config = voice_record.get("provider_config")
     if isinstance(provider_config, dict):
-        for key, value in provider_config.items():
-            if value is not None:
-                tts_overrides[key] = str(value)
+        # Speed-related fields (different providers use different names)
+        speed = provider_config.get("speed") or provider_config.get("speaking_rate")
+        if speed is not None:
+            tts_overrides["speed"] = str(speed)
+        
+        # Pitch-related fields
+        pitch = provider_config.get("pitch")
+        if pitch is not None:
+            tts_overrides["pitch"] = str(pitch)
+        
+        # Stability/similarity for ElevenLabs (safe to pass)
+        stability = provider_config.get("stability")
+        if stability is not None:
+            tts_overrides["stability"] = str(stability)
+        
+        similarity = provider_config.get("similarity_boost") or provider_config.get("similarity")
+        if similarity is not None:
+            tts_overrides["similarity_boost"] = str(similarity)
     
     return VoiceContext(
         db_voice_id=str(db_id) if db_id else None,
