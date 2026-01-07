@@ -288,6 +288,7 @@ Full JSON format:
         "subject_interests": "Subject interests or specialization if mentioned or null",
         "available_time": "Available time/meeting time if mentioned (e.g., 'tomorrow 3pm', 'next week Monday', 'available in evenings', 'Sunday at 11:00 AM' if agent suggests and user agrees) or null",
         "followup_time": "Scheduled meeting/counseling time if a meeting was booked/confirmed (e.g., 'Sunday at 11:00 AM', 'Monday at 3:00 PM') or null",
+        "summary_last_call": "A 1-2 sentence summary of what happened in this call - e.g., 'Discussed MBA programs in USA, parent interested but requested callback next week' or 'Student interested in engineering in UK, scheduled counseling for Monday 3pm' or null if not enough context",
         "additional_notes": "Any other relevant information provided by the lead"
     }}
 }}
