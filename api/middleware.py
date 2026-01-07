@@ -364,6 +364,16 @@ class APISecurityMiddleware(BaseHTTPMiddleware):
         if requires_auth and is_security_enabled():
             valid, error = validate_frontend_credentials(frontend_id, api_key)
             if not valid:
+                # Log full details of invalid request at DEBUG level
+                client_ip = request.client.host if request.client else "unknown"
+                logger.debug(
+                    f"[SECURITY] Invalid request - IP: {client_ip}, "
+                    f"Path: {request.method} {path}, "
+                    f"Frontend-ID: {frontend_id or 'missing'}, "
+                    f"API-Key: {'present' if api_key else 'missing'}, "
+                    f"Headers: {dict(request.headers)}, "
+                    f"Error: {error}"
+                )
                 # Record malformed/invalid request
                 should_block, block_msg = _rate_limiter.record_malformed_request(client_id)
                 if should_block:

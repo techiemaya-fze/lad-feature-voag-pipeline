@@ -90,7 +90,13 @@ async def _resolve_user_record(user_id: str) -> tuple[str, dict[str, Any]]:
     record = None
     if clean.isdigit():
         record = await storage.get_user_by_primary_id(int(clean))
-    if record is None:
+    else:
+        # Validate UUID format before database query
+        import uuid
+        try:
+            uuid.UUID(clean)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user_id format - must be a valid UUID")
         record = await storage.get_user_by_user_id(clean)
 
     if not record:

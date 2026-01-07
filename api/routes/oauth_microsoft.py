@@ -107,6 +107,13 @@ async def _resolve_user_record(user_id: str) -> tuple[str, dict[str, Any]]:
     if not clean:
         raise HTTPException(status_code=400, detail="user_id is required")
 
+    # Validate UUID format before database query
+    import uuid
+    try:
+        uuid.UUID(clean)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id format - must be a valid UUID")
+
     # All IDs are now UUIDs in lad_dev.users
     record = await storage.get_user_by_user_id(clean)
 
