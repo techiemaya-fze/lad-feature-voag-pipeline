@@ -218,7 +218,16 @@ class StudentExtractor:
             logger.info(f"Sample (first 500 chars): {conversation_text[:500]}")
             logger.info(f"Sample (last 500 chars): {conversation_text[-500:]}")
             
-            prompt = f"""Extract information from this phone call conversation.
+            # Get current date/time in GST for context
+            from datetime import datetime
+            import pytz
+            GST = pytz.timezone('Asia/Dubai')
+            current_time = datetime.now(GST)
+            current_datetime_str = current_time.strftime("%A, %B %d, %Y at %I:%M %p GST")
+            
+            prompt = f"""CURRENT DATE AND TIME: {current_datetime_str}
+
+Extract information from this phone call conversation.
 
 CONVERSATION:
 {conversation_text}
@@ -286,8 +295,9 @@ Full JSON format:
         "budget": "Budget or financial information if mentioned or null",
         "preferred_university": "Preferred university or college if mentioned or null",
         "subject_interests": "Subject interests or specialization if mentioned or null",
-        "available_time": "Available time/meeting time if mentioned (e.g., 'tomorrow 3pm', 'next week Monday', 'available in evenings', 'Sunday at 11:00 AM' if agent suggests and user agrees) or null",
-        "followup_time": "Scheduled meeting/counseling time if a meeting was booked/confirmed (e.g., 'Sunday at 11:00 AM', 'Monday at 3:00 PM') or null",
+        "available_time": "Time when lead mentions they are available (e.g., 'tomorrow 3pm', 'available in evenings', 'free after 6pm') or null",
+        "followup_requested_time": "Time when lead requests a callback or followup call (e.g., 'call me in 30 minutes', 'call me tomorrow at 3pm', 'call me next week') or null",
+        "slot_booked_for": "EXACT date and time when a consultation/counseling/meeting slot is BOOKED and CONFIRMED (e.g., 'Sunday, January 12, 2026 at 11:00 AM', 'Monday, January 13, 2026 at 3:00 PM'). Use FULL date format with day name, month name, day, year, and time. Extract this ONLY when agent confirms booking and user agrees. Return null if no slot is booked.",
         "summary_last_call": "A 1-2 sentence summary of what happened in this call - e.g., 'Discussed MBA programs in USA, parent interested but requested callback next week' or 'Student interested in engineering in UK, scheduled counseling for Monday 3pm' or null if not enough context",
         "additional_notes": "Any other relevant information provided by the lead"
     }}
@@ -327,14 +337,23 @@ CRITICAL RULES WITH EXAMPLES:
    - If user provides email directly, extract exactly as provided
    - Example: User: "one dot iterate dot one two three at gmail dot com" ΓåÆ Extract: "one.iterate.123@gmail.com"
 
-7. SCHEDULED MEETING TIME (metadata.followup_time):
-   - If agent asks "Sunday at 11 AM or 3 PM?" and user says "Eleven AM" or "Yes" (referring to 11 AM), extract "Sunday at 11:00 AM"
-   - If agent confirms "Sunday at 11:00 AM" and user agrees/confirms, extract "Sunday at 11:00 AM"
-   - If a meeting/counseling session is booked or scheduled, extract the confirmed time
-   - ALWAYS extract in metadata.followup_time field when a meeting is scheduled/confirmed
-   - Example: Agent: "Sunday at 11 AM?" User: "Eleven AM" ΓåÆ Extract in followup_time: "Sunday at 11:00 AM"
+7. CONSULTATION/MEETING SLOT BOOKING (metadata.slot_booked_for):
+   - CRITICAL: This field is for CONFIRMED consultation/counseling/meeting bookings ONLY
+   - If agent books a consultation slot and user confirms, extract the FULL date and time
+   - Format: "Day_Name, Month Day, Year at Time" (e.g., "Sunday, January 12, 2026 at 11:00 AM")
+   - Use the CURRENT DATE AND TIME provided at the top to calculate the exact date
+   - If agent says "Sunday at 11 AM" and today is Tuesday January 7, 2026, then "Sunday" means January 12, 2026
+   - If agent says "next Sunday at 11 AM" and today is Tuesday January 7, 2026, calculate it as January 12, 2026
+   - Example: Agent: "I'll book consultation for Sunday at 11 AM" User: "Yes, perfect" ΓåÆ Extract: "Sunday, January 12, 2026 at 11:00 AM"
+   - ALWAYS use FULL date format with day name, month name, day number, year, and time
 
-8. For intake_year, extract as integer (e.g., 2025, not "2025" as string)
+8. FOLLOWUP/CALLBACK REQUESTS (metadata.followup_requested_time):
+   - This field is for simple callback requests (NOT consultation bookings)
+   - Extract when user asks for a callback (e.g., "call me in 30 minutes", "call me tomorrow at 3pm")
+   - Format can be relative (e.g., "in 30 minutes", "tomorrow at 3pm") or specific
+   - Example: User: "Call me after 30 minutes" ΓåÆ Extract: "in 30 minutes"
+
+9. For intake_year, extract as integer (e.g., 2025, not "2025" as string)
 9. For intake_month, use full month names or terms like "Fall", "Spring", "Summer", "Winter"
 10. If a field is not mentioned, set it to null (not empty string, not "None")
 11. Store ALL additional information in the metadata object using DESCRIPTIVE, SPECIFIC field names
@@ -344,8 +363,9 @@ CRITICAL RULES WITH EXAMPLES:
    - "preferred_university" for specific universities/colleges mentioned
    - "subject_interests" for subjects or specializations
    - "address" for location or address information
-   - "available_time" for meeting availability preferences (when user mentions when they're available)
-   - "followup_time" for scheduled/confirmed meeting/counseling times (MANDATORY - extract when agent confirms/booked a meeting and user agrees, e.g., "Sunday at 11:00 AM" if meeting is scheduled)
+   - "available_time" for general availability mentions (e.g., "I'm free in evenings", "available tomorrow")
+   - "followup_requested_time" for callback requests (e.g., "call me in 30 minutes", "call me tomorrow at 3pm")
+   - "slot_booked_for" for CONFIRMED consultation/meeting slots (MANDATORY - extract FULL date with day name, month, day, year, and time when agent books/confirms a meeting and user agrees, e.g., "Sunday, January 12, 2026 at 11:00 AM")
    - "email" for email addresses
 13. Do NOT extract agent/bot names (like "Nithya", "Mira Singh", "Pluto Travels representative")
 14. Extract information in natural language - preserve exact details when provided
@@ -1025,4 +1045,3 @@ Examples:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
