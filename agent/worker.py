@@ -540,6 +540,15 @@ async def entrypoint(ctx: agents.JobContext):
             llm_provider_override = dial_info.get("llm_provider")
             llm_model_override = dial_info.get("llm_model")
             
+            # Parse TTS config overrides (speed/pitch/stability from provider_config)
+            raw_tts_config = dial_info.get("tts_config")
+            if isinstance(raw_tts_config, dict):
+                for k, v in raw_tts_config.items():
+                    if v is not None:
+                        tts_overrides[k] = str(v)
+                if tts_overrides:
+                    logger.info(f"TTS config overrides from DB: {tts_overrides}")
+            
             raw_initiated_by = dial_info.get("initiated_by")
             if isinstance(raw_initiated_by, (int, str)):
                 initiating_user_id = str(raw_initiated_by).strip() or None
@@ -700,10 +709,6 @@ async def entrypoint(ctx: agents.JobContext):
     )
     
     # Create voice assistant with tools (tools already fetched above before instruction building)
-    # DEBUG: Log tool names to verify invite_human_agent is in the list
-    tool_names = [getattr(t, '__name__', getattr(t, 'name', str(t))) for t in tool_list]
-    logger.info(f"[DEBUG] tool_list contents ({len(tool_list)} tools): {tool_names}")
-    
     voice_assistant = VoiceAssistant(
         call_recorder=call_recorder,
         job_context=ctx,

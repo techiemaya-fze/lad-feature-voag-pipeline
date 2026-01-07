@@ -320,7 +320,7 @@ def create_gemini(overrides: dict[str, str] | None = None) -> tuple[Any, dict[st
 # =============================================================================
 
 def create_elevenlabs(overrides: dict[str, str] | None = None) -> tuple[Any, dict[str, str]]:
-    """Create ElevenLabs TTS instance."""
+    """Create ElevenLabs TTS instance with optional speed/stability settings."""
     try:
         from livekit.plugins import elevenlabs
     except ImportError:
@@ -342,9 +342,35 @@ def create_elevenlabs(overrides: dict[str, str] | None = None) -> tuple[Any, dic
     if api_key:
         kwargs["api_key"] = api_key
     
+    # Build VoiceSettings for speed/stability/similarity control
+    # Speed: 0.8-1.2 (default 1.0), Stability: 0.0-1.0 (default 0.71), Similarity: 0.0-1.0 (default 0.5)
+    voice_settings_kwargs: dict[str, float] = {}
+    
+    speed = _coerce_float(overrides.get("speed"))
+    if speed is not None:
+        voice_settings_kwargs["speed"] = max(0.8, min(1.2, speed))  # Clamp to valid range
+    
+    stability = _coerce_float(overrides.get("stability"))
+    if stability is not None:
+        voice_settings_kwargs["stability"] = max(0.0, min(1.0, stability))
+    
+    similarity = _coerce_float(overrides.get("similarity_boost")) or _coerce_float(overrides.get("similarity"))
+    if similarity is not None:
+        voice_settings_kwargs["similarity_boost"] = max(0.0, min(1.0, similarity))
+    
+    if voice_settings_kwargs:
+        try:
+            voice_settings = elevenlabs.VoiceSettings(**voice_settings_kwargs)
+            kwargs["voice_settings"] = voice_settings
+            logger.info("ElevenLabs VoiceSettings: %s", voice_settings_kwargs)
+        except Exception as exc:
+            logger.warning("Failed to create VoiceSettings: %s", exc)
+    
     details: dict[str, str] = {"provider": "elevenlabs", "model": model, "voice": voice_id or "default"}
     if language:
         details["language"] = language
+    if voice_settings_kwargs:
+        details["speed"] = str(voice_settings_kwargs.get("speed", 1.0))
     
     logger.info("Creating ElevenLabs TTS: %s, voice=%s", model, voice_id)
     return elevenlabs.TTS(**kwargs), details

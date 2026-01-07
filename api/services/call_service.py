@@ -324,11 +324,20 @@ def _resolve_voice_context(voice_id: str, voice_record: Optional[Mapping[str, An
     if not tts_voice_id:
         tts_voice_id = str(db_id) if db_id else voice_id
     
+    # Extract TTS overrides from provider_config (JSONB column)
+    # Supports: speed, stability, similarity_boost, pitch, model, language, etc.
+    tts_overrides: dict[str, str] = {}
+    provider_config = voice_record.get("provider_config")
+    if isinstance(provider_config, dict):
+        for key, value in provider_config.items():
+            if value is not None:
+                tts_overrides[key] = str(value)
+    
     return VoiceContext(
         db_voice_id=str(db_id) if db_id else None,
         tts_voice_id=str(tts_voice_id),
         provider=provider,
-        overrides={},  # Can be extended with _extract_tts_overrides
+        overrides=tts_overrides,
         voice_name=voice_record.get("description"),
         accent=voice_record.get("accent"),
     )
@@ -657,6 +666,7 @@ class CallService:
                 "voice_id": voice_id,
                 "tts_voice_id": voice_context.tts_voice_id,
                 "voice_provider": voice_context.provider,
+                "voice_accent": voice_context.accent,  # For language detection
                 "call_log_id": call_log_id,
                 "lead_id": lead_id,  # For vertical routing
                 "to_number": to_number,  # Original number for display/logging
@@ -665,6 +675,10 @@ class CallService:
                 "from_number": from_number,
                 "initiated_by": initiated_by,  # User ID for OAuth tools
             }
+            
+            # Add TTS overrides (speed/pitch/stability from provider_config)
+            if voice_context.overrides:
+                metadata["tts_config"] = voice_context.overrides
             
             if llm_provider:
                 metadata["llm_provider"] = llm_provider
