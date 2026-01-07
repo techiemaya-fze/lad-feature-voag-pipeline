@@ -150,9 +150,11 @@ async def _fetch_booking_businesses(access_token: str) -> list[dict[str, Any]]:
 
 async def _fetch_booking_services(access_token: str, business_id: str) -> list[dict[str, Any]]:
     """Fetch all services for a booking business."""
+    from urllib.parse import quote
+    encoded_business_id = quote(business_id, safe='')
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(
-            f"https://graph.microsoft.com/v1.0/solutions/bookingBusinesses/{business_id}/services",
+            f"https://graph.microsoft.com/v1.0/solutions/bookingBusinesses/{encoded_business_id}/services",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         if resp.status_code != 200:
@@ -638,10 +640,14 @@ async def list_booking_services(user_id: str, business_id: str) -> list[BookingS
     if not access_token:
         raise HTTPException(status_code=500, detail="No access token available")
 
+    # URL-encode business_id (contains @ symbol)
+    from urllib.parse import quote
+    encoded_business_id = quote(business_id, safe='')
+    
     # Call Microsoft Graph API
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(
-            f"https://graph.microsoft.com/v1.0/solutions/bookingBusinesses/{business_id}/services",
+            f"https://graph.microsoft.com/v1.0/solutions/bookingBusinesses/{encoded_business_id}/services",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
