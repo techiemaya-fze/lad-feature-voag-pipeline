@@ -535,15 +535,93 @@ Respond ONLY in JSON format:
         is_tomorrow_mentioned = False
         is_today_mentioned = False
         specific_date = None
+        parsed_date = None
+        
+        # PRIORITY 0: Parse explicit dates (e.g., "January 10th", "Saturday, January 10th", "next Monday")
+        # Extract date first, then combine with time
+        normalized_lower = normalized_time_str.lower()
+        
+        # Check for specific month+day dates (e.g., "January 10th", "Saturday, January 10th")
+        months = {
+            'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6,
+            'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12
+        }
+        
+        date_patterns = [
+            r'(?:saturday|sunday|monday|tuesday|wednesday|thursday|friday)[,\s]+(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?',  # "Saturday, January 10th"
+            r'(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?',  # "January 10th"
+            r'(\d{1,2})(?:st|nd|rd|th)?\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)',  # "10th January"
+        ]
+        
+        for pattern in date_patterns:
+            date_match = re.search(pattern, normalized_lower)
+            if date_match:
+                try:
+                    day = int(date_match.group(1))
+                    # Extract month from the matched text
+                    matched_text = date_match.group(0).lower()
+                    month = None
+                    for month_name, month_num in months.items():
+                        if month_name in matched_text:
+                            month = month_num
+                            break
+                    
+                    if month and 1 <= day <= 31:
+                        # Get current year from reference_time
+                        current_year = reference_time.year
+                        # Try to create the date
+                        try:
+                            parsed_date = datetime(current_year, month, day).date()
+                            # If the date has already passed this year, use next year
+                            if parsed_date < reference_time.date():
+                                parsed_date = datetime(current_year + 1, month, day).date()
+                            logger.info(f"Found specific date in time string: {parsed_date} (from '{normalized_time_str}')")
+                            break
+                        except ValueError:
+                            logger.debug(f"Invalid date: {month}/{day}")
+                            continue
+                except (ValueError, IndexError, AttributeError) as e:
+                    logger.debug(f"Error parsing date from '{normalized_time_str}': {e}")
+                    continue
+        
+        # Check for weekday mentions (e.g., "next Monday", "Monday", "this Saturday")
+        if not parsed_date:
+            weekday_map = {
+                'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+                'friday': 4, 'saturday': 5, 'sunday': 6
+            }
+            
+            for weekday_name, weekday_num in weekday_map.items():
+                if weekday_name in normalized_lower:
+                    # Check if it's "next [weekday]" or just "[weekday]"
+                    is_next = 'next' in normalized_lower
+                    # Calculate days until that weekday
+                    current_weekday = reference_time.weekday()
+                    days_until = (weekday_num - current_weekday) % 7
+                    if days_until == 0:  # Today is that weekday
+                        days_until = 7 if is_next else 0  # If "next", use next week, else use today
+                    elif is_next and days_until < 7:  # "next" explicitly mentioned
+                        days_until = days_until  # Already correct
+                    elif not is_next and days_until == 0:  # Today, use today
+                        days_until = 0
+                    elif not is_next:  # Not today, assume next occurrence
+                        days_until = days_until if days_until > 0 else 7
+                    
+                    parsed_date = (reference_time + timedelta(days=days_until)).date()
+                    logger.info(f"Found weekday '{weekday_name}' (next={is_next}), scheduling for: {parsed_date}")
+                    break
         
         # FIRST: Check the normalized scheduled_at_str itself for "tomorrow" mentions
         # This is the most reliable indicator - if Gemini extracted "tomorrow at 6:30", it's in the string
-        normalized_lower = normalized_time_str.lower()
         if 'tomorrow' in normalized_lower or 'next day' in normalized_lower:
             is_tomorrow_mentioned = True
+            if not parsed_date:
+                parsed_date = (reference_time + timedelta(days=1)).date()
             logger.info(f"Found 'tomorrow' directly in scheduled_at_str: '{scheduled_at_str}'")
         elif 'today' in normalized_lower or 'this day' in normalized_lower:
             is_today_mentioned = True
+            if not parsed_date:
+                parsed_date = reference_time.date()
             logger.info(f"Found 'today' directly in scheduled_at_str: '{scheduled_at_str}'")
         
         # SECOND: If not found in scheduled_at_str, check conversation context ONLY around time mentions
@@ -632,22 +710,25 @@ Respond ONLY in JSON format:
                     
                     # Validate time
                     if 0 <= hour <= 23 and 0 <= minute <= 59:
-                        # Build datetime from reference_time date with the specified time
-                        target_time_today = reference_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                        
-                        # For absolute times like "6:30 GST", use the time directly
-                        # Only schedule for tomorrow if explicitly mentioned "tomorrow at 6:30"
-                        if is_tomorrow_mentioned:
+                        # If we have a parsed_date (from explicit date, weekday, or tomorrow/today), use it
+                        if parsed_date:
+                            # Use the parsed date with the specified time
+                            target_time = GST.localize(datetime.combine(parsed_date, datetime.min.time().replace(hour=hour, minute=minute, second=0, microsecond=0)))
+                            logger.info(f"Absolute time {hour:02d}:{minute:02d} with parsed date {parsed_date}, scheduling for: {target_time}")
+                        elif is_tomorrow_mentioned:
                             # Explicitly mentioned "tomorrow" with the time - schedule for tomorrow
+                            target_time_today = reference_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
                             target_time = target_time_today + timedelta(days=1)
                             logger.info(f"Absolute time {hour:02d}:{minute:02d} - 'tomorrow' explicitly mentioned, scheduling for: {target_time}")
                         elif is_today_mentioned:
                             # Explicitly mentioned "today" - schedule for today even if time has passed
+                            target_time_today = reference_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
                             target_time = target_time_today
                             logger.info(f"Absolute time {hour:02d}:{minute:02d} - 'today' explicitly mentioned, scheduling for: {target_time}")
                         else:
                             # No explicit date mentioned - use the time as-is for TODAY
                             # Even if time has passed, schedule for today (same day as conversation)
+                            target_time_today = reference_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
                             target_time = target_time_today
                             if target_time_today < reference_time:
                                 logger.info(f"Absolute time {hour:02d}:{minute:02d} has passed, but no 'tomorrow' mentioned - scheduling for today: {target_time}")
@@ -742,10 +823,18 @@ Respond ONLY in JSON format:
             is_absolute_time = bool(re.search(r'\b\d{1,2}[:.]\d{2}', normalized_time_str))  # Contains time pattern like "7:45"
             
             if scheduled_at:
-                # If absolute time is explicitly mentioned, use schedule_calculator result as-is (don't combine with first timestamp)
+                # If absolute time is explicitly mentioned, check if we have a parsed_date
+                # If we have a parsed_date, use it instead of schedule_calculator's date
                 if is_absolute_time and not is_relative_time:
-                    logger.info(f"Absolute time detected in '{normalized_time_str}', using schedule_calculator result as-is: {scheduled_at}")
-                    return self._normalize_datetime(scheduled_at)
+                    if parsed_date:
+                        # Use parsed_date with the time from schedule_calculator
+                        schedule_time = scheduled_at.time()
+                        combined_datetime = GST.localize(datetime.combine(parsed_date, schedule_time.replace(second=0, microsecond=0)))
+                        logger.info(f"Absolute time with parsed date: using parsed date {parsed_date} with schedule_calculator time {schedule_time} = {combined_datetime}")
+                        return self._normalize_datetime(combined_datetime)
+                    else:
+                        logger.info(f"Absolute time detected in '{normalized_time_str}', using schedule_calculator result as-is: {scheduled_at}")
+                        return self._normalize_datetime(scheduled_at)
                 
                 # For relative times, combine with first timestamp date
                 try:
@@ -1874,4 +1963,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
