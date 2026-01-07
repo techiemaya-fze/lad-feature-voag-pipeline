@@ -41,6 +41,9 @@ env/
 salesmaya-yts-6b49f7694826.json
 schema_analysis.txt
 
+# Secrets folder (credential files)
+secrets/
+
 # OS
 .DS_Store
 Thumbs.db
