@@ -29,8 +29,9 @@ from typing import Any, Awaitable, Callable, Sequence
 
 from dotenv import load_dotenv
 
-# Load environment variables first
-load_dotenv()
+# Load environment variables with explicit path (works when run from any directory)
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+load_dotenv(_env_path)
 
 # ============================================================================
 # AGENT LOG LEVEL CONFIGURATION

@@ -24,8 +24,9 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-# Load environment variables first
-load_dotenv()
+# Load environment variables with explicit path (works when run from any directory)
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(_env_path)
 
 # ============================================================================
 # NON-BLOCKING LOGGING SETUP (MUST BE BEFORE OTHER IMPORTS)
