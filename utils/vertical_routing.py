@@ -1,3 +1,4 @@
+
 """
 Vertical Routing Module
 =======================
@@ -224,13 +225,15 @@ async def _route_education_vertical(
             )
         
         # Save to education_students table
-        saved = extractor.save_to_database(
+        logger.info(f"About to call save_to_database - call_log_id: {call_log_id}, lead_id: {lead_id}, tenant_id: {tenant_id}")
+        saved = await extractor.save_to_database(
             student_info=student_info,
             call_log_id=call_log_id,
             lead_id=lead_id,
             tenant_id=tenant_id,
             db_config=db_config
         )
+        logger.info(f"Database save completed with result: {saved}")
         
         if saved:
             logger.info(f"Education vertical: Saved student info for call {call_log_id}")
@@ -276,7 +279,7 @@ async def _route_general_vertical(
     
     try:
         # Convert conversation to text
-        conversation_text = _conversation_to_text(conversation)
+        conversation_text = _format_conversation_for_extraction(conversation)
         
         if not conversation_text or len(conversation_text) < 50:
             logger.debug(f"Insufficient conversation for general extraction: {len(conversation_text)} chars")
