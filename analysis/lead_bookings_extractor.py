@@ -88,6 +88,11 @@ class LeadBookingsExtractor:
             }
         }
         
+        # Log the payload being sent to Gemini
+        logger.info(f"Sending payload to Gemini API: temperature={temperature}, maxOutputTokens={max_output_tokens}")
+        logger.info(f"Prompt length: {len(prompt)} characters")
+        logger.info(f"Prompt preview (first 500 chars): {prompt[:500]}..." if len(prompt) > 500 else f"Full prompt: {prompt}")
+        
         for attempt in range(max_retries):
             try:
                 # Use httpx.AsyncClient for async HTTP requests
@@ -468,6 +473,10 @@ Respond ONLY in JSON format:
     "call_id": "call-id-value" or null
 }}"""
 
+        # Log the extraction request details being sent to Gemini
+        logger.info(f"Calling Gemini API for booking extraction")
+        logger.info(f"Conversation length: {len(conversation_text)} chars")
+        
         # Increased max_output_tokens to handle longer conversations and detailed responses
         response = await self._call_gemini_api(prompt, temperature=0.1, max_output_tokens=4096)
         if not response:
@@ -2568,8 +2577,14 @@ async def main():
     parser.add_argument("--list", action="store_true", help="List all call IDs from voice_call_logs table")
     parser.add_argument("--all", action="store_true", help="Process all calls")
     parser.add_argument("--limit", type=int, default=100, help="Limit number of calls to list (default: 100)")
+    parser.add_argument("--debug", action="store_true", help="Enable DEBUG logging to see Gemini API payload")
     
     args = parser.parse_args()
+    
+    # Set logging level to DEBUG if --debug flag is provided
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.info("DEBUG logging enabled - will show Gemini API payload details")
     
     extractor = LeadBookingsExtractor()
     
