@@ -1,867 +1,967 @@
 """
-Schedule Calculator - Implements GLINKS Follow-up Process Rules
-Based on GLINKS operational parameters and follow-up documentation
-Calculates next call time considering working hours, working days, and stage-based schedules
+Student Information Extraction Module
+Extracts student information from call transcriptions and saves to local JSON files
+
+Phase 13: Updated to use lad_dev schema (education_students table)
+
+Usage:
+    # List all calls from database
+    python student_extraction.py --list-calls
+    
+    # Extract student info from database call (by row number)
+    python student_extraction.py --db-id 123
+    
+    # Extract student info from database call (by UUID)
+    python student_extraction.py --db-id bcc0402b-c290-4242-9873-3cd31052b84a
 """
 
-import logging
+import os
+import json
+import asyncio
 import re
-from datetime import datetime, timedelta, time
-from typing import Dict, Optional, List
-import pytz
+import requests
+import logging
+import argparse
+from datetime import datetime
+from typing import Dict, Optional
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Schema constants for table names
+from db.schema_constants import (
+    CALL_LOGS_FULL,
+    ANALYSIS_FULL,
+    LEADS_FULL,
+    STUDENTS_FULL,
+)
 
 # Configure logging
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+LOG_FILE = LOG_DIR / f"student_extraction_{datetime.now().strftime('%Y%m%d')}.log"
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
 )
 
 logger = logging.getLogger(__name__)
 
-# Default timezone (GST - Gulf Standard Time, UTC+4, same as Asia/Dubai)
-DEFAULT_TIMEZONE = pytz.timezone('Asia/Dubai')  # GST (Gulf Standard Time)
-
-# Working hours (GST - Gulf Standard Time)
-WORKING_HOUR_START = time(10, 0)  # 10:00 AM GST
-WORKING_HOUR_END = time(18, 30)    # 6:30 PM GST
-
-# UAE Public Holidays (add more as needed)
-# Format: (month, day) - these are common holidays, should be updated annually
-UAE_PUBLIC_HOLIDAYS = [
-    (1, 1),   # New Year's Day
-    (5, 1),   # Labour Day
-    (12, 2),  # National Day
-    (12, 3),  # National Day (2nd day)
-    # Add Islamic holidays based on lunar calendar (these vary each year)
-    # You may want to use a library like 'hijri-converter' for accurate Islamic dates
-]
+try:
+    import psycopg2
+    import psycopg2.errors
+    from psycopg2.extras import Json
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
+    logger.warning("psycopg2 not installed. Database features disabled.")
+    logger.warning("   Install with: pip install psycopg2-binary")
 
 
-class ScheduleCalculator:
-    """Calculate next call time based on GLINKS follow-up rules"""
+class StudentExtractor:
+    """Student information extractor from call transcriptions - matches glinks.students_glinks table"""
     
-    def __init__(self, timezone_str: str = 'Asia/Dubai', public_holidays: Optional[List[tuple]] = None):
-        """
-        Initialize with timezone and public holidays
-        
-        Args:
-            timezone_str: Timezone string (default: 'Asia/Dubai' for GST - Gulf Standard Time)
-            public_holidays: List of (month, day) tuples for public holidays
-        """
-        try:
-            self.timezone = pytz.timezone(timezone_str)
-        except pytz.exceptions.UnknownTimeZoneError:
-            logger.warning(f"Unknown timezone {timezone_str}, using default GST (Asia/Dubai)")
-            self.timezone = DEFAULT_TIMEZONE
-        
-        self.public_holidays = public_holidays or UAE_PUBLIC_HOLIDAYS
+    def __init__(self):
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if not self.gemini_api_key:
+            logger.warning("GEMINI_API_KEY not found in .env file")
     
-    def is_working_day(self, date: datetime) -> bool:
-        """
-        Check if a date is a working day
-        
-        Rules:
-        - Exclude Mondays
-        - Exclude public holidays
-        - All other days are working days
-        
-        Args:
-            date: datetime object to check
-        
-        Returns:
-            True if working day, False otherwise
-        """
-        # Check if Monday (0 = Monday)
-        if date.weekday() == 0:
-            return False
-        
-        # Check if public holiday
-        date_month = date.month
-        date_day = date.day
-        if (date_month, date_day) in self.public_holidays:
-            return False
-        
-        return True
-    
-    def is_working_hour(self, dt: datetime) -> bool:
-        """
-        Check if datetime is within working hours (10:00 AM - 6:30 PM)
-        
-        Args:
-            dt: datetime object to check
-        
-        Returns:
-            True if within working hours, False otherwise
-        """
-        dt_time = dt.time()
-        return WORKING_HOUR_START <= dt_time <= WORKING_HOUR_END
-    
-    def get_next_working_datetime(self, start_datetime: datetime, preserve_time: bool = False, allow_callback_override: bool = False) -> datetime:
-        """
-        Get next working datetime (working day + working hours)
-        
-        Args:
-            start_datetime: Starting datetime
-            preserve_time: If True, preserve the requested time when moving to next working day (for callbacks)
-            allow_callback_override: If True, allow callback on non-working days (like Monday) if explicitly requested
-        
-        Returns:
-            Next working datetime
-        """
-        current = start_datetime
-        original_time = current.time()  # Preserve original time
-        original_date = current.date()  # Preserve original date
-        
-        # For callback requests, check if the requested day is a non-working day
-        if allow_callback_override and preserve_time:
-            # Check if it's Monday (non-working day) but explicitly requested
-            if current.weekday() == 0:  # Monday
-                # Allow Monday if it's not a public holiday
-                if (current.month, current.day) not in self.public_holidays:
-                    # Monday is allowed for explicit callback requests
-                    # Just ensure time is within working hours
-                    if current.time() < WORKING_HOUR_START:
-                        current = current.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
-                    elif current.time() > WORKING_HOUR_END:
-                        current = current.replace(hour=WORKING_HOUR_END.hour, minute=WORKING_HOUR_END.minute, second=0, microsecond=0)
-                    return current
-        
-        # First, ensure we're on a working day
-        while not self.is_working_day(current):
-            current = current + timedelta(days=1)
-            if preserve_time:
-                # Preserve the requested time when moving to next working day
-                current = current.replace(hour=original_time.hour, minute=original_time.minute, second=0, microsecond=0)
-            else:
-                # Reset to start of working hours
-                current = current.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
-        
-        # If time is before working hours, set to start of working hours
-        if current.time() < WORKING_HOUR_START:
-            if preserve_time and original_time >= WORKING_HOUR_START:
-                # If original time was valid, try to preserve it on next day
-                current = current.replace(hour=original_time.hour, minute=original_time.minute, second=0, microsecond=0)
-            else:
-                current = current.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
-        
-        # If time is after working hours, move to next working day
-        if current.time() > WORKING_HOUR_END:
-            current = current + timedelta(days=1)
-            if preserve_time:
-                # Preserve the requested time
-                current = current.replace(hour=original_time.hour, minute=original_time.minute, second=0, microsecond=0)
-            else:
-                current = current.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
-            # Ensure it's a working day
-            while not self.is_working_day(current):
-                current = current + timedelta(days=1)
-                if preserve_time:
-                    current = current.replace(hour=original_time.hour, minute=original_time.minute, second=0, microsecond=0)
-        
-        return current
-    
-    def add_working_days(self, start_date: datetime, working_days: int) -> datetime:
-        """
-        Add working days to a date (excluding Mondays and holidays)
-        
-        Args:
-            start_date: Starting date
-            working_days: Number of working days to add
-        
-        Returns:
-            Date after adding working days
-        """
-        current = start_date
-        days_added = 0
-        
-        while days_added < working_days:
-            current = current + timedelta(days=1)
-            if self.is_working_day(current):
-                days_added += 1
-        
-        # Set to start of working hours
-        current = current.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
-        
-        return current
-    
-    def calculate_next_call(self, outcome: str, outcome_details: Dict, lead_info: Optional[Dict] = None) -> Optional[datetime]:
-        """
-        Main function - calculates next call time based on outcome
-        
-        Args:
-            outcome: Outcome type ("no_answer", "responsive", "meeting_booked", "not_interested", "callback_requested", "event_followup")
-            outcome_details: Dictionary with outcome details (student_grade, callback_time, etc.)
-            lead_info: Optional lead information from students_information table
-        
-        Returns:
-            datetime object for next call time (in timezone, within working hours) or None
-        """
-        if not outcome:
-            logger.warning("No outcome provided")
-            return None
-        
-        # Get current time in timezone
-        now = datetime.now(self.timezone)
-        
-        # If lead_info is None, create a default one
-        if lead_info is None:
-            lead_info = {
-                "stage": 1,
-                "status": "active",
-                "student_grade": outcome_details.get("student_grade"),
-                "created_at": now,
-                "last_call_time": now,
-                "call_count": 0
-            }
-        
-        # Handle callback_requested - use exact requested time (can be any day, just ensure working hours)
-        if outcome == "callback_requested":
-            callback_time = outcome_details.get("callback_time")
-            if callback_time:
-                parsed_time = self.parse_callback_time(callback_time, now)
-                if parsed_time:
-                    # Check if this is a relative time request (within/after/in X mins)
-                    callback_lower = callback_time.lower().strip()
-                    is_relative_time = bool(re.search(r'(?:within|after|in)\s+(\d+)\s*(?:mins?|minutes?)', callback_lower))
-                    
-                    if is_relative_time:
-                        # For relative times, use the parsed time as-is (it's already calculated correctly)
-                        # Only adjust if outside working hours, but try to preserve the relative time
-                        if parsed_time.time() < WORKING_HOUR_START:
-                            # Before working hours - move to start of working hours on same day
-                            parsed_time = parsed_time.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
-                        elif parsed_time.time() > WORKING_HOUR_END:
-                            # After working hours - move to start of working hours next day
-                            parsed_time = parsed_time + timedelta(days=1)
-                            parsed_time = parsed_time.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
-                        
-                        # Ensure timezone awareness
-                        if parsed_time.tzinfo is None:
-                            parsed_time = self.timezone.localize(parsed_time)
-                        
-                        # Return as-is (relative times should be honored - don't call get_next_working_datetime)
-                        logger.info(f"Callback relative time '{callback_time}' parsed to: {parsed_time}")
-                        return parsed_time
-                    else:
-                        # For absolute times (like "tomorrow at 7 PM", "Monday at 12"), honor the EXACT time requested
-                        # Only adjust if significantly outside working hours (more than 30 mins)
-                        original_time = parsed_time.time()
-                        time_diff_start = (parsed_time.time().hour * 60 + parsed_time.time().minute) - (WORKING_HOUR_START.hour * 60 + WORKING_HOUR_START.minute)
-                        time_diff_end = (WORKING_HOUR_END.hour * 60 + WORKING_HOUR_END.minute) - (parsed_time.time().hour * 60 + parsed_time.time().minute)
-                        
-                        if time_diff_start < -30:  # More than 30 mins before working hours
-                            # Before working hours - move to start of working hours
-                            parsed_time = parsed_time.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
-                            logger.info(f"Adjusted time from {original_time} to {WORKING_HOUR_START} (more than 30 mins before working hours)")
-                        elif time_diff_end < -30:  # More than 30 mins after working hours
-                            # After working hours - move to end of working hours
-                            parsed_time = parsed_time.replace(hour=WORKING_HOUR_END.hour, minute=WORKING_HOUR_END.minute, second=0, microsecond=0)
-                            logger.info(f"Adjusted time from {original_time} to {WORKING_HOUR_END} (more than 30 mins after working hours)")
-                        else:
-                            # Within 30 mins of working hours - use exact time requested
-                            logger.info(f"Using exact requested time: {original_time} (within acceptable range)")
-                        
-                        # Ensure timezone awareness
-                        if parsed_time.tzinfo is None:
-                            parsed_time = self.timezone.localize(parsed_time)
-                        
-                        # Return as-is (any day is allowed for callbacks, exact time is preserved)
-                        logger.info(f"Callback absolute time '{callback_time}' parsed to: {parsed_time}")
-                        return parsed_time
-            else:
-                logger.warning("Callback requested but no callback_time provided")
-                # Fall through to default scheduling
-        
-        # Handle different outcomes
-        if outcome == "no_answer":
-            next_call = self.calculate_stage1_schedule(lead_info, now)
-        
-        elif outcome == "responsive":
-            # Move to Stage 2 if not already
-            if lead_info.get("stage", 1) == 1:
-                lead_info["stage"] = 2
-                lead_info["stage2_start"] = now
-            
-            next_call = self.calculate_stage2_schedule(lead_info, now)
-        
-        elif outcome == "meeting_booked":
-            # Move to Stage 3
-            lead_info["stage"] = 3
-            if not lead_info.get("stage3_start"):
-                lead_info["stage3_start"] = now
-            
-            # For meeting booking, check if there's a followup_time/callback_time
-            # Meeting bookings must be on working days only (real-time appointment)
-            followup_time = outcome_details.get("callback_time") or outcome_details.get("followup_time")
-            if followup_time:
-                parsed_time = self.parse_callback_time(followup_time, now)
-                if parsed_time:
-                    # Meeting booking: Must be on working days only (strict)
-                    # Adjust to next working day if needed, but preserve time
-                    next_call = self.get_next_working_datetime(parsed_time, preserve_time=True, allow_callback_override=False)
-                    # Don't call get_next_working_datetime again - already done above
-                    return next_call
-                else:
-                    next_call = self.calculate_stage3_schedule(lead_info, now)
-            else:
-                next_call = self.calculate_stage3_schedule(lead_info, now)
-        
-        elif outcome == "not_interested":
-            next_call = self.calculate_not_interested_schedule(lead_info, now)
-        
-        elif outcome == "event_followup":
-            # Event follow-up: Valid for 3 years, periodic contact
-            next_call = self.calculate_event_followup_schedule(lead_info, now)
-        
-        else:
-            logger.warning(f"Unknown outcome: {outcome}, using default Stage 1 schedule")
-            next_call = self.calculate_stage1_schedule(lead_info, now)
-        
-        if not next_call:
-            return None
-        
-        # For callback_requested outcomes, we already handled working hours in the callback_requested section above
-        # Don't apply get_next_working_datetime again as it might override relative time calculations
-        if outcome == "callback_requested":
-            # Already processed in callback_requested section above - return as-is
-            return next_call
-        
-        # For other outcomes, ensure next call is within working hours and on a working day
-        return self.get_next_working_datetime(next_call)
-    
-    def calculate_stage1_schedule(self, lead_info: Dict, now: datetime) -> datetime:
-        """
-        Stage 1: Non-responsive lead follow-up schedule
-        
-        Rules:
-        - Week 1: Every alternate day (2 working days)
-        - Week 2: Every third day (2 working days gap)
-        - Week 3: Every fourth day (3 working days gap)
-        - Week 4-8: Once per week (5 working days)
-        - Month 3-4: Every alternate week (10 working days)
-        - Month 5-48: Once per month (20 working days)
-        """
-        created_at = lead_info.get("created_at", now)
-        last_call_time = lead_info.get("last_call_time", created_at)
-        
-        # Parse dates if strings
-        if isinstance(created_at, str):
-            created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-        if isinstance(last_call_time, str):
-            last_call_time = datetime.fromisoformat(last_call_time.replace('Z', '+00:00'))
-        
-        # Ensure timezone awareness
-        if created_at.tzinfo is None:
-            created_at = self.timezone.localize(created_at)
-        if last_call_time.tzinfo is None:
-            last_call_time = self.timezone.localize(last_call_time)
-        
-        # Calculate working days since first contact
-        working_days_since_first = self.count_working_days(created_at, now)
-        
-        if working_days_since_first <= 5:  # Week 1 (approximately 5 working days)
-            # Every alternate day (2 working days)
-            next_call = self.add_working_days(last_call_time, 2)
-        elif working_days_since_first <= 10:  # Week 2 (approximately 10 working days)
-            # Every third day (2 working days gap)
-            next_call = self.add_working_days(last_call_time, 2)
-        elif working_days_since_first <= 15:  # Week 3 (approximately 15 working days)
-            # Every fourth day (3 working days gap)
-            next_call = self.add_working_days(last_call_time, 3)
-        elif working_days_since_first <= 40:  # Week 4-8 (approximately 40 working days)
-            # Once per week (5 working days)
-            next_call = self.add_working_days(last_call_time, 5)
-        elif working_days_since_first <= 80:  # Month 3-4 (approximately 80 working days)
-            # Every alternate week (10 working days)
-            next_call = self.add_working_days(last_call_time, 10)
-        else:  # Month 5-48 (up to 4 years)
-            # Once per month (approximately 20 working days)
-            next_call = self.add_working_days(last_call_time, 20)
-        
-        # Ensure next call is in the future
-        if next_call <= now:
-            next_call = self.add_working_days(now, 1)
-        
-        return next_call
-    
-    def calculate_stage2_schedule(self, lead_info: Dict, now: datetime) -> datetime:
-        """
-        Stage 2: Responsive lead follow-up (pre-meeting) - Grade-based schedule
-        
-        Rules by Grade:
-        - Grade 9 or below: Weekly for 6 months, then monthly
-        - Grade 10-11: Twice per week for first year, then Grade 12 timeline
-        - Grade 12+: 3x/week (6 months) → 2x/week (6 months) → weekly (year 2) → bi-weekly (year 3-4) → monthly (year 5-7)
-        """
-        student_grade = lead_info.get("student_grade")
-        stage2_start = lead_info.get("stage2_start", now)
-        last_call_time = lead_info.get("last_call_time", now)
-        
-        # Parse dates if strings
-        if isinstance(stage2_start, str):
-            stage2_start = datetime.fromisoformat(stage2_start.replace('Z', '+00:00'))
-        if isinstance(last_call_time, str):
-            last_call_time = datetime.fromisoformat(last_call_time.replace('Z', '+00:00'))
-        
-        # Ensure timezone awareness
-        if stage2_start.tzinfo is None:
-            stage2_start = self.timezone.localize(stage2_start)
-        if last_call_time.tzinfo is None:
-            last_call_time = self.timezone.localize(last_call_time)
-        
-        working_days_in_stage = self.count_working_days(stage2_start, now)
-        
-        if not student_grade or student_grade <= 9:
-            # Grade 9 or below
-            # First 6 months: Once per week (5 working days)
-            # After 6 months: Once per month (20 working days)
-            if working_days_in_stage <= 120:  # Approximately 6 months of working days
-                next_call = self.add_working_days(last_call_time, 5)
-            else:
-                next_call = self.add_working_days(last_call_time, 20)
-        
-        elif student_grade in [10, 11]:
-            # Grade 10-11
-            # First year: Twice per week (2-3 working days)
-            # After first year: Follow Grade 12 timeline
-            if working_days_in_stage <= 240:  # Approximately 1 year of working days
-                next_call = self.add_working_days(last_call_time, 2)
-            else:
-                next_call = self.calculate_grade12_timeline(lead_info, now)
-        
-        else:  # Grade 12 and above (UG/PG/Masters)
-            next_call = self.calculate_grade12_timeline(lead_info, now)
-        
-        # Ensure next call is in the future
-        if next_call <= now:
-            next_call = self.add_working_days(now, 1)
-        
-        return next_call
-    
-    def calculate_grade12_timeline(self, lead_info: Dict, now: datetime) -> datetime:
-        """
-        Grade 12+ timeline (UG/PG/Masters)
-        
-        Rules:
-        - First 6 months: 3 times per week (2 working days)
-        - Month 7-12: 2 times per week (2-3 working days)
-        - Year 2: Once per week (5 working days)
-        - Year 3-4: Every alternate week (10 working days)
-        - Year 5-7: Once per month (20 working days)
-        """
-        stage2_start = lead_info.get("stage2_start", now)
-        last_call_time = lead_info.get("last_call_time", now)
-        
-        # Parse dates if strings
-        if isinstance(stage2_start, str):
-            stage2_start = datetime.fromisoformat(stage2_start.replace('Z', '+00:00'))
-        if isinstance(last_call_time, str):
-            last_call_time = datetime.fromisoformat(last_call_time.replace('Z', '+00:00'))
-        
-        # Ensure timezone awareness
-        if stage2_start.tzinfo is None:
-            stage2_start = self.timezone.localize(stage2_start)
-        if last_call_time.tzinfo is None:
-            last_call_time = self.timezone.localize(last_call_time)
-        
-        working_days_in_timeline = self.count_working_days(stage2_start, now)
-        
-        if working_days_in_timeline <= 120:  # First 6 months
-            # 3 times per week (2 working days)
-            next_call = self.add_working_days(last_call_time, 2)
-        elif working_days_in_timeline <= 240:  # Month 7-12
-            # 2 times per week (2-3 working days)
-            next_call = self.add_working_days(last_call_time, 2)
-        elif working_days_in_timeline <= 480:  # Year 2
-            # Once per week (5 working days)
-            next_call = self.add_working_days(last_call_time, 5)
-        elif working_days_in_timeline <= 960:  # Year 3-4
-            # Every alternate week (10 working days)
-            next_call = self.add_working_days(last_call_time, 10)
-        else:  # Year 5-7
-            # Once per month (20 working days)
-            next_call = self.add_working_days(last_call_time, 20)
-        
-        # Ensure next call is in the future
-        if next_call <= now:
-            next_call = self.add_working_days(now, 1)
-        
-        return next_call
-    
-    def calculate_stage3_schedule(self, lead_info: Dict, now: datetime) -> datetime:
-        """
-        Stage 3: Post-counselling retention follow-up
-        
-        Rules:
-        - First 2 months: 2 times per week (2-3 working days)
-        - Month 3-6: Once per week (5 working days)
-        - Month 7-10: Every alternate week (10 working days)
-        - Month 11-48: Once per month (20 working days)
-        """
-        stage3_start = lead_info.get("stage3_start", now)
-        last_call_time = lead_info.get("last_call_time", now)
-        
-        # Parse dates if strings
-        if isinstance(stage3_start, str):
-            stage3_start = datetime.fromisoformat(stage3_start.replace('Z', '+00:00'))
-        if isinstance(last_call_time, str):
-            last_call_time = datetime.fromisoformat(last_call_time.replace('Z', '+00:00'))
-        
-        # Ensure timezone awareness
-        if stage3_start.tzinfo is None:
-            stage3_start = self.timezone.localize(stage3_start)
-        if last_call_time.tzinfo is None:
-            last_call_time = self.timezone.localize(last_call_time)
-        
-        working_days_in_stage = self.count_working_days(stage3_start, now)
-        
-        if working_days_in_stage <= 40:  # First 2 months
-            # 2 times per week (2-3 working days)
-            next_call = self.add_working_days(last_call_time, 2)
-        elif working_days_in_stage <= 120:  # Month 3-6
-            # Once per week (5 working days)
-            next_call = self.add_working_days(last_call_time, 5)
-        elif working_days_in_stage <= 200:  # Month 7-10
-            # Every alternate week (10 working days)
-            next_call = self.add_working_days(last_call_time, 10)
-        else:  # Month 11-48
-            # Once per month (20 working days)
-            next_call = self.add_working_days(last_call_time, 20)
-        
-        # Ensure next call is in the future
-        if next_call <= now:
-            next_call = self.add_working_days(now, 1)
-        
-        return next_call
-    
-    def calculate_not_interested_schedule(self, lead_info: Dict, now: datetime) -> Optional[datetime]:
-        """
-        Not interested - still follow up monthly for 4 years
-        
-        Rules:
-        - Monthly follow-up for 4 years (approximately 960 working days)
-        - After 4 years, close lead (return None)
-        """
-        created_at = lead_info.get("created_at", now)
-        last_call_time = lead_info.get("last_call_time", now)
-        
-        # Parse dates if strings
-        if isinstance(created_at, str):
-            created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-        if isinstance(last_call_time, str):
-            last_call_time = datetime.fromisoformat(last_call_time.replace('Z', '+00:00'))
-        
-        # Ensure timezone awareness
-        if created_at.tzinfo is None:
-            created_at = self.timezone.localize(created_at)
-        if last_call_time.tzinfo is None:
-            last_call_time = self.timezone.localize(last_call_time)
-        
-        working_days_since_first = self.count_working_days(created_at, now)
-        
-        if working_days_since_first < 960:  # Less than 4 years (approximately 960 working days)
-            # Monthly follow-up (20 working days)
-            next_call = self.add_working_days(last_call_time, 20)
-        else:
-            # 4 years passed, don't schedule (lead should be closed)
-            logger.info("Lead has been not_interested for 4+ years, not scheduling next call")
-            return None
-        
-        # Ensure next call is in the future
-        if next_call <= now:
-            next_call = self.add_working_days(now, 1)
-        
-        return next_call
-    
-    def calculate_event_followup_schedule(self, lead_info: Dict, now: datetime) -> Optional[datetime]:
-        """
-        Event follow-up - Valid for 3 years from interest expression
-        
-        Rules:
-        - Periodic contact for 3 years (approximately 720 working days)
-        - Frequency: Monthly or as per event schedule
-        """
-        event_interest_date = lead_info.get("event_interest_date", now)
-        last_call_time = lead_info.get("last_call_time", now)
-        
-        # Parse dates if strings
-        if isinstance(event_interest_date, str):
-            event_interest_date = datetime.fromisoformat(event_interest_date.replace('Z', '+00:00'))
-        if isinstance(last_call_time, str):
-            last_call_time = datetime.fromisoformat(last_call_time.replace('Z', '+00:00'))
-        
-        # Ensure timezone awareness
-        if event_interest_date.tzinfo is None:
-            event_interest_date = self.timezone.localize(event_interest_date)
-        if last_call_time.tzinfo is None:
-            last_call_time = self.timezone.localize(last_call_time)
-        
-        working_days_since_interest = self.count_working_days(event_interest_date, now)
-        
-        if working_days_since_interest < 720:  # Less than 3 years
-            # Monthly follow-up (20 working days)
-            next_call = self.add_working_days(last_call_time, 20)
-        else:
-            # 3 years passed, stop event follow-up
-            logger.info("Event follow-up period (3 years) expired")
-            return None
-        
-        # Ensure next call is in the future
-        if next_call <= now:
-            next_call = self.add_working_days(now, 1)
-        
-        return next_call
-    
-    def count_working_days(self, start_date: datetime, end_date: datetime) -> int:
-        """
-        Count working days between two dates (excluding Mondays and holidays)
-        
-        Args:
-            start_date: Start date
-            end_date: End date
-        
-        Returns:
-            Number of working days
-        """
-        if end_date < start_date:
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count (approximately 1 token = 4 characters)"""
+        if not text:
             return 0
-        
-        count = 0
-        current = start_date.date()
-        end = end_date.date()
-        
-        while current <= end:
-            # Create datetime for checking
-            dt = datetime.combine(current, time(12, 0))
-            if self.timezone:
-                dt = self.timezone.localize(dt)
-            
-            if self.is_working_day(dt):
-                count += 1
-            
-            current += timedelta(days=1)
-        
-        return count
+        return len(text) // 4
     
-    def parse_callback_time(self, callback_string: str, reference_time: datetime) -> datetime:
-        """
-        Parse callback time from lead's words
-        
-        Examples:
-        - "tomorrow 5 PM" → datetime tomorrow at 17:00
-        - "Monday 6 PM" → next Monday at 18:00
-        - "2025-12-27 17:00:00" → parsed datetime
-        
-        Args:
-            callback_string: String with callback time
-            reference_time: Reference time (usually now)
-        
-        Returns:
-            datetime object (will be adjusted to working hours later)
-        """
-        if not callback_string:
+    def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 500) -> str:
+        """Helper function to call Gemini 2.0 Flash API"""
+        if not self.gemini_api_key:
+            logger.warning("Gemini API key not available, skipping API call")
             return None
         
-        callback_lower = callback_string.lower().strip()
+        input_tokens = self._estimate_tokens(prompt)
+        logger.debug(f"Calling Gemini API - Input tokens: ~{input_tokens}, Max output: {max_output_tokens}, Temp: {temperature}")
         
-        # Try to parse as ISO format first
         try:
-            parsed = datetime.fromisoformat(callback_string.replace('Z', '+00:00'))
-            if parsed.tzinfo is None:
-                parsed = self.timezone.localize(parsed)
-            return parsed
-        except (ValueError, AttributeError):
-            pass
-        
-        # Parse "within X mins/minutes", "in X minutes", or "after X mins" format
-        import re
-        within_patterns = [
-            r'within\s+(\d+)\s*(?:mins?|minutes?)',
-            r'in\s+(\d+)\s*(?:mins?|minutes?)',
-            r'after\s+(\d+)\s*(?:mins?|minutes?)',  # Add support for "after X mins"
-            r'(\d+)\s*(?:mins?|minutes?)\s*(?:from now|later)'
-        ]
-        
-        for pattern in within_patterns:
-            within_match = re.search(pattern, callback_lower)
-            if within_match:
-                minutes = int(within_match.group(1))
-                # Ensure reference_time is timezone-aware
-                if reference_time.tzinfo is None:
-                    ref_time = self.timezone.localize(reference_time)
-                else:
-                    ref_time = reference_time
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={self.gemini_api_key}"
+            
+            headers = {
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "contents": [{
+                    "parts": [{"text": prompt}]
+                }],
+                "generationConfig": {
+                    "temperature": temperature,
+                    "maxOutputTokens": max_output_tokens
+                }
+            }
+            
+            response = requests.post(url, headers=headers, json=data, timeout=10)
+            
+            if response.status_code == 200:
+                response_data = response.json()
+                logger.debug("Gemini API call successful")
                 
-                # Add minutes
-                result_time = ref_time + timedelta(minutes=minutes)
+                if "candidates" in response_data and len(response_data["candidates"]) > 0:
+                    if "content" in response_data["candidates"][0]:
+                        if "parts" in response_data["candidates"][0]["content"]:
+                            output_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                            logger.debug(f"Gemini API response received - Output length: {len(output_text)} chars")
+                            return output_text
                 
-                # For relative times (within/after/in X mins), use the exact calculated time
-                # Only adjust if outside working hours, but preserve the relative time calculation
-                if result_time.time() < WORKING_HOUR_START:
-                    # Before working hours - move to start of working hours on same day
-                    result_time = result_time.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
-                elif result_time.time() > WORKING_HOUR_END:
-                    # After working hours - move to start of working hours next day
-                    result_time = result_time + timedelta(days=1)
-                    result_time = result_time.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
-                
-                # For relative times, don't enforce working day restriction - use the calculated time
-                # The time is already calculated relative to reference_time, so honor it
-                # Only ensure timezone awareness
-                if result_time.tzinfo is None:
-                    result_time = self.timezone.localize(result_time)
-                
-                return result_time
+                if "promptFeedback" in response_data:
+                    logger.warning(f"Gemini API warning: {response_data.get('promptFeedback', {})}")
+            else:
+                logger.error(f"Gemini API error: {response.status_code} - {response.text[:200]}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Gemini API exception: {str(e)}", exc_info=True)
+            return None
+    
+    def _parse_summary_json(self, raw_text: str | None) -> Optional[Dict]:
+        """Attempt to extract a JSON object from Gemini output with code fences or trailing text."""
+        if not raw_text:
+            return None
+
+        text = raw_text.strip()
+        if not text:
+            return None
+
+        candidates = [text]
+
+        # Extract fenced blocks (handles both ```json and ```)
+        fence_pattern = re.compile(r"```(?:json)?\s*([\s\S]+?)```", re.IGNORECASE)
+        for match in fence_pattern.finditer(text):
+            snippet = match.group(1).strip()
+            if snippet:
+                candidates.append(snippet)
+
+        # Handle unterminated fences by slicing after the marker
+        for marker in ("```json", "```"):
+            marker_index = text.lower().find(marker)
+            if marker_index != -1:
+                snippet = text[marker_index + len(marker):].strip()
+                if snippet:
+                    candidates.append(snippet)
+
+        # Always try substring starting from first brace
+        brace_index = text.find("{")
+        if brace_index != -1:
+            json_candidate = text[brace_index:]
+            if json_candidate:
+                candidates.append(json_candidate)
+
+        decoder = json.JSONDecoder()
+        for candidate in candidates:
+            candidate = candidate.strip()
+            if not candidate:
+                continue
+
+            try:
+                return decoder.decode(candidate)
+            except json.JSONDecodeError:
+                pass
+
+            try:
+                obj, _ = decoder.raw_decode(candidate)
+                return obj
+            except json.JSONDecodeError:
+                pass
+
+            if "{" in candidate:
+                start = candidate.find("{")
+                try_candidate = candidate[start:]
+                try:
+                    obj, _ = decoder.raw_decode(try_candidate)
+                    return obj
+                except json.JSONDecodeError:
+                    continue
+
+        return None
+    
+    def _extract_user_messages(self, conversation_text: str) -> str:
+        """Extract only user messages from conversation (exclude bot/agent messages)"""
+        lines = conversation_text.split('\n')
+        user_messages = []
         
-        # Parse relative times
-        result_time = reference_time
+        for line in lines:
+            line = line.strip()
+            # Only include lines that start with "User:"
+            if line.startswith("User:"):
+                user_messages.append(line.replace("User:", "").strip())
+            # Exclude agent/bot messages
+            elif line.startswith("Bot:") or line.startswith("Agent:"):
+                continue
+            # Lines without prefix might be user messages (legacy format)
+            elif line and not any(line.startswith(prefix) for prefix in ["Bot:", "Agent:", "User:"]):
+                user_messages.append(line)
         
-        # Extract day
-        if "tomorrow" in callback_lower:
-            result_time = result_time + timedelta(days=1)
-        elif "monday" in callback_lower:
-            days_until_monday = (0 - result_time.weekday()) % 7
-            if days_until_monday == 0:  # Today is Monday
-                days_until_monday = 7  # Next Monday
-            result_time = result_time + timedelta(days=days_until_monday)
-        elif "tuesday" in callback_lower:
-            days_until_tuesday = (1 - result_time.weekday()) % 7
-            if days_until_tuesday == 0:
-                days_until_tuesday = 7
-            result_time = result_time + timedelta(days=days_until_tuesday)
-        elif "wednesday" in callback_lower:
-            days_until_wednesday = (2 - result_time.weekday()) % 7
-            if days_until_wednesday == 0:
-                days_until_wednesday = 7
-            result_time = result_time + timedelta(days=days_until_wednesday)
-        elif "thursday" in callback_lower:
-            days_until_thursday = (3 - result_time.weekday()) % 7
-            if days_until_thursday == 0:
-                days_until_thursday = 7
-            result_time = result_time + timedelta(days=days_until_thursday)
-        elif "friday" in callback_lower:
-            days_until_friday = (4 - result_time.weekday()) % 7
-            if days_until_friday == 0:
-                days_until_friday = 7
-            result_time = result_time + timedelta(days=days_until_friday)
-        elif "saturday" in callback_lower:
-            days_until_saturday = (5 - result_time.weekday()) % 7
-            if days_until_saturday == 0:
-                days_until_saturday = 7
-            result_time = result_time + timedelta(days=days_until_saturday)
-        elif "sunday" in callback_lower:
-            days_until_sunday = (6 - result_time.weekday()) % 7
-            if days_until_sunday == 0:
-                days_until_sunday = 7
-            result_time = result_time + timedelta(days=days_until_sunday)
+        return " ".join(user_messages)
+    
+    async def extract_student_information(self, conversation_text: str) -> Optional[Dict]:
+        """
+        Extract student information from conversation transcription
+        Matches glinks.students_glinks table columns
+        """
         
-        # Extract time
-        import re
-        time_patterns = [
-            # Match "2:00 PM" or "2:00PM" first (most specific)
-            (r'(\d{1,2}):(\d{2})\s*(?:pm|p\.m\.)', lambda m: (int(m.group(1)) + (12 if int(m.group(1)) < 12 else 0), int(m.group(2)))),
-            (r'(\d{1,2}):(\d{2})\s*(?:am|a\.m\.)', lambda m: (int(m.group(1)) if int(m.group(1)) < 12 else 0, int(m.group(2)))),
-            # Match "evening 7" or "evening at 7" - evening means PM
-            (r'evening\s+(?:at\s+)?(\d{1,2})\b', lambda m: int(m.group(1)) + (12 if int(m.group(1)) < 12 else 0)),
-            # Match "morning 7" or "morning at 7" - morning means AM
-            (r'morning\s+(?:at\s+)?(\d{1,2})\b', lambda m: int(m.group(1)) if int(m.group(1)) < 12 else 0),
-            # Match "2 PM" or "2PM" (without colon) - check for word boundaries to avoid matching day numbers
-            (r'\b(\d{1,2})\s*(?:pm|p\.m\.)\b', lambda m: int(m.group(1)) + (12 if int(m.group(1)) < 12 else 0)),
-            (r'\b(\d{1,2})\s*(?:am|a\.m\.)\b', lambda m: int(m.group(1)) if int(m.group(1)) < 12 else 0),
-            # Match "2:00" (24-hour format)
-            (r'(\d{1,2}):(\d{2})', lambda m: (int(m.group(1)), int(m.group(2)))),
-            # Match "at 11" or "at 11 AM" - This handles cases like "Sunday at 11" or "book at 11"
-            # CRITICAL: This pattern should match "at 11" even without AM/PM
-            (r'(?:at|@)\s*(\d{1,2})(?:\s*(?:am|pm|a\.m\.|p\.m\.))?\b', lambda m: int(m.group(1))),
-            # Match "2 o'clock" (with o'clock)
-            (r'\b(\d{1,2})\s+o\'?clock\b', lambda m: int(m.group(1))),
-        ]
+        if not self.gemini_api_key:
+            logger.warning("Gemini API key not available for student information extraction")
+            return None
         
-        hour = 10  # Default hour (start of working hours)
-        minute = 0
-        time_found = False
+        try:
+            user_text = self._extract_user_messages(conversation_text)
+            
+            if not user_text or len(user_text) < 10:
+                logger.debug("Insufficient user text for student information extraction")
+                return None
+            
+            # Log conversation text info for debugging
+            logger.info(f"Full conversation text length: {len(conversation_text)} characters")
+            logger.info(f"Sample (first 500 chars): {conversation_text[:500]}")
+            logger.info(f"Sample (last 500 chars): {conversation_text[-500:]}")
+            
+            prompt = f"""Extract information from this phone call conversation.
+
+CONVERSATION:
+{conversation_text}
+
+INSTRUCTIONS - Follow these steps:
+
+STEP 1 - Find parent name:
+Search the conversation for these phrases:
+- "My father name is"
+- "father name is"  
+- "My father is"
+If you find any of these, extract the name that comes after. If the name appears in parts (e.g., "Suresh" then later "Harish Kumar"), combine them into one full name.
+
+STEP 2 - Find parent profession:
+Search for phrases like:
+- "He is doing business"
+- "doing business"
+- Any mention of parent's job/profession
+If found, extract the profession.
+
+STEP 3 - Extract other fields:
+- Student name if mentioned
+- Email addresses (even if spelled phonetically)
+- Meeting times when confirmed
+- Other information mentioned by the user
+
+REQUIRED FIELDS TO EXTRACT:
+
+1. student_name: Search for student's name if mentioned, or null
+2. parent_name: SEARCH for "My father name is" or "father name is" - extract the name that follows. Combine name parts if mentioned separately. Return null ONLY if no parent name is found.
+3. parents_profession: SEARCH for "He is doing business" or similar - extract the profession. Return null if not mentioned.
+4. email: Email address if mentioned (even if spelled phonetically), or null
+5. parent_contact: Phone number if mentioned, or null
+6. parents_workplace: Parent's workplace if mentioned, or null
+7. country_of_residence: Country where student lives (default: 'Unknown' if not mentioned)
+8. nationality: Student's nationality if mentioned, or null
+9. grade_year: Current grade/year if mentioned, or null
+10. curriculum: Curriculum type if mentioned, or null
+11. school_name: School name if mentioned, or null
+12. lead_source: How they found us (default: 'Phone Call')
+13. program_country_of_interest: Country of interest if mentioned, or null
+14. academic_grades: Academic performance if mentioned, or null
+15. counsellor_meeting_link: Always null (do not extract meeting times here)
+16. tags: Relevant tags if mentioned, or null
+17. stage: Current stage if mentioned, or null
+18. status: Status if mentioned, or null
+19. counsellor_email: Counsellor email if mentioned, or null
+
+Respond in JSON format:
+{{
+    "student_name": "Full name of the student if mentioned, or null",
+    "parent_name": "Extract parent name if you see phrases like 'My father name is X' or 'father name is X' in the conversation. Combine name parts if mentioned separately. Return null ONLY if no parent name is found.",
+    "parent_contact": "Phone number of parent if mentioned, or null",
+    "parents_profession": "Extract parent profession if mentioned (e.g., 'He is doing business' = 'Business'). Return null if not mentioned.",
+    "parents_workplace": "Parent's workplace/company if mentioned, or null",
+    "email": "Email address if mentioned (even if spelled phonetically like 'one dot iterate dot one two three at gmail dot com' = 'one.iterate.123@gmail.com'), or null",
+    "country_of_residence": "Country where student lives (if mentioned, default: 'Unknown')",
+    "nationality": "Student's nationality if mentioned, or null",
+    "grade_year": "Current grade/year (e.g., '10', '11', '12') if mentioned, or null",
+    "curriculum": "Curriculum type (e.g., 'CBSE', 'ICSE', 'State Board') if mentioned, or null",
+    "school_name": "Name of current school if mentioned, or null",
+    "lead_source": "How they found us (default: 'Phone Call')",
+    "program_country_of_interest": "Country they're interested in studying if mentioned, or null",
+    "academic_grades": "Academic performance/grade if mentioned, or null",
+    "counsellor_meeting_link": null,
+    "tags": "Relevant tags if mentioned, or null",
+    "stage": "Current stage if mentioned, or null",
+    "status": "Status if mentioned, or null",
+    "counsellor_email": "Counsellor email if mentioned, or null"
+}}
+
+CRITICAL RULES:
+1. Extract information that the USER/STUDENT/PARENT provides - this includes when the student mentions their parent's information
+2. Extract EVERYTHING the lead mentioned - be comprehensive and thorough
+3. When the student mentions their parent's name or profession, that IS user-provided information - extract it!
+4. REMEMBER: If the student says "My father name is Suresh Harish Kumar", extract "Suresh Harish Kumar" in parent_name!
+5. REMEMBER: If the student says "He is doing business", extract "Business" in parents_profession!
+6. If a field is not mentioned, set it to null (not empty string, not "None")
+7. For country_of_residence: If not mentioned, use 'Unknown' (this field is required)
+8. For lead_source: Default to 'Phone Call' if not specified
+9. Extract email addresses in standard format even if provided phonetically
+10. Extract scheduled meeting times when a meeting is confirmed/booked
+11. Do NOT extract agent/bot names (like "Nithya", "Mira Singh", "Pluto Travels representative")
+12. Extract information in natural language - preserve exact details when provided
+13. If information is provided in multiple parts (e.g., parent name split across messages), combine them into complete values
+14. Store ALL information the lead provided - be thorough and comprehensive
+"""
+
+            logger.debug("Extracting student information using LLM...")
+            result = self._call_gemini_api(prompt, temperature=0.2, max_output_tokens=800)
+            
+            if not result:
+                logger.warning("LLM did not return student information")
+                return None
+            
+            # Parse JSON response
+            parsed_data = self._parse_summary_json(result)
+            
+            if not parsed_data:
+                logger.warning("Failed to parse student information JSON from LLM response")
+                logger.debug(f"LLM raw response: {result[:500] if result else 'No response'}")
+                return None
+            
+            logger.info(f"Parsed JSON from LLM: {json.dumps(parsed_data, indent=2)}")
+            logger.info(f"Parent name from LLM: {parsed_data.get('parent_name')}")
+            logger.info(f"Parent profession from LLM: {parsed_data.get('parents_profession')}")
+            
+            # Helper function to clean string values (convert "None" string to None)
+            def clean_string(value, default=None):
+                if value is None:
+                    return default
+                value_str = str(value).strip()
+                if not value_str or value_str.lower() == 'none' or value_str.lower() == 'null':
+                    return default
+                return value_str
+            
+            # Clean and validate extracted data
+            student_info = {
+                'student_name': clean_string(parsed_data.get('student_name')),
+                'parent_name': clean_string(parsed_data.get('parent_name')),
+                'parent_contact': clean_string(parsed_data.get('parent_contact')),
+                'parents_profession': clean_string(parsed_data.get('parents_profession')),
+                'parents_workplace': clean_string(parsed_data.get('parents_workplace')),
+                'email': clean_string(parsed_data.get('email')),
+                'country_of_residence': clean_string(parsed_data.get('country_of_residence'), 'Unknown'),
+                'nationality': clean_string(parsed_data.get('nationality')),
+                'grade_year': clean_string(parsed_data.get('grade_year')),
+                'curriculum': clean_string(parsed_data.get('curriculum')),
+                'school_name': clean_string(parsed_data.get('school_name')),
+                'lead_source': clean_string(parsed_data.get('lead_source'), 'Phone Call'),
+                'program_country_of_interest': clean_string(parsed_data.get('program_country_of_interest')),
+                'academic_grades': clean_string(parsed_data.get('academic_grades')),
+                'counsellor_meeting_link': None,  # Always null
+                'tags': clean_string(parsed_data.get('tags')),
+                'stage': clean_string(parsed_data.get('stage')),
+                'status': clean_string(parsed_data.get('status')),
+                'counsellor_email': clean_string(parsed_data.get('counsellor_email'))
+            }
+            
+            # Check if we have at least some information
+            has_info = any([
+                student_info['student_name'],
+                student_info['parent_name'],
+                student_info['parent_contact'],
+                student_info['email'],
+                student_info['grade_year'],
+                student_info['school_name'],
+                student_info['curriculum'],
+                student_info['parents_profession'],
+                False  # counsellor_meeting_link is always null, so skip this check
+            ])
+            
+            if not has_info:
+                logger.warning("No student information found in conversation")
+                logger.info(f"Parsed data was: {parsed_data}")
+                logger.info(f"Student info extracted: {student_info}")
+                return None
+            
+            logger.debug(f"Student information extracted: {student_info}")
+            return student_info
+            
+        except Exception as e:
+            logger.error(f"Error extracting student information: {str(e)}", exc_info=True)
+            return None
+    
+    def save_to_json(self, student_info: Dict, call_log_id, target_id: Optional[int]) -> Optional[str]:
+        """
+        Save student information to JSON file locally
         
-        for pattern, extractor in time_patterns:
-            match = re.search(pattern, callback_lower)
-            if match:
-                result = extractor(match)
-                if isinstance(result, tuple):
-                    hour, minute = result
-                else:
-                    hour = result
-                time_found = True
-                logger.info(f"Extracted hour {hour} from pattern '{pattern}' in: {callback_string}")
-                break
+        Args:
+            student_info: The extracted student information dictionary (matching glinks.students_glinks columns)
+            call_log_id: ID from call_logs_voiceagent table (for reference)
+            target_id: Target ID from call_logs_voiceagent.target (BIGINT) - used as id in students_glinks table
         
-        # If no time pattern matched, try to find hour numbers in time context
-        if not time_found:
-            # Try to find hour number after "at" (most common case: "Sunday at 11")
-            at_time_match = re.search(r'(?:at|@)\s*(\d{1,2})\b', callback_lower)
-            if at_time_match:
-                hour = int(at_time_match.group(1))
-                time_found = True
-                logger.info(f"Extracted hour {hour} from 'at' pattern in: {callback_string}")
+        Returns:
+            Path to saved JSON file or None if failed
+        """
+        try:
+            # Convert target_id (BIGINT) to use as id in students_glinks table
+            id_value = None
+            if target_id is not None:
+                try:
+                    if isinstance(target_id, (int, str)):
+                        id_value = int(target_id)
+                    else:
+                        id_value = None
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Could not convert target_id to integer: {e}")
+                    id_value = None
+            
+            # Prepare output data structure (matches glinks.students_glinks table structure)
+            # id column uses the same value as target from call_logs_voiceagent
+            output_data = {
+                'id': id_value,  # Use target value from call_logs_voiceagent.target
+                'student_name': student_info.get('student_name'),
+                'parent_name': student_info.get('parent_name'),
+                'parent_contact': student_info.get('parent_contact'),
+                'parents_profession': student_info.get('parents_profession'),
+                'parents_workplace': student_info.get('parents_workplace'),
+                'email': student_info.get('email'),
+                'country_of_residence': student_info.get('country_of_residence'),
+                'nationality': student_info.get('nationality'),
+                'grade_year': student_info.get('grade_year'),
+                'curriculum': student_info.get('curriculum'),
+                'school_name': student_info.get('school_name'),
+                'lead_source': student_info.get('lead_source'),
+                'program_country_of_interest': student_info.get('program_country_of_interest'),
+                'academic_grades': student_info.get('academic_grades'),
+                'counsellor_meeting_link': student_info.get('counsellor_meeting_link'),
+                'tags': student_info.get('tags'),
+                'stage': student_info.get('stage'),
+                'status': student_info.get('status'),
+                'counsellor_email': student_info.get('counsellor_email'),
+                'created_at': datetime.now().isoformat(),
+                'updated_at': datetime.now().isoformat()
+            }
+            
+            # Generate filename
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            call_id_short = str(call_log_id)[:8] if call_log_id else 'unknown'
+            filename = f"student_extraction_{call_id_short}_{timestamp}.json"
+            
+            # Create json_exports directory if it doesn't exist
+            json_dir = Path(__file__).parent / "json_exports"
+            json_dir.mkdir(exist_ok=True)
+            
+            filepath = json_dir / filename
+            
+            # Save to JSON file
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Student information saved to JSON file: {filepath}")
+            return str(filepath)
+            
+        except Exception as e:
+            logger.error(f"Failed to save JSON file: {e}", exc_info=True)
+            return None
+    
+    def save_to_database(self, student_info: Dict, call_log_id, target_id: Optional[int], db_config: Dict) -> bool:
+        """
+        Save student information to glinks.students_glinks table
         
-        # If still no time found, check if there's a standalone number that could be an hour (1-23)
-        # Only in time-related context to avoid false matches
-        if not time_found:
-            # Look for numbers that are likely hours (1-23) near time-related words
-            # Check for context like "book", "schedule", "time", "hour", etc.
-            context_match = re.search(r'(?:book|schedule|time|hour|slot|meeting|appointment).*?(\d{1,2})\b', callback_lower)
-            if context_match:
-                potential_hour = int(context_match.group(1))
-                if 1 <= potential_hour <= 23:  # Valid hour range
-                    hour = potential_hour
-                    time_found = True
-                    logger.info(f"Extracted hour {hour} from time context in: {callback_string}")
+        Args:
+            student_info: The extracted student information dictionary (matching glinks.students_glinks columns)
+            call_log_id: ID from call_logs_voiceagent table (for reference)
+            target_id: Target ID from call_logs_voiceagent.target (BIGINT) - used as id in students_glinks table
+            db_config: Dict with db connection parameters
         
-        # Set time
-        result_time = result_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        Returns:
+            bool: True if saved successfully
+        """
+        if not DB_AVAILABLE:
+            logger.error("Database library not available. Install psycopg2-binary")
+            return False
         
-        # Ensure timezone awareness
-        if result_time.tzinfo is None:
-            result_time = self.timezone.localize(result_time)
+        conn = None
+        cursor = None
         
-        # Ensure time is in the future
-        if result_time <= reference_time:
-            result_time = result_time + timedelta(days=1)
-        
-        return result_time
+        try:
+            conn = psycopg2.connect(**db_config)
+            cursor = conn.cursor()
+            
+            # Convert target_id (BIGINT) to use as id in students_glinks table
+            id_value = None
+            if target_id is not None:
+                try:
+                    if isinstance(target_id, (int, str)):
+                        id_value = int(target_id)
+                    else:
+                        id_value = None
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Could not convert target_id to integer: {e}")
+                    id_value = None
+            
+            if id_value is None:
+                logger.error("target_id is required to save to database (connects to students_glinks.id)")
+                return False
+            
+            # Prepare INSERT query - matches glinks.students_glinks table structure
+            # Note: id column uses target value from call_logs_voiceagent.target (BIGINT)
+            # Database column types are not changed - we're inserting data that matches existing structure
+            query = """
+                INSERT INTO glinks.students_glinks (
+                    id,
+                    student_name,
+                    parent_name,
+                    parent_contact,
+                    parents_profession,
+                    parents_workplace,
+                    email,
+                    country_of_residence,
+                    nationality,
+                    grade_year,
+                    curriculum,
+                    school_name,
+                    lead_source,
+                    program_country_of_interest,
+                    academic_grades,
+                    counsellor_meeting_link,
+                    tags,
+                    stage,
+                    status,
+                    counsellor_email,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+            """
+            
+            values = (
+                id_value,  # id: uses target value from call_logs_voiceagent.target
+                student_info.get('student_name'),
+                student_info.get('parent_name'),
+                student_info.get('parent_contact'),
+                student_info.get('parents_profession'),
+                student_info.get('parents_workplace'),
+                student_info.get('email'),
+                student_info.get('country_of_residence', 'Unknown'),  # Default to 'Unknown' if not provided
+                student_info.get('nationality'),
+                student_info.get('grade_year'),
+                student_info.get('curriculum'),
+                student_info.get('school_name'),
+                student_info.get('lead_source', 'Phone Call'),  # Default to 'Phone Call' if not provided
+                student_info.get('program_country_of_interest'),
+                student_info.get('academic_grades'),
+                None,  # counsellor_meeting_link is always null
+                student_info.get('tags'),
+                student_info.get('stage'),
+                student_info.get('status'),
+                student_info.get('counsellor_email')
+            )
+            
+            cursor.execute(query, values)
+            conn.commit()
+            
+            logger.info(f"Student information saved to database (call_log_id: {call_log_id}, id: {id_value})")
+            return True
+            
+        except psycopg2.errors.UniqueViolation:
+            logger.warning(f"Student with id {id_value} already exists in database (duplicate entry)")
+            if conn:
+                conn.rollback()
+            return False
+        except Exception as e:
+            logger.error(f"Database save failed: {e}", exc_info=True)
+            if conn:
+                conn.rollback()
+            return False
+            
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
 
-def calculate_next_call_time(outcome: str, outcome_details: Dict, lead_info: Optional[Dict] = None, timezone_str: str = 'Asia/Dubai') -> Optional[datetime]:
-    """
-    Main function to calculate next call time
+class StandaloneStudentExtractor:
+    """Standalone student extractor - database input only"""
     
-    Args:
-        outcome: Outcome type
-        outcome_details: Outcome details dictionary
-        lead_info: Optional lead information
-        timezone_str: Timezone string (default: 'Asia/Dubai' for GST - Gulf Standard Time)
+    def __init__(self, db_config: Optional[Dict] = None):
+        """
+        Initialize standalone student extractor
+        
+        Args:
+            db_config: Database connection config (optional)
+                      {'host': 'localhost', 'database': 'db', 'user': 'user', 'password': 'pass'}
+        """
+        self.extractor = StudentExtractor()
+        self.db_config = db_config
     
-    Returns:
-        datetime object for next call time (within working hours on working day, in GST)
-    """
-    calculator = ScheduleCalculator(timezone_str)
-    return calculator.calculate_next_call(outcome, outcome_details, lead_info)
+    def _get_lead_category_from_analysis(self, cursor, call_log_id) -> Optional[str]:
+        """
+        Get lead_category from lad_dev.voice_call_analysis table
+        Connected via voice_call_logs.id = voice_call_analysis.call_log_id
+        
+        Args:
+            cursor: Database cursor
+            call_log_id: Call log ID (UUID) from voice_call_logs table
+            
+        Returns:
+            lead_category string if found, None otherwise
+        """
+        if not call_log_id:
+            return None
+        
+        try:
+            # Query voice_call_analysis using call_log_id - get from lead_extraction JSONB
+            cursor.execute(f"""
+                SELECT lead_extraction->>'lead_category' as lead_category
+                FROM {ANALYSIS_FULL}
+                WHERE call_log_id = %s::uuid
+            """, (str(call_log_id),))
+            
+            row = cursor.fetchone()
+            
+            if row and row[0] is not None:
+                lead_category = str(row[0]).strip()
+                if lead_category:
+                    logger.debug(f"Found lead_category '{lead_category}' for call_log_id {call_log_id}")
+                    return lead_category
+            
+            logger.debug(f"No lead_category found for call_log_id {call_log_id}")
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error getting lead_category from voice_call_analysis: {e}")
+            return None
+    
+    async def list_database_calls(self) -> None:
+        """List all calls from database with row numbers matching the query order"""
+        if not DB_AVAILABLE:
+            raise ImportError("psycopg2 not installed. Install with: pip install psycopg2-binary")
+        
+        if not self.db_config:
+            raise ValueError("Database config not provided. Use --db-host, --db-name, --db-user, --db-pass or .env file")
+        
+        logger.info("Listing calls from database...")
+        logger.info("=" * 80)
+        
+        conn = psycopg2.connect(**self.db_config)
+        cursor = conn.cursor()
+        
+        try:
+            # Fetch calls ordered by created_at
+            cursor.execute(f"""
+                SELECT 
+                    ROW_NUMBER() OVER (ORDER BY created_at) as row_num,
+                    id,
+                    started_at,
+                    ended_at,
+                    transcripts
+                FROM {CALL_LOGS_FULL}
+                ORDER BY created_at
+                LIMIT 500000
+            """)
+            
+            calls = cursor.fetchall()
+            
+            if not calls:
+                logger.warning("No calls found in database.")
+                logger.info("No calls found in database.")
+                return
+            
+            header = f"{'Row':<6} {'UUID':<40} {'Started At':<20} {'Duration':<10} {'Transcript Preview'}"
+            logger.info(header)
+            logger.info("-" * 80)
+            
+            for row_num, call_id, started_at, ended_at, transcripts in calls:
+                # Convert transcripts to preview text safely in Python
+                transcript_preview = 'No transcript'
+                if transcripts:
+                    try:
+                        if isinstance(transcripts, (dict, list)):
+                            transcript_str = json.dumps(transcripts)
+                        else:
+                            transcript_str = str(transcripts)
+                        
+                        if transcript_str:
+                            preview = transcript_str[:50]
+                            if len(transcript_str) > 50:
+                                preview += '...'
+                            transcript_preview = preview
+                    except Exception:
+                        transcript_preview = 'Invalid transcript format'
+                duration = ""
+                if started_at and ended_at:
+                    duration_seconds = int((ended_at - started_at).total_seconds())
+                    duration = f"{duration_seconds}s"
+                
+                started_str = started_at.strftime('%Y-%m-%d %H:%M:%S') if started_at else 'N/A'
+                call_info = f"{row_num:<6} {str(call_id):<40} {started_str:<20} {duration:<10} {transcript_preview}"
+                logger.info(call_info)
+            
+            logger.info("-" * 80)
+            logger.info("Row numbers match pgAdmin's default display order (physical storage order)")
+            logger.info("To extract student info from a call, use: python student_extraction.py --db-id <row_number>")
+            logger.info("Or use UUID directly: python student_extraction.py --db-id <uuid_string>")
+            
+        finally:
+            cursor.close()
+            conn.close()
+    
+    async def extract_from_database(self, call_log_id, save_to_db: bool = False, save_to_json: bool = True) -> Optional[Dict]:
+        """
+        Extract student information from database call_logs table
+        
+        Args:
+            call_log_id: ID from call_logs_voiceagent table (integer row number or UUID string)
+            save_to_db: If True, save to database (default: False)
+            save_to_json: If True, save to JSON file (default: True)
+            
+        Returns:
+            Extracted student information dictionary or None
+        """
+        if not DB_AVAILABLE:
+            raise ImportError("psycopg2 not installed. Install with: pip install psycopg2-binary")
+        
+        if not self.db_config:
+            raise ValueError("Database config not provided. Use --db-host, --db-name, --db-user, --db-pass")
+        
+        logger.info(f"Fetching call from database (ID: {call_log_id})")
+        
+        # Connect to database
+        conn = psycopg2.connect(**self.db_config)
+        cursor = conn.cursor()
+        
+        try:
+            # Try to parse as integer first, otherwise treat as UUID string
+            try:
+                call_log_id_int = int(call_log_id)
+                call_log_id = call_log_id_int
+            except (ValueError, TypeError):
+                # Not an integer, treat as UUID string
+                pass
+            
+            if isinstance(call_log_id, int):
+                # Integer ID: Use ROW_NUMBER() to find the Nth record
+                cursor.execute(f"""
+                    SELECT id, transcripts, started_at, ended_at, lead_id
+                    FROM (
+                        SELECT 
+                            id, 
+                            transcripts, 
+                            started_at, 
+                            ended_at,
+                            lead_id,
+                            ROW_NUMBER() OVER (ORDER BY created_at) as row_num
+                        FROM {CALL_LOGS_FULL}
+                    ) ranked
+                    WHERE row_num = %s
+                """, (call_log_id,))
+            else:
+                # UUID string: Try direct UUID match or text match
+                try:
+                    cursor.execute(f"""
+                        SELECT id, transcripts, started_at, ended_at, lead_id
+                        FROM {CALL_LOGS_FULL}
+                        WHERE id = %s::uuid
+                    """, (str(call_log_id),))
+                except (psycopg2.errors.InvalidTextRepresentation, psycopg2.errors.UndefinedFunction):
+                    # Fallback: try text match
+                    cursor.execute(f"""
+                        SELECT id, transcripts, started_at, ended_at, lead_id
+                        FROM {CALL_LOGS_FULL}
+                        WHERE id::text = %s
+                    """, (str(call_log_id),))
+            
+            call_data = cursor.fetchone()
+            
+            if not call_data:
+                raise ValueError(f"Call log {call_log_id} not found in database")
+            
+            db_call_id, transcripts, started_at, ended_at, lead_id = call_data
+            
+            # Get transcript from transcripts column
+            # Handle different data types: dict (JSONB), list, or string
+            if not transcripts:
+                raise ValueError(f"No transcript found for call {call_log_id}")
+            
+            # Convert transcripts to conversation text
+            if isinstance(transcripts, dict):
+                # If it's a dict, check if it contains a list of messages
+                if 'messages' in transcripts and isinstance(transcripts['messages'], list):
+                    # Structured format with messages array
+                    conversation_log = transcripts['messages']
+                    conversation_text = "\n".join([f"{entry.get('role', 'Unknown').title()}: {entry.get('message', entry.get('text', ''))}" for entry in conversation_log])
+                elif isinstance(transcripts, dict) and any(key in transcripts for key in ['role', 'message', 'text']):
+                    # Single message dict - convert to text
+                    role = transcripts.get('role', 'Unknown').title()
+                    message = transcripts.get('message') or transcripts.get('text', '')
+                    conversation_text = f"{role}: {message}"
+                else:
+                    # Try to extract text from dict
+                    if 'text' in transcripts:
+                        conversation_text = str(transcripts['text'])
+                    elif 'transcript' in transcripts:
+                        conversation_text = str(transcripts['transcript'])
+                    elif 'content' in transcripts:
+                        conversation_text = str(transcripts['content'])
+                    else:
+                        # Fallback: convert entire dict to JSON string
+                        conversation_text = json.dumps(transcripts)
+            elif isinstance(transcripts, list):
+                # List format - convert to text
+                conversation_text = "\n".join([f"{entry.get('role', 'Unknown').title()}: {entry.get('message', entry.get('text', ''))}" if isinstance(entry, dict) else str(entry) for entry in transcripts])
+            else:
+                # String format - use as-is
+                conversation_text = str(transcripts)
+            
+            logger.info(f"Call ID: {db_call_id}, Started: {started_at}, Ended: {ended_at}, Lead ID: {lead_id}")
+            logger.info(f"Conversation text length: {len(conversation_text)} characters")
+            
+            # Get lead_category from post_call_analysis_voiceagent table (connected via call_log_id)
+            lead_category = self._get_lead_category_from_analysis(cursor, db_call_id)
+            if lead_category:
+                logger.info(f"Found lead_category from post_call_analysis: {lead_category}")
+            
+            # Extract student information
+            student_info = await self.extractor.extract_student_information(conversation_text)
+            
+            if student_info:
+                logger.info("Student information extracted successfully")
+                logger.info(f"Student Name: {student_info.get('student_name')}")
+                logger.info(f"Parent Name: {student_info.get('parent_name')}")
+                logger.info(f"Parent Contact: {student_info.get('parent_contact')}")
+                logger.info(f"Program Country of Interest: {student_info.get('program_country_of_interest')}")
+                
+                # Set tags to lead_category if available (from post_call_analysis_voiceagent.lead_category)
+                if lead_category:
+                    student_info['tags'] = lead_category
+                    logger.info(f"Setting tags to lead_category: {lead_category}")
+                
+                # Save to JSON file (default behavior)
+                if save_to_json:
+                    logger.info("Saving student information to JSON file...")
+                    json_file = self.extractor.save_to_json(student_info, db_call_id, lead_id)
+                    
+                    if json_file:
+                        logger.info(f"Student information saved to JSON file: {json_file}")
+                    else:
+                        logger.error("Failed to save student information to JSON file")
+                
+                # Save to database (optional)
+                if save_to_db:
+                    logger.info("Saving student information to database...")
+                    db_saved = self.extractor.save_to_database(
+                        student_info, 
+                        db_call_id, 
+                        lead_id, 
+                        self.db_config
+                    )
+                    if db_saved:
+                        logger.info("Student information saved to database successfully")
+                    else:
+                        logger.error("Failed to save student information to database")
+                
+                return student_info
+            else:
+                logger.info("No student information found in this call transcript")
+                return None
+            
+        finally:
+            cursor.close()
+            conn.close()
+
+
+async def main():
+    """Main CLI entry point"""
+    parser = argparse.ArgumentParser(
+        description='Student Information Extraction Tool - Extract from call transcriptions (glinks.students_glinks structure)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    # List all calls from database (shows row numbers matching --db-id usage)
+    python student_extraction.py --list-calls
+    
+    # Extract student info and save to JSON file (default behavior)
+    python student_extraction.py --db-id 23
+    
+    # Extract student info, save to JSON file, and also save to database
+    python student_extraction.py --db-id 23 --save-db
+    
+    # Extract student info but skip JSON file (save to database only)
+    python student_extraction.py --db-id 23 --save-db --no-save-json
+        """
+    )
+    
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument('--db-id', help='Call log ID from database (integer for row number, or UUID string)')
+    input_group.add_argument('--list-calls', action='store_true', help='List all calls with row numbers')
+    
+    parser.add_argument('--db-host', help='Database host (default: from .env or localhost)')
+    parser.add_argument('--db-name', help='Database name (default: from .env)')
+    parser.add_argument('--db-user', help='Database user (default: from .env or postgres)')
+    parser.add_argument('--db-pass', help='Database password (default: from .env)')
+    parser.add_argument('--save-db', action='store_true', help='Also save extracted data to database (optional)')
+    parser.add_argument('--no-save-json', action='store_true', help='Skip saving to JSON file (JSON is saved by default)')
+    
+    args = parser.parse_args()
+    
+    db_config = {
+        'host': args.db_host or os.getenv('DB_HOST', 'localhost'),
+        'database': args.db_name or os.getenv('DB_NAME', 'salesmaya_agent'),
+        'user': args.db_user or os.getenv('DB_USER', 'postgres'),
+        'password': args.db_pass or os.getenv('DB_PASSWORD')
+    }
+    
+    if not db_config['password']:
+        parser.error("Database password required. Provide via --db-pass or DB_PASSWORD in .env file")
+    
+    extractor = StandaloneStudentExtractor(db_config=db_config)
+    result = None
+    
+    try:
+        if args.list_calls:
+            await extractor.list_database_calls()
+            return
+        elif args.db_id:
+            result = await extractor.extract_from_database(
+                args.db_id, 
+                save_to_db=args.save_db,  # Default is False, set to True with --save-db flag
+                save_to_json=not args.no_save_json  # Default is True, unless --no-save-json flag is set
+            )
+        
+        if result:
+            logger.info("="*60)
+            logger.info("EXTRACTION SUMMARY")
+            logger.info("="*60)
+            logger.info(f"Student Name: {result.get('student_name', 'N/A')}")
+            logger.info(f"Parent Name: {result.get('parent_name', 'N/A')}")
+            logger.info(f"Parent Contact: {result.get('parent_contact', 'N/A')}")
+            logger.info(f"Email: {result.get('email', 'N/A')}")
+            logger.info(f"Grade Year: {result.get('grade_year', 'N/A')}")
+            logger.info(f"Curriculum: {result.get('curriculum', 'N/A')}")
+            logger.info(f"School Name: {result.get('school_name', 'N/A')}")
+            logger.info(f"Program Country of Interest: {result.get('program_country_of_interest', 'N/A')}")
+            logger.info(f"Tags: {result.get('tags', 'N/A')}")
+            logger.info("="*60)
+            logger.info("Extraction complete! Data saved to JSON file in json_exports/ directory")
+        else:
+            logger.info("No student information extracted from this call.")
+    
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        import sys
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    # Test the calculator
-    from datetime import datetime
-    
-    calculator = ScheduleCalculator()
-    
-    # Test Stage 1
-    lead_info = {
-        "stage": 1,
-        "created_at": datetime.now() - timedelta(days=5),
-        "last_call_time": datetime.now() - timedelta(days=1),
-        "call_count": 2
-    }
-    
-    outcome = "no_answer"
-    outcome_details = {}
-    
-    next_call = calculator.calculate_next_call(outcome, outcome_details, lead_info)
-    print(f"Next call (Stage 1): {next_call}")
+    asyncio.run(main())
