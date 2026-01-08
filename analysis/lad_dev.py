@@ -1,4 +1,5 @@
-﻿"""
+
+"""
 Student Information Extraction for LAD Development
 Extracts student/parent information from call transcriptions and stores in lad_dev.education_students table
 
@@ -17,7 +18,7 @@ import os
 import json
 import asyncio
 import re
-import requests
+import httpx
 import logging
 import argparse
 import uuid as uuid_lib
@@ -70,8 +71,8 @@ class StudentExtractor:
             return 0
         return len(text) // 4
     
-    def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 500) -> str:
-        """Helper function to call Gemini 2.0 Flash API"""
+    async def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 500) -> str:
+        """Helper function to call Gemini 2.0 Flash API (async)"""
         if not self.gemini_api_key:
             logger.warning("Gemini API key not available, skipping API call")
             return None
@@ -96,24 +97,25 @@ class StudentExtractor:
                 }
             }
             
-            response = requests.post(url, headers=headers, json=data, timeout=10)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, headers=headers, json=data)
             
-            if response.status_code == 200:
-                response_data = response.json()
-                logger.debug("Gemini API call successful")
-                
-                if "candidates" in response_data and len(response_data["candidates"]) > 0:
-                    if "content" in response_data["candidates"][0]:
-                        if "parts" in response_data["candidates"][0]["content"]:
-                            output_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                            logger.debug(f"Gemini API response received - Output length: {len(output_text)} chars")
-                            return output_text
-                
-                if "promptFeedback" in response_data:
-                    logger.warning(f"Gemini API warning: {response_data.get('promptFeedback', {})}")
-            else:
-                logger.error(f"Gemini API error: {response.status_code} - {response.text[:200]}")
-            return None
+                if response.status_code == 200:
+                    response_data = response.json()
+                    logger.debug("Gemini API call successful")
+                    
+                    if "candidates" in response_data and len(response_data["candidates"]) > 0:
+                        if "content" in response_data["candidates"][0]:
+                            if "parts" in response_data["candidates"][0]["content"]:
+                                output_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                                logger.debug(f"Gemini API response received - Output length: {len(output_text)} chars")
+                                return output_text
+                    
+                    if "promptFeedback" in response_data:
+                        logger.warning(f"Gemini API warning: {response_data.get('promptFeedback', {})}")
+                else:
+                    logger.error(f"Gemini API error: {response.status_code} - {response.text[:200]}")
+                return None
             
         except Exception as e:
             logger.error(f"Gemini API exception: {str(e)}", exc_info=True)
@@ -295,9 +297,12 @@ Full JSON format:
         "budget": "Budget or financial information if mentioned or null",
         "preferred_university": "Preferred university or college if mentioned or null",
         "subject_interests": "Subject interests or specialization if mentioned or null",
-        "available_time": "Time when lead mentions they are available (e.g., 'tomorrow 3pm', 'available in evenings', 'free after 6pm') or null",
-        "followup_requested_time": "Time when lead requests a callback or followup call (e.g., 'call me in 30 minutes', 'call me tomorrow at 3pm', 'call me next week') or null",
-        "slot_booked_for": "EXACT date and time when a consultation/counseling/meeting slot is BOOKED and CONFIRMED (e.g., 'Sunday, January 12, 2026 at 11:00 AM', 'Monday, January 13, 2026 at 3:00 PM'). Use FULL date format with day name, month name, day, year, and time. Extract this ONLY when agent confirms booking and user agrees. Return null if no slot is booked.",
+        "available_time": "General availability mentioned by lead (e.g., 'I'm free in evenings', 'available tomorrow', 'free after 6pm'). This is when lead is generally available, NOT a confirmed slot booking. Return null if not mentioned.",
+        
+        "followup_requested_time": "**CALLBACK/FOLLOWUP CALLS ONLY** - Extract when lead requests a simple CALLBACK (NOT a consultation booking). Use ONLY when user says 'call me back in 30 minutes', 'call me tomorrow at 3pm', 'call me next week', 'follow up with me later'. Format: relative time like 'in 30 minutes' or 'tomorrow at 3pm'. This is for SIMPLE CALLBACKS, NOT for scheduled consultations/meetings. Return null if not mentioned or if it's a consultation booking.",
+        
+        "slot_booked_for": "**CONSULTATION/COUNSELING/MEETING APPOINTMENTS ONLY** - Extract ONLY when agent CONFIRMS and BOOKS a consultation/counseling/meeting session with a specific time AND user ACCEPTS it. MUST use FULL date format: 'Day_Name, Month Day, Year at Time' (e.g., 'Tuesday, January 13, 2026 at 1:30 PM', 'Sunday, January 12, 2026 at 11:00 AM'). Use the CURRENT DATE AND TIME provided at the top of this prompt ({current_datetime_str}) to calculate exact dates. Examples: If agent says 'I'll book your counseling for Sunday at 11 AM' and user agrees, extract 'Sunday, January 12, 2026 at 11:00 AM'. If agent says 'Tuesday at 1:30 PM' for counseling and user confirms, extract 'Tuesday, January 13, 2026 at 1:30 PM'. CRITICAL DISTINCTION: This is ONLY for SCHEDULED CONSULTATIONS/COUNSELING/MEETINGS, NOT for simple followup calls. Return null if no consultation slot is booked or user declines.",
+        
         "summary_last_call": "A 1-2 sentence summary of what happened in this call - e.g., 'Discussed MBA programs in USA, parent interested but requested callback next week' or 'Student interested in engineering in UK, scheduled counseling for Monday 3pm' or null if not enough context",
         "additional_notes": "Any other relevant information provided by the lead"
     }}
@@ -337,21 +342,33 @@ CRITICAL RULES WITH EXAMPLES:
    - If user provides email directly, extract exactly as provided
    - Example: User: "one dot iterate dot one two three at gmail dot com" ΓåÆ Extract: "one.iterate.123@gmail.com"
 
-7. CONSULTATION/MEETING SLOT BOOKING (metadata.slot_booked_for):
-   - CRITICAL: This field is for CONFIRMED consultation/counseling/meeting bookings ONLY
-   - If agent books a consultation slot and user confirms, extract the FULL date and time
-   - Format: "Day_Name, Month Day, Year at Time" (e.g., "Sunday, January 12, 2026 at 11:00 AM")
-   - Use the CURRENT DATE AND TIME provided at the top to calculate the exact date
-   - If agent says "Sunday at 11 AM" and today is Tuesday January 7, 2026, then "Sunday" means January 12, 2026
-   - If agent says "next Sunday at 11 AM" and today is Tuesday January 7, 2026, calculate it as January 12, 2026
-   - Example: Agent: "I'll book consultation for Sunday at 11 AM" User: "Yes, perfect" ΓåÆ Extract: "Sunday, January 12, 2026 at 11:00 AM"
-   - ALWAYS use FULL date format with day name, month name, day number, year, and time
+7. CONSULTATION/MEETING SLOT BOOKING (metadata.slot_booked_for) - **APPOINTMENTS ONLY**:
+   - **CRITICAL DISTINCTION**: This field is EXCLUSIVELY for CONFIRMED consultation/counseling/meeting APPOINTMENTS
+   - **NOT for callbacks** - this is ONLY for SCHEDULED CONSULTATIONS/COUNSELING/MEETINGS where agent BOOKS a session
+   - Extract ONLY when agent explicitly BOOKS/SCHEDULES a consultation/counseling/meeting AND user CONFIRMS/ACCEPTS
+   - **MANDATORY FULL DATE FORMAT**: "Day_Name, Month Day, Year at Time" 
+   - Examples: "Tuesday, January 13, 2026 at 1:30 PM", "Sunday, January 12, 2026 at 11:00 AM"
+   - **USE CURRENT DATE/TIME**: Use the CURRENT DATE AND TIME ({current_datetime_str}) provided at the top to calculate exact dates
+   - Date calculation examples:
+     * If current date is Tuesday January 7, 2026 and agent says "Tuesday at 1:30 PM" for counseling → "Tuesday, January 13, 2026 at 1:30 PM" (next Tuesday)
+     * If current date is Tuesday January 7, 2026 and agent says "next Sunday at 11 AM" → "Sunday, January 12, 2026 at 11:00 AM"
+   - Confirmation examples:
+     * Agent: "I'll book your counseling session for Tuesday at 1:30 PM" + User: "Yes, thank you" → Extract: "Tuesday, January 13, 2026 at 1:30 PM"
+     * Agent: "Shall I book consultation for Sunday at 11 AM?" + User: "Perfect" → Extract: "Sunday, January 12, 2026 at 11:00 AM"
+     * Agent: "Let me schedule your meeting for Monday at 2 PM" + User: "Sounds good" → Extract: "Monday, January 13, 2026 at 2:00 PM"
+   - **Return null** if NO consultation slot is booked, user declines, or it's just a callback request
 
-8. FOLLOWUP/CALLBACK REQUESTS (metadata.followup_requested_time):
-   - This field is for simple callback requests (NOT consultation bookings)
-   - Extract when user asks for a callback (e.g., "call me in 30 minutes", "call me tomorrow at 3pm")
-   - Format can be relative (e.g., "in 30 minutes", "tomorrow at 3pm") or specific
-   - Example: User: "Call me after 30 minutes" ΓåÆ Extract: "in 30 minutes"
+8. FOLLOWUP/CALLBACK REQUESTS (metadata.followup_requested_time) - **CALLBACKS ONLY**:
+   - **CRITICAL DISTINCTION**: This field is EXCLUSIVELY for SIMPLE CALLBACK requests (NOT consultation bookings)
+   - Extract ONLY when user requests a CALLBACK: "call me in 30 minutes", "call me tomorrow at 3pm", "follow up with me next week"
+   - **Format**: Relative or specific time (e.g., "in 30 minutes", "tomorrow at 3pm", "next week")
+   - Callback examples:
+     * User: "Call me after 30 minutes" → Extract: "in 30 minutes"
+     * User: "Call me tomorrow at 3pm" → Extract: "tomorrow at 3pm"
+     * User: "Follow up next week" → Extract: "next week"
+     * User: "Call me back later" → Extract: "later"
+   - **Return null** if NO callback is requested or if it's a consultation booking (use slot_booked_for for consultations)
+   - **REMEMBER**: Callbacks go in followup_requested_time, Consultations go in slot_booked_for - NEVER mix them
 
 9. For intake_year, extract as integer (e.g., 2025, not "2025" as string)
 9. For intake_month, use full month names or terms like "Fall", "Spring", "Summer", "Winter"
@@ -364,9 +381,10 @@ CRITICAL RULES WITH EXAMPLES:
    - "subject_interests" for subjects or specializations
    - "address" for location or address information
    - "available_time" for general availability mentions (e.g., "I'm free in evenings", "available tomorrow")
-   - "followup_requested_time" for callback requests (e.g., "call me in 30 minutes", "call me tomorrow at 3pm")
-   - "slot_booked_for" for CONFIRMED consultation/meeting slots (MANDATORY - extract FULL date with day name, month, day, year, and time when agent books/confirms a meeting and user agrees, e.g., "Sunday, January 12, 2026 at 11:00 AM")
+   - **"followup_requested_time"** for CALLBACK requests ONLY (e.g., "call me in 30 minutes", "call me tomorrow at 3pm") - **NOT for consultation bookings**
+   - **"slot_booked_for"** for CONFIRMED CONSULTATION/MEETING appointments ONLY (MANDATORY FULL DATE: "Day_Name, Month Day, Year at Time" e.g., "Sunday, January 12, 2026 at 11:00 AM") - **NOT for callbacks**
    - "email" for email addresses
+   - **CRITICAL**: NEVER put consultation bookings in followup_requested_time or callbacks in slot_booked_for - these are SEPARATE fields for DIFFERENT purposes
 13. Do NOT extract agent/bot names (like "Nithya", "Mira Singh", "Pluto Travels representative")
 14. Extract information in natural language - preserve exact details when provided
 15. If information is provided in multiple parts (e.g., parent name split across messages), combine them into complete values
@@ -378,7 +396,7 @@ CRITICAL RULES WITH EXAMPLES:
 """
 
             logger.debug("Extracting student information using LLM...")
-            result = self._call_gemini_api(prompt, temperature=0.2, max_output_tokens=800)
+            result = await self._call_gemini_api(prompt, temperature=0.2, max_output_tokens=800)
             
             if not result:
                 logger.warning("LLM did not return student information")
@@ -560,9 +578,9 @@ CRITICAL RULES WITH EXAMPLES:
             logger.error(f"Failed to save JSON file: {e}", exc_info=True)
             return None
     
-    def save_to_database(self, student_info: Dict, call_log_id, lead_id, tenant_id: Optional[str], db_config: Dict) -> bool:
+    async def save_to_database(self, student_info: Dict, call_log_id, lead_id, tenant_id: Optional[str], db_config: Dict) -> bool:
         """
-        Save student information to lad_dev.education_students table
+        Save student information to lad_dev.education_students table (async with psycopg2 in thread)
         
         Args:
             student_info: The extracted student information dictionary
@@ -574,6 +592,8 @@ CRITICAL RULES WITH EXAMPLES:
         Returns:
             bool: True if saved successfully
         """
+        logger.info(f"[SAVE_TO_DB] Function called - call_log_id: {call_log_id}, lead_id: {lead_id}, tenant_id: {tenant_id}")
+        
         if not DB_AVAILABLE:
             logger.error("Database library not available. Install psycopg2-binary")
             return False
@@ -581,110 +601,124 @@ CRITICAL RULES WITH EXAMPLES:
         conn = None
         cursor = None
         
-        try:
-            conn = psycopg2.connect(**db_config)
-            cursor = conn.cursor()
+        def _sync_save():
+            """Synchronous database save wrapped for async execution"""
+            conn = None
+            cursor = None
+            try:
+                conn = psycopg2.connect(**db_config)
+                cursor = conn.cursor()
             
-            # Prepare metadata - ONLY store information provided by the lead
-            # Do NOT include system-generated fields like call_log_id or extracted_at
-            # Store all information that's not in the main columns (email, percentage, grades, etc.)
-            metadata_raw = student_info.get('metadata', {})
-            
-            # Add any additional fields from LLM that aren't in main columns
-            # These could include: email, percentage, grades, etc. (ONLY lead-provided information)
-            for key, value in student_info.items():
-                if key not in ['student_parent_name', 'parent_designation', 'program_interested_in', 
-                              'country_interested', 'intake_year', 'intake_month', 'metadata']:
-                    if value is not None:
-                        metadata_raw[key] = value
-            
-            # Filter metadata to only include non-null, non-empty values
-            metadata = {}
-            if isinstance(metadata_raw, dict):
-                for key, value in metadata_raw.items():
-                    # Only include if value is not None, not empty string, and not "None"/"null" as string
-                    if value is not None:
-                        value_str = str(value).strip()
-                        if value_str and value_str.lower() not in ['none', 'null']:
-                            metadata[key] = value
-            
-            # Convert lead_id to UUID format for education_students.lead_id column (UUID type)
-            # NOTE: All IDs except agent_id should be UUIDs - no int fallback
-            lead_id_uuid = None
-            if lead_id is not None:
-                lead_id_str = str(lead_id).strip()
-                # Reject 'None' or 'null' string values
-                if lead_id_str.lower() in ('none', 'null', ''):
-                    logger.warning(f"lead_id is invalid string value: '{lead_id}'")
-                    lead_id_uuid = None
-                else:
-                    try:
-                        # Parse as UUID - this is the only valid format
-                        parsed_uuid = uuid_lib.UUID(lead_id_str)
-                        lead_id_uuid = str(parsed_uuid)
-                        logger.debug(f"lead_id '{lead_id_str}' validated as UUID")
-                    except ValueError as e:
-                        logger.error(f"lead_id '{lead_id}' is not a valid UUID: {e}")
+                # Prepare metadata - ONLY store information provided by the lead
+                # Do NOT include system-generated fields like call_log_id or extracted_at
+                # Store all information that's not in the main columns (email, percentage, grades, etc.)
+                metadata_raw = student_info.get('metadata', {})
+                
+                # Add any additional fields from LLM that aren't in main columns
+                # These could include: email, percentage, grades, etc. (ONLY lead-provided information)
+                for key, value in student_info.items():
+                    if key not in ['student_parent_name', 'parent_designation', 'program_interested_in', 
+                                  'country_interested', 'intake_year', 'intake_month', 'metadata']:
+                        if value is not None:
+                            metadata_raw[key] = value
+                
+                # Filter metadata to only include non-null, non-empty values
+                metadata = {}
+                if isinstance(metadata_raw, dict):
+                    for key, value in metadata_raw.items():
+                        # Only include if value is not None, not empty string, and not "None"/"null" as string
+                        if value is not None:
+                            value_str = str(value).strip()
+                            if value_str and value_str.lower() not in ['none', 'null']:
+                                metadata[key] = value
+                
+                # Convert lead_id to UUID format for education_students.lead_id column (UUID type)
+                # NOTE: All IDs except agent_id should be UUIDs - no int fallback
+                lead_id_uuid = None
+                if lead_id is not None:
+                    lead_id_str = str(lead_id).strip()
+                    # Reject 'None' or 'null' string values
+                    if lead_id_str.lower() in ('none', 'null', ''):
+                        logger.warning(f"lead_id is invalid string value: '{lead_id}'")
                         lead_id_uuid = None
-            
-            # Prepare INSERT query with tenant_id and lead_id
-            query = """
-                INSERT INTO lad_dev.education_students (
-                    tenant_id,
-                    lead_id,
-                    student_parent_name,
-                    parent_designation,
-                    program_interested_in,
-                    country_interested,
-                    intake_year,
-                    intake_month,
-                    metadata,
-                    created_at,
-                    updated_at,
-                    is_deleted
-                ) VALUES (
-                    %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, FALSE
+                    else:
+                        try:
+                            # Parse as UUID - this is the only valid format
+                            parsed_uuid = uuid_lib.UUID(lead_id_str)
+                            lead_id_uuid = str(parsed_uuid)
+                            logger.debug(f"lead_id '{lead_id_str}' validated as UUID")
+                        except ValueError as e:
+                            logger.error(f"lead_id '{lead_id}' is not a valid UUID: {e}")
+                            lead_id_uuid = None
+                
+                # Prepare INSERT query with tenant_id and lead_id
+                query = """
+                    INSERT INTO lad_dev.education_students (
+                        tenant_id,
+                        lead_id,
+                        student_parent_name,
+                        parent_designation,
+                        program_interested_in,
+                        country_interested,
+                        intake_year,
+                        intake_month,
+                        metadata,
+                        created_at,
+                        updated_at,
+                        is_deleted
+                    ) VALUES (
+                        %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, FALSE
+                    )
+                    ON CONFLICT (tenant_id, lead_id) DO UPDATE SET
+                        student_parent_name = COALESCE(EXCLUDED.student_parent_name, lad_dev.education_students.student_parent_name),
+                        parent_designation = COALESCE(EXCLUDED.parent_designation, lad_dev.education_students.parent_designation),
+                        program_interested_in = COALESCE(EXCLUDED.program_interested_in, lad_dev.education_students.program_interested_in),
+                        country_interested = COALESCE(EXCLUDED.country_interested, lad_dev.education_students.country_interested),
+                        intake_year = COALESCE(EXCLUDED.intake_year, lad_dev.education_students.intake_year),
+                        intake_month = COALESCE(EXCLUDED.intake_month, lad_dev.education_students.intake_month),
+                        metadata = EXCLUDED.metadata,
+                        updated_at = CURRENT_TIMESTAMP
+                """
+                
+                values = (
+                    tenant_id,  # UUID from lad_dev.tenants.id
+                    lead_id_uuid,  # UUID converted from call_logs_voiceagent.target (BIGINT -> UUID)
+                    student_info.get('student_parent_name'),
+                    student_info.get('parent_designation'),
+                    student_info.get('program_interested_in'),
+                    student_info.get('country_interested'),
+                    student_info.get('intake_year'),
+                    student_info.get('intake_month'),
+                    Json(metadata)
                 )
-                ON CONFLICT (tenant_id, lead_id) DO UPDATE SET
-                    student_parent_name = COALESCE(EXCLUDED.student_parent_name, lad_dev.education_students.student_parent_name),
-                    parent_designation = COALESCE(EXCLUDED.parent_designation, lad_dev.education_students.parent_designation),
-                    program_interested_in = COALESCE(EXCLUDED.program_interested_in, lad_dev.education_students.program_interested_in),
-                    country_interested = COALESCE(EXCLUDED.country_interested, lad_dev.education_students.country_interested),
-                    intake_year = COALESCE(EXCLUDED.intake_year, lad_dev.education_students.intake_year),
-                    intake_month = COALESCE(EXCLUDED.intake_month, lad_dev.education_students.intake_month),
-                    metadata = EXCLUDED.metadata,
-                    updated_at = CURRENT_TIMESTAMP
-            """
+                
+                logger.info(f"Attempting to save/update - tenant_id: {tenant_id}, lead_id: {lead_id_uuid}")
+                logger.info(f"ON CONFLICT will UPDATE existing record if (tenant_id={tenant_id}, lead_id={lead_id_uuid}) already exists")
             
-            values = (
-                tenant_id,  # UUID from lad_dev.tenants.id
-                lead_id_uuid,  # UUID converted from call_logs_voiceagent.target (BIGINT -> UUID)
-                student_info.get('student_parent_name'),
-                student_info.get('parent_designation'),
-                student_info.get('program_interested_in'),
-                student_info.get('country_interested'),
-                student_info.get('intake_year'),
-                student_info.get('intake_month'),
-                Json(metadata)
-            )
-            
-            cursor.execute(query, values)
-            conn.commit()
-            
-            logger.info(f"Student information saved to database (call_log_id: {call_log_id})")
-            return True
-            
+                cursor.execute(query, values)
+                conn.commit()
+                
+                logger.info(f"Student information saved to database (call_log_id: {call_log_id})")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Database save failed: {e}", exc_info=True)
+                if conn:
+                    conn.rollback()
+                return False
+                
+            finally:
+                if cursor:
+                    cursor.close()
+                if conn:
+                    conn.close()
+        
+        # Run the synchronous DB operation in a thread pool
+        try:
+            return await asyncio.to_thread(_sync_save)
         except Exception as e:
-            logger.error(f"Database save failed: {e}", exc_info=True)
-            if conn:
-                conn.rollback()
+            logger.error(f"Async database save wrapper failed: {e}", exc_info=True)
             return False
-            
-        finally:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
 
 
 class StandaloneStudentExtractor:
@@ -745,15 +779,15 @@ class StandaloneStudentExtractor:
         
         try:
             # Fetch calls in pgAdmin's default display order (physical storage order using ctid)
-            # Select transcriptions as-is and handle conversion in Python to avoid JSONB validation errors
+            # Select transcripts as-is and handle conversion in Python to avoid JSONB validation errors
             cursor.execute("""
                 SELECT 
                     ROW_NUMBER() OVER (ORDER BY ctid) as row_num,
                     id,
                     started_at,
                     ended_at,
-                    transcriptions
-                FROM voice_agent.call_logs_voiceagent
+                    transcripts
+                FROM lad_dev.voice_call_logs
                 ORDER BY ctid
                 LIMIT 500000
             """)
@@ -840,16 +874,17 @@ class StandaloneStudentExtractor:
             if isinstance(call_log_id, int):
                 # Integer ID: Use ROW_NUMBER() to find the Nth record
                 cursor.execute("""
-                    SELECT id, transcriptions, started_at, ended_at, target
+                    SELECT id, transcripts, started_at, ended_at, lead_id, tenant_id
                     FROM (
                         SELECT 
                             id, 
-                            transcriptions, 
+                            transcripts, 
                             started_at, 
                             ended_at,
-                            target,
+                            lead_id,
+                            tenant_id,
                             ROW_NUMBER() OVER (ORDER BY ctid) as row_num
-                        FROM voice_agent.call_logs_voiceagent
+                        FROM lad_dev.voice_call_logs
                     ) ranked
                     WHERE row_num = %s
                 """, (call_log_id,))
@@ -857,15 +892,17 @@ class StandaloneStudentExtractor:
                 # UUID string: Try direct UUID match or text match
                 try:
                     cursor.execute("""
-                        SELECT id, transcriptions, started_at, ended_at, target
-                        FROM voice_agent.call_logs_voiceagent
+                        SELECT id, transcripts, started_at, ended_at, lead_id, tenant_id
+                        FROM lad_dev.voice_call_logs
                         WHERE id = %s::uuid
                     """, (str(call_log_id),))
                 except (psycopg2.errors.InvalidTextRepresentation, psycopg2.errors.UndefinedFunction):
+                    # Rollback failed transaction before retrying
+                    conn.rollback()
                     # Fallback: try text match
                     cursor.execute("""
-                        SELECT id, transcriptions, started_at, ended_at, target
-                        FROM voice_agent.call_logs_voiceagent
+                        SELECT id, transcripts, started_at, ended_at, lead_id, tenant_id
+                        FROM lad_dev.voice_call_logs
                         WHERE id::text = %s
                     """, (str(call_log_id),))
             
@@ -874,7 +911,7 @@ class StandaloneStudentExtractor:
             if not call_data:
                 raise ValueError(f"Call log {call_log_id} not found in database")
             
-            db_call_id, transcriptions, started_at, ended_at, target_id = call_data
+            db_call_id, transcriptions, started_at, ended_at, target_id, tenant_id = call_data
             
             # Get transcript from transcriptions column
             # Handle different data types: dict (JSONB), list, or string
@@ -882,15 +919,24 @@ class StandaloneStudentExtractor:
                 raise ValueError(f"No transcript found for call {call_log_id}")
             
             # Convert transcriptions to conversation text
+            # CRITICAL: Only use 'text' or 'message' fields, NEVER use 'intended_text'
+            # intended_text is for transcription correction/intended output, not actual spoken words
             if isinstance(transcriptions, dict):
-                # If it's a dict, check if it contains a list of messages
+                # If it's a dict, check if it contains a list of messages or segments
                 if 'messages' in transcriptions and isinstance(transcriptions['messages'], list):
                     # Structured format with messages array
                     conversation_log = transcriptions['messages']
+                    # Use only 'message' or 'text' fields, explicitly ignore 'intended_text'
                     conversation_text = "\n".join([f"{entry.get('role', 'Unknown').title()}: {entry.get('message', entry.get('text', ''))}" for entry in conversation_log])
+                elif 'segments' in transcriptions and isinstance(transcriptions['segments'], list):
+                    # Segments format (used in test transcriptions)
+                    segments = transcriptions['segments']
+                    # Use only 'text' field, explicitly ignore 'intended_text'
+                    conversation_text = "\n".join([f"{entry.get('speaker', 'Unknown').title()}: {entry.get('text', '')}" for entry in segments if entry.get('text')])
                 elif isinstance(transcriptions, dict) and any(key in transcriptions for key in ['role', 'message', 'text']):
                     # Single message dict - convert to text
                     role = transcriptions.get('role', 'Unknown').title()
+                    # Use only 'message' or 'text', ignore 'intended_text'
                     message = transcriptions.get('message') or transcriptions.get('text', '')
                     conversation_text = f"{role}: {message}"
                 else:
@@ -905,8 +951,19 @@ class StandaloneStudentExtractor:
                         # Fallback: convert entire dict to JSON string
                         conversation_text = json.dumps(transcriptions)
             elif isinstance(transcriptions, list):
-                # List format - convert to text
-                conversation_text = "\n".join([f"{entry.get('role', 'Unknown').title()}: {entry.get('message', entry.get('text', ''))}" if isinstance(entry, dict) else str(entry) for entry in transcriptions])
+                # List format - could be messages or segments
+                if transcriptions and isinstance(transcriptions[0], dict):
+                    first_item = transcriptions[0]
+                    # Check if it's segments format (has 'speaker' and 'text')
+                    if 'speaker' in first_item and 'text' in first_item:
+                        # Segments format - use only 'text', ignore 'intended_text'
+                        conversation_text = "\n".join([f"{entry.get('speaker', 'Unknown').title()}: {entry.get('text', '')}" for entry in transcriptions if entry.get('text')])
+                    else:
+                        # Messages format - use 'message' or 'text', ignore 'intended_text'
+                        conversation_text = "\n".join([f"{entry.get('role', 'Unknown').title()}: {entry.get('message', entry.get('text', ''))}" if isinstance(entry, dict) else str(entry) for entry in transcriptions])
+                else:
+                    # Simple list of strings
+                    conversation_text = "\n".join([str(entry) for entry in transcriptions])
             else:
                 # String format - use as-is
                 conversation_text = str(transcriptions)
@@ -914,8 +971,8 @@ class StandaloneStudentExtractor:
             logger.info(f"Call ID: {db_call_id}, Started: {started_at}, Ended: {ended_at}, Target ID: {target_id}")
             logger.info(f"Conversation text length: {len(conversation_text)} characters")
             
-            # Get tenant_id from lad_dev.tenants table (for JSON structure)
-            tenant_id = self._get_tenant_id(cursor)
+            # Use tenant_id from voice_call_logs (already fetched from the query above)
+            logger.info(f"Tenant ID from voice_call_logs: {tenant_id}")
             
             # Extract student information
             student_info = await self.extractor.extract_student_information(conversation_text)
@@ -939,7 +996,7 @@ class StandaloneStudentExtractor:
                 # Save to database (optional)
                 if save_to_db:
                     logger.info("Saving student information to database...")
-                    db_saved = self.extractor.save_to_database(
+                    db_saved = await self.extractor.save_to_database(
                         student_info, 
                         db_call_id, 
                         target_id, 
@@ -991,7 +1048,8 @@ Examples:
     parser.add_argument('--db-name', help='Database name (default: from .env)')
     parser.add_argument('--db-user', help='Database user (default: from .env or postgres)')
     parser.add_argument('--db-pass', help='Database password (default: from .env)')
-    parser.add_argument('--save-db', action='store_true', help='Also save extracted data to database (optional)')
+    parser.add_argument('--save-db', action='store_true', default=True, help='Save extracted data to database (enabled by default, use --no-save-db to disable)')
+    parser.add_argument('--no-save-db', dest='save_db', action='store_false', help='Skip saving to database')
     parser.add_argument('--no-save-json', action='store_true', help='Skip saving to JSON file (JSON is saved by default)')
     
     args = parser.parse_args()
@@ -1016,7 +1074,7 @@ Examples:
         elif args.db_id:
             result = await extractor.extract_from_database(
                 args.db_id, 
-                save_to_db=args.save_db,  # Default is False, set to True with --save-db flag
+                save_to_db=args.save_db,  # Default is True, set to False with --no-save-db flag
                 save_to_json=not args.no_save_json  # Default is True, unless --no-save-json flag is set
             )
         
@@ -1045,3 +1103,4 @@ Examples:
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
