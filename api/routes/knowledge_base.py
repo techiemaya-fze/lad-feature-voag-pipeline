@@ -38,10 +38,11 @@ def _get_kb_storage() -> KnowledgeBaseStorage:
 
 def _check_file_search_enabled() -> None:
     """Check if file search feature is enabled."""
-    if not os.getenv("GOOGLE_GENAI_API_KEY"):
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
         raise HTTPException(
             status_code=503,
-            detail="Knowledge base feature not available - GOOGLE_GENAI_API_KEY not configured"
+            detail="Knowledge base feature not available - GOOGLE_API_KEY or GEMINI_API_KEY not configured"
         )
 
 
@@ -57,12 +58,12 @@ async def knowledge_base_status() -> dict:
     Returns:
         Status info including whether feature is enabled
     """
-    enabled = bool(os.getenv("GOOGLE_GENAI_API_KEY"))
+    enabled = bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
     
     return {
         "enabled": enabled,
         "feature": "knowledge_base",
-        "requires": "GOOGLE_GENAI_API_KEY environment variable",
+        "requires": "GOOGLE_API_KEY or GEMINI_API_KEY environment variable",
         "message": "Knowledge base is ready" if enabled else "Knowledge base is disabled",
     }
 
@@ -371,6 +372,109 @@ async def get_tenant_stores(
         )
         for s in stores
     ]
+
+
+# =============================================================================
+# QUERY ENDPOINT (Testing)
+# =============================================================================
+
+class KBQueryRequest(BaseModel):
+    """Request body for KB query."""
+    tenant_id: str = Field(..., description="Tenant UUID to query KB stores for")
+    question: str = Field(..., min_length=1, max_length=2000, description="Question to ask")
+    model: str = Field("gemini-2.5-flash", description="Gemini model to use")
+
+
+class KBQueryResponse(BaseModel):
+    """Response from KB query."""
+    answer: str
+    sources: list[str] = []
+    store_names: list[str] = []
+
+
+@router.post("/query", response_model=KBQueryResponse)
+async def query_knowledge_base(request: KBQueryRequest) -> KBQueryResponse:
+    """
+    Query the knowledge base for a tenant.
+    
+    This endpoint retrieves default KB stores for the tenant and queries
+    Gemini with file search grounding to get an answer.
+    
+    Args:
+        request: Contains tenant_id, question, and optional model
+        
+    Returns:
+        Answer text and sources cited
+    """
+    _check_file_search_enabled()
+    
+    # Get KB stores for tenant
+    kb_storage = _get_kb_storage()
+    stores = await kb_storage.get_stores_for_tenant(request.tenant_id, default_only=False)
+    
+    if not stores:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No knowledge base stores found for tenant {request.tenant_id}"
+        )
+    
+    # Get Gemini store names
+    gemini_store_names = [s["gemini_store_name"] for s in stores if s.get("gemini_store_name")]
+    
+    if not gemini_store_names:
+        raise HTTPException(
+            status_code=404,
+            detail="No Gemini stores linked to tenant's KB stores"
+        )
+    
+    logger.info(f"Querying KB with {len(gemini_store_names)} store(s) for tenant {request.tenant_id}")
+    
+    # Query Gemini with file search
+    try:
+        from google import genai
+        from google.genai import types
+        
+        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        client = genai.Client(api_key=api_key)
+        
+        response = client.models.generate_content(
+            model=request.model,
+            contents=request.question,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(
+                    file_search=types.FileSearch(
+                        file_search_store_names=gemini_store_names
+                    )
+                )]
+            )
+        )
+        
+        # Extract answer
+        answer = response.text if response.text else "(No response generated)"
+        
+        # Extract sources from grounding metadata
+        sources = []
+        if response.candidates and response.candidates[0].grounding_metadata:
+            grounding = response.candidates[0].grounding_metadata
+            if grounding.grounding_chunks:
+                for chunk in grounding.grounding_chunks:
+                    if hasattr(chunk, 'retrieved_context') and chunk.retrieved_context:
+                        title = getattr(chunk.retrieved_context, 'title', None)
+                        if title and title not in sources:
+                            sources.append(title)
+        
+        return KBQueryResponse(
+            answer=answer,
+            sources=sources,
+            store_names=gemini_store_names,
+        )
+        
+    except Exception as e:
+        logger.error(f"KB query failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Query failed: {str(e)}"
+        )
 
 
 __all__ = ["router"]

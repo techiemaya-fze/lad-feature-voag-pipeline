@@ -48,6 +48,122 @@ MIME_TYPE_MAP = {
     ".xml": "application/xml",
 }
 
+# File types that need conversion to text/plain before upload
+# Gemini File Search only accepts: text/plain, application/pdf
+CONVERT_TO_TEXT_EXTENSIONS = {".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt", ".csv"}
+
+
+def convert_document_to_text(file_path: str) -> tuple[str, str]:
+    """
+    Convert document to plain text format for Gemini File Search.
+    
+    Gemini File Search only accepts text/plain and PDF.
+    This converts Excel, Word, PowerPoint to text.
+    
+    Args:
+        file_path: Path to the document
+        
+    Returns:
+        Tuple of (text_content, original_extension)
+        
+    Raises:
+        FileSearchToolError: If conversion fails
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+    
+    try:
+        if ext in (".xlsx", ".xls"):
+            return _convert_excel_to_text(file_path), ext
+        elif ext in (".docx", ".doc"):
+            return _convert_word_to_text(file_path), ext
+        elif ext in (".pptx", ".ppt"):
+            return _convert_ppt_to_text(file_path), ext
+        elif ext == ".csv":
+            return _convert_csv_to_text(file_path), ext
+        else:
+            raise FileSearchToolError(f"Unsupported format for conversion: {ext}")
+    except Exception as exc:
+        raise FileSearchToolError(f"Failed to convert {ext} to text: {exc}") from exc
+
+
+def _convert_excel_to_text(file_path: str) -> str:
+    """Convert Excel file to structured text."""
+    try:
+        import openpyxl
+    except ImportError:
+        raise FileSearchToolError("openpyxl not installed. Run: uv add openpyxl")
+    
+    workbook = openpyxl.load_workbook(file_path, data_only=True)
+    text_parts = []
+    
+    for sheet_name in workbook.sheetnames:
+        sheet = workbook[sheet_name]
+        text_parts.append(f"\n=== Sheet: {sheet_name} ===\n")
+        
+        for row in sheet.iter_rows(values_only=True):
+            # Filter out empty rows
+            if any(cell is not None for cell in row):
+                row_text = " | ".join(str(cell) if cell is not None else "" for cell in row)
+                text_parts.append(row_text)
+    
+    return "\n".join(text_parts)
+
+
+def _convert_word_to_text(file_path: str) -> str:
+    """Convert Word document to text."""
+    try:
+        from docx import Document
+    except ImportError:
+        raise FileSearchToolError("python-docx not installed. Run: uv add python-docx")
+    
+    doc = Document(file_path)
+    text_parts = []
+    
+    for para in doc.paragraphs:
+        if para.text.strip():
+            text_parts.append(para.text)
+    
+    # Also extract tables
+    for table in doc.tables:
+        text_parts.append("\n[Table]")
+        for row in table.rows:
+            row_text = " | ".join(cell.text for cell in row.cells)
+            text_parts.append(row_text)
+    
+    return "\n".join(text_parts)
+
+
+def _convert_ppt_to_text(file_path: str) -> str:
+    """Convert PowerPoint to text."""
+    try:
+        from pptx import Presentation
+    except ImportError:
+        raise FileSearchToolError("python-pptx not installed. Run: uv add python-pptx")
+    
+    prs = Presentation(file_path)
+    text_parts = []
+    
+    for i, slide in enumerate(prs.slides, 1):
+        text_parts.append(f"\n=== Slide {i} ===")
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                text_parts.append(shape.text)
+    
+    return "\n".join(text_parts)
+
+
+def _convert_csv_to_text(file_path: str) -> str:
+    """Convert CSV to formatted text."""
+    import csv
+    
+    text_parts = []
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+        reader = csv.reader(f)
+        for row in reader:
+            text_parts.append(" | ".join(row))
+    
+    return "\n".join(text_parts)
+
 
 class FileSearchToolError(Exception):
     """Exception raised for File Search tool errors."""
@@ -226,11 +342,38 @@ class FileSearchTool:
         Returns:
             DocumentInfo with the uploaded document's details
         """
+        import tempfile
+        
         client = self._ensure_client()
         chunking = chunking_config or ChunkingConfig()
 
-        # Detect MIME type from file extension
+        # Detect file extension
         ext = os.path.splitext(file_path)[1].lower()
+        
+        # Check if file needs conversion (Gemini only accepts text/plain and PDF)
+        actual_file_path = file_path
+        temp_converted_path = None
+        
+        if ext in CONVERT_TO_TEXT_EXTENSIONS:
+            logger.info("Converting %s file to text for Gemini ingestion", ext)
+            try:
+                text_content, original_ext = convert_document_to_text(file_path)
+                
+                # Write converted text to temp file
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=".txt", prefix="kb_converted_", mode='w', encoding='utf-8'
+                ) as tmp:
+                    tmp.write(text_content)
+                    temp_converted_path = tmp.name
+                
+                actual_file_path = temp_converted_path
+                ext = ".txt"
+                logger.info("Converted %s to text (%d chars)", original_ext, len(text_content))
+            except Exception as e:
+                logger.error("Failed to convert document: %s", e)
+                raise FileSearchToolError(f"Document conversion failed: {e}") from e
+        
+        # Detect MIME type from file extension
         mime_type = MIME_TYPE_MAP.get(ext)
         if not mime_type:
             logger.warning("Unknown MIME type for extension '%s', upload may fail", ext)
@@ -272,7 +415,7 @@ class FileSearchTool:
 
         try:
             operation = client.file_search_stores.upload_to_file_search_store(
-                file=file_path,
+                file=actual_file_path,  # Use converted path if applicable
                 file_search_store_name=store_name,
                 config=config,
             )
@@ -293,6 +436,13 @@ class FileSearchTool:
         except Exception as exc:
             logger.error("Failed to upload document: %s", exc, exc_info=True)
             raise FileSearchToolError(f"Failed to upload document: {exc}") from exc
+        finally:
+            # Clean up temp converted file if created
+            if temp_converted_path:
+                try:
+                    os.unlink(temp_converted_path)
+                except Exception:
+                    pass
 
     async def upload_document_from_bytes(
         self,
