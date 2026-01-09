@@ -546,7 +546,7 @@ async def bulk_upload_documents(
     
     # Get store info
     kb_storage = _get_kb_storage()
-    store = await kb_storage.get_store(store_id)
+    store = await kb_storage.get_store_by_id(store_id)
     
     if not store:
         raise HTTPException(
