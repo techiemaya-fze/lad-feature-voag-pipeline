@@ -219,14 +219,44 @@ async def _route_education_vertical(
         logger.info(f"[DEBUG] student_info returned: {student_info}")
         logger.info(f"[DEBUG] student_info type: {type(student_info)}")
         logger.info(f"[DEBUG] student_info is falsy: {not student_info}")
+        logger.info(f"[DEBUG] student_info is None: {student_info is None}")
+        logger.info(f"[DEBUG] student_info == {{}}: {student_info == {}}")
         
-        if not student_info:
-            logger.info(f"No student info extracted from call {call_log_id}")
+        # More explicit validation - check if it's None or an empty dict
+        if student_info is None:
+            logger.error(f"CRITICAL: student_info is None for call {call_log_id}")
             return VerticalRoutingResult(
                 vertical="education",
                 routed=False,
-                error="No student info extracted"
+                error="extract_student_information returned None"
             )
+        
+        if not isinstance(student_info, dict):
+            logger.error(f"CRITICAL: student_info is not a dict for call {call_log_id}, got: {type(student_info)}")
+            return VerticalRoutingResult(
+                vertical="education",
+                routed=False,
+                error="extract_student_information returned non-dict"
+            )
+            
+        # Check if student_info is an empty dict or has no useful data
+        has_main_fields = any(student_info.get(field) for field in ['student_parent_name', 'parent_designation', 'program_interested_in', 'country_interested', 'intake_year', 'intake_month'])
+        metadata = student_info.get('metadata', {})
+        has_metadata = bool(metadata) and len(metadata) > 0
+        
+        logger.info(f"[DEBUG] Validation check - has_main_fields: {has_main_fields}, has_metadata: {has_metadata}")
+        logger.info(f"[DEBUG] metadata content: {metadata}")
+        
+        if not has_main_fields and not has_metadata:
+            logger.error(f"CRITICAL: No useful student info for call {call_log_id} - main_fields: {has_main_fields}, metadata: {has_metadata}")
+            logger.error(f"CRITICAL: Raw student_info: {student_info}")
+            return VerticalRoutingResult(
+                vertical="education",
+                routed=False,
+                error="No useful student information extracted"
+            )
+        
+        logger.info(f"[DEBUG] CONFIRMED: student_info is truthy, proceeding with save")
         
         logger.info(f"[DEBUG] Proceeding with database save for call_log_id: {call_log_id}")
         
