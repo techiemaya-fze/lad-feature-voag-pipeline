@@ -72,17 +72,23 @@ async def knowledge_base_status() -> dict:
 # =============================================================================
 
 class CreateStoreRequest(BaseModel):
+    tenant_id: str = Field(..., description="Tenant UUID that owns this store")
     display_name: str = Field(..., min_length=1, max_length=255)
     description: str | None = Field(None, max_length=1000)
+    is_default: bool = Field(False, description="Auto-attach to tenant's calls")
+    priority: int = Field(0, description="Higher = preferred when multiple stores")
 
 
 class KnowledgeBaseStoreResponse(BaseModel):
     id: str
+    tenant_id: str | None = None
     gemini_store_name: str
     display_name: str
     description: str | None = None
-    document_count: int = 0
+    is_default: bool = False
     is_active: bool = True
+    priority: int = 0
+    document_count: int = 0
     created_at: Any = None
     updated_at: Any = None
 
@@ -98,63 +104,65 @@ class KnowledgeBaseUploadResponse(BaseModel):
     message: str
 
 
-class AgentStoreLink(BaseModel):
-    store_id: str
-    is_default: bool = False
-    priority: int = 0
-
-
-class LeadStoreLink(BaseModel):
-    store_id: str
-    priority: int = 0
+# Note: AgentStoreLink and LeadStoreLink are deprecated - use tenant_id instead
 
 
 # =============================================================================
 # STORE CRUD ROUTES
 # =============================================================================
-
 @router.post("/stores", response_model=KnowledgeBaseStoreResponse)
 async def create_knowledge_base_store(
     payload: CreateStoreRequest,
     request: Request,
 ) -> KnowledgeBaseStoreResponse:
-    """Create a new knowledge base store."""
+    """Create a new knowledge base store linked to a tenant."""
     _check_file_search_enabled()
     
-    
-    user_id: str | None = None  # UUID
+    # Get optional user_id for created_by
+    created_by: str | None = None
     try:
         user_id_header = request.headers.get("X-User-ID")
         if user_id_header:
-            user_id = user_id_header.strip()  # UUID string
+            created_by = user_id_header.strip()  # UUID string
     except (ValueError, TypeError):
         pass
     
     kb_storage = _get_kb_storage()
     
     try:
-        # For now create store record without Gemini store
-        # Full Gemini integration requires FileSearchTool
-        gemini_store_name = f"stores/{payload.display_name.lower().replace(' ', '-')}"
+        # Create Gemini FileSearchStore first
+        from tools.file_search_tool import FileSearchTool
+        file_search = FileSearchTool()
+        gemini_store = await file_search.create_store(payload.display_name)
+        gemini_store_name = gemini_store.name
         
+        # Create DB record
         store_id = await kb_storage.create_store(
+            tenant_id=payload.tenant_id,
             gemini_store_name=gemini_store_name,
             display_name=payload.display_name,
             description=payload.description,
-            created_by_user_id=user_id,
+            is_default=payload.is_default,
+            priority=payload.priority,
+            created_by=created_by,
         )
         
         store_record = await kb_storage.get_store_by_id(store_id)
         if not store_record:
             raise HTTPException(status_code=500, detail="Failed to retrieve created store")
         
+        logger.info(f"Created KB store '{payload.display_name}' for tenant {payload.tenant_id}")
+        
         return KnowledgeBaseStoreResponse(
             id=str(store_record["id"]),
+            tenant_id=store_record.get("tenant_id"),
             gemini_store_name=store_record["gemini_store_name"],
             display_name=store_record["display_name"],
             description=store_record.get("description"),
-            document_count=store_record.get("document_count", 0),
+            is_default=store_record.get("is_default", False),
             is_active=store_record.get("is_active", True),
+            priority=store_record.get("priority", 0),
+            document_count=store_record.get("document_count", 0),
             created_at=store_record.get("created_at"),
             updated_at=store_record.get("updated_at"),
         )
@@ -165,26 +173,29 @@ async def create_knowledge_base_store(
 
 @router.get("/stores", response_model=list[KnowledgeBaseStoreResponse])
 async def list_knowledge_base_stores(
+    tenant_id: str | None = None,
     active_only: bool = True,
-    user_id: str | None = None,  # UUID
 ) -> list[KnowledgeBaseStoreResponse]:
-    """List all knowledge base stores."""
+    """List knowledge base stores, optionally filtered by tenant."""
     _check_file_search_enabled()
     
     kb_storage = _get_kb_storage()
     stores = await kb_storage.list_stores(
+        tenant_id=tenant_id,
         active_only=active_only,
-        created_by_user_id=user_id,
     )
     
     return [
         KnowledgeBaseStoreResponse(
             id=str(s["id"]),
+            tenant_id=s.get("tenant_id"),
             gemini_store_name=s["gemini_store_name"],
             display_name=s["display_name"],
             description=s.get("description"),
-            document_count=s.get("document_count", 0),
+            is_default=s.get("is_default", False),
             is_active=s.get("is_active", True),
+            priority=s.get("priority", 0),
+            document_count=s.get("document_count", 0),
             created_at=s.get("created_at"),
             updated_at=s.get("updated_at"),
         )
@@ -204,11 +215,14 @@ async def get_knowledge_base_store(store_id: str) -> KnowledgeBaseStoreResponse:
     
     return KnowledgeBaseStoreResponse(
         id=str(store["id"]),
+        tenant_id=store.get("tenant_id"),
         gemini_store_name=store["gemini_store_name"],
         display_name=store["display_name"],
         description=store.get("description"),
-        document_count=store.get("document_count", 0),
+        is_default=store.get("is_default", False),
         is_active=store.get("is_active", True),
+        priority=store.get("priority", 0),
+        document_count=store.get("document_count", 0),
         created_at=store.get("created_at"),
         updated_at=store.get("updated_at"),
     )
@@ -235,112 +249,129 @@ async def delete_knowledge_base_store(
 
 
 # =============================================================================
-# AGENT-STORE LINKING ROUTES
+# DOCUMENT UPLOAD ROUTES
 # =============================================================================
 
-@router.post("/agents/{agent_id}/stores", response_model=dict)
-async def link_store_to_agent(agent_id: int, payload: AgentStoreLink) -> dict:
-    """Link a knowledge base store to an agent."""
+@router.post("/stores/{store_id}/documents", response_model=KnowledgeBaseUploadResponse)
+async def upload_document_to_store(
+    store_id: str,
+    file: UploadFile = File(...),
+    display_name: str | None = Form(None),
+) -> KnowledgeBaseUploadResponse:
+    """
+    Upload a document to a knowledge base store.
+    
+    Supported formats: PDF, TXT, HTML, MD, DOC, DOCX, PPT, PPTX, XLS, XLSX, 
+    ODT, ODS, ODP, CSV, JSON, XML
+    """
     _check_file_search_enabled()
     
     kb_storage = _get_kb_storage()
+    
+    # Verify store exists
+    store = await kb_storage.get_store_by_id(store_id)
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+    
+    gemini_store_name = store["gemini_store_name"]
+    
     try:
-        link_id = await kb_storage.link_store_to_agent(
-            agent_id=agent_id,
-            store_id=payload.store_id,
-            is_default=payload.is_default,
-            priority=payload.priority,
+        from tools.file_search_tool import FileSearchTool
+        
+        file_search = FileSearchTool()
+        
+        # Read file content
+        file_bytes = await file.read()
+        
+        # Upload to Gemini
+        doc_info = await file_search.upload_document_from_bytes(
+            store_name=gemini_store_name,
+            file_bytes=file_bytes,
+            filename=file.filename or "document",
+            display_name=display_name or file.filename,
         )
-        return {"message": "Store linked to agent", "link_id": link_id}
+        
+        # Update document count in DB
+        current_count = store.get("document_count", 0)
+        await kb_storage.update_store(store_id, document_count=current_count + 1)
+        
+        logger.info(f"Uploaded document '{doc_info.display_name}' to store {store_id}")
+        
+        return KnowledgeBaseUploadResponse(
+            document=KnowledgeBaseDocumentResponse(
+                name=doc_info.name,
+                display_name=doc_info.display_name,
+                state=doc_info.state,
+            ),
+            message="Document uploaded successfully",
+        )
     except Exception as e:
+        logger.error(f"Failed to upload document: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/agents/{agent_id}/stores/{store_id}", response_model=dict)
-async def unlink_store_from_agent(agent_id: int, store_id: str) -> dict:
-    """Remove a store link from an agent."""
+@router.get("/stores/{store_id}/documents", response_model=list[KnowledgeBaseDocumentResponse])
+async def list_store_documents(store_id: str) -> list[KnowledgeBaseDocumentResponse]:
+    """List all documents in a knowledge base store."""
     _check_file_search_enabled()
     
     kb_storage = _get_kb_storage()
-    unlinked = await kb_storage.unlink_store_from_agent(agent_id, store_id)
-    if not unlinked:
-        raise HTTPException(status_code=404, detail="Link not found")
     
-    return {"message": "Store unlinked from agent"}
-
-
-@router.get("/agents/{agent_id}/stores", response_model=list[KnowledgeBaseStoreResponse])
-async def get_agent_stores(agent_id: int) -> list[KnowledgeBaseStoreResponse]:
-    """Get all knowledge base stores linked to an agent."""
-    _check_file_search_enabled()
+    store = await kb_storage.get_store_by_id(store_id)
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
     
-    kb_storage = _get_kb_storage()
-    stores = await kb_storage.get_stores_for_agent(agent_id)
-    return [
-        KnowledgeBaseStoreResponse(
-            id=str(s["id"]),
-            gemini_store_name=s["gemini_store_name"],
-            display_name=s["display_name"],
-            description=s.get("description"),
-            document_count=s.get("document_count", 0),
-            is_active=s.get("is_active", True),
-        )
-        for s in stores
-    ]
-
-
-# =============================================================================
-# LEAD-STORE LINKING ROUTES
-# =============================================================================
-
-@router.post("/leads/{lead_id}/stores", response_model=dict)
-async def link_store_to_lead(lead_id: str, payload: LeadStoreLink) -> dict:  # lead_id is UUID
-    """Link a knowledge base store to a lead for per-call customization."""
-    _check_file_search_enabled()
+    gemini_store_name = store["gemini_store_name"]
     
-    kb_storage = _get_kb_storage()
     try:
-        link_id = await kb_storage.link_store_to_lead(
-            lead_id=lead_id,
-            store_id=payload.store_id,
-            priority=payload.priority,
-        )
-        return {"message": "Store linked to lead", "link_id": link_id}
+        from tools.file_search_tool import FileSearchTool
+        
+        file_search = FileSearchTool()
+        docs = await file_search.list_documents(gemini_store_name)
+        
+        return [
+            KnowledgeBaseDocumentResponse(
+                name=d.name,
+                display_name=d.display_name,
+                state=d.state,
+            )
+            for d in docs
+        ]
     except Exception as e:
+        logger.error(f"Failed to list documents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/leads/{lead_id}/stores/{store_id}", response_model=dict)
-async def unlink_store_from_lead(lead_id: str, store_id: str) -> dict:  # lead_id is UUID
-    """Remove a store link from a lead."""
+# =============================================================================
+# TENANT-BASED STORE RETRIEVAL
+# =============================================================================
+
+@router.get("/tenants/{tenant_id}/stores", response_model=list[KnowledgeBaseStoreResponse])
+async def get_tenant_stores(
+    tenant_id: str,
+    default_only: bool = True,
+) -> list[KnowledgeBaseStoreResponse]:
+    """Get all knowledge base stores for a tenant."""
     _check_file_search_enabled()
     
     kb_storage = _get_kb_storage()
-    unlinked = await kb_storage.unlink_store_from_lead(lead_id, store_id)
-    if not unlinked:
-        raise HTTPException(status_code=404, detail="Link not found")
+    stores = await kb_storage.get_stores_for_tenant(tenant_id, default_only=default_only)
     
-    return {"message": "Store unlinked from lead"}
-
-
-@router.get("/leads/{lead_id}/stores", response_model=list[KnowledgeBaseStoreResponse])
-async def get_lead_stores(lead_id: str) -> list[KnowledgeBaseStoreResponse]:  # lead_id is UUID
-    """Get all knowledge base stores linked to a lead."""
-    _check_file_search_enabled()
-    
-    kb_storage = _get_kb_storage()
-    stores = await kb_storage.get_stores_for_lead(lead_id)
     return [
         KnowledgeBaseStoreResponse(
             id=str(s["id"]),
+            tenant_id=s.get("tenant_id"),
             gemini_store_name=s["gemini_store_name"],
             display_name=s["display_name"],
             description=s.get("description"),
+            is_default=s.get("is_default", False),
+            is_active=True,  # Only active stores are returned
+            priority=s.get("priority", 0),
             document_count=s.get("document_count", 0),
-            is_active=s.get("is_active", True),
         )
         for s in stores
     ]
 
 
 __all__ = ["router"]
+

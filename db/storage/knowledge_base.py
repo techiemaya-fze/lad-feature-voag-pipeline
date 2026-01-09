@@ -28,18 +28,15 @@ class KnowledgeBaseStorageError(Exception):
 
 class KnowledgeBaseStorage:
     """
-    Database storage for knowledge base (File Search) stores and associations.
+    Database storage for knowledge base (File Search) stores.
     
-    Manages:
-    - knowledge_base_stores: Tracks Gemini FileSearchStore metadata
-    - agent_knowledge_base_stores: Links agents to stores
-    - lead_knowledge_base_stores: Links leads to stores for per-call customization
+    Uses the lad_dev.knowledge_base_catalog table which associates KB stores
+    with tenants rather than individual agents/leads.
     """
 
-    SCHEMA = "voice_agent"
-    STORES_TABLE = "knowledge_base_stores"
-    AGENT_LINKS_TABLE = "agent_knowledge_base_stores"
-    LEAD_LINKS_TABLE = "lead_knowledge_base_stores"
+    SCHEMA = "lad_dev"
+    STORES_TABLE = "knowledge_base_catalog"
+    # Note: Agent/lead links are not used in new schema - stores are linked via tenant_id
 
     def __init__(self) -> None:
         self.db_config = {
@@ -121,19 +118,25 @@ class KnowledgeBaseStorage:
 
     async def create_store(
         self,
+        tenant_id: str,  # Required - UUID
         gemini_store_name: str,
         display_name: str,
         description: Optional[str] = None,
-        created_by_user_id: Optional[int] = None,
+        is_default: bool = False,
+        priority: int = 0,
+        created_by: Optional[str] = None,  # UUID
     ) -> str:
         """
         Create a new knowledge base store record.
         
         Args:
+            tenant_id: Tenant UUID that owns this store
             gemini_store_name: The Gemini API store name (e.g., "fileSearchStores/xxx")
             display_name: Human-readable name
             description: Optional description
-            created_by_user_id: User who created the store
+            is_default: Auto-attach to tenant's calls
+            priority: Higher = preferred when multiple stores
+            created_by: User UUID who created the store
             
         Returns:
             UUID of the created store record
@@ -144,16 +147,19 @@ class KnowledgeBaseStorage:
                     cur.execute(
                         f"""
                         INSERT INTO {self.SCHEMA}.{self.STORES_TABLE}
-                            (gemini_store_name, display_name, description, created_by_user_id)
-                        VALUES (%s, %s, %s, %s)
+                            (tenant_id, gemini_store_name, display_name, description, 
+                             is_default, priority, created_by)
+                        VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid)
                         RETURNING id::text
                         """,
-                        (gemini_store_name, display_name, description, created_by_user_id),
+                        (tenant_id, gemini_store_name, display_name, description,
+                         is_default, priority, created_by),
                     )
                     result = cur.fetchone()
                     conn.commit()
                     store_id = result[0] if result else None
-                    logger.info("Created knowledge base store: %s (%s)", display_name, store_id)
+                    logger.info("Created knowledge base store: %s (%s) for tenant %s", 
+                               display_name, store_id, tenant_id)
                     return store_id
         except psycopg2.IntegrityError as exc:
             logger.error("Store already exists: %s", gemini_store_name)
@@ -169,9 +175,9 @@ class KnowledgeBaseStorage:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
                         f"""
-                        SELECT id::text, gemini_store_name, display_name, description,
-                               document_count, is_active, created_by_user_id,
-                               created_at, updated_at
+                        SELECT id::text, tenant_id::text, gemini_store_name, display_name, 
+                               description, is_default, is_active, priority, document_count,
+                               created_by::text, created_at, updated_at
                         FROM {self.SCHEMA}.{self.STORES_TABLE}
                         WHERE id = %s::uuid
                         """,
@@ -190,9 +196,9 @@ class KnowledgeBaseStorage:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
                         f"""
-                        SELECT id::text, gemini_store_name, display_name, description,
-                               document_count, is_active, created_by_user_id,
-                               created_at, updated_at
+                        SELECT id::text, tenant_id::text, gemini_store_name, display_name,
+                               description, is_default, is_active, priority, document_count,
+                               created_by::text, created_at, updated_at
                         FROM {self.SCHEMA}.{self.STORES_TABLE}
                         WHERE gemini_store_name = %s
                         """,
@@ -206,10 +212,10 @@ class KnowledgeBaseStorage:
 
     async def list_stores(
         self,
+        tenant_id: Optional[str] = None,
         active_only: bool = True,
-        created_by_user_id: Optional[int] = None,
     ) -> list[dict[str, Any]]:
-        """List all knowledge base stores."""
+        """List knowledge base stores, optionally filtered by tenant."""
         try:
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -218,20 +224,20 @@ class KnowledgeBaseStorage:
 
                     if active_only:
                         conditions.append("is_active = TRUE")
-                    if created_by_user_id is not None:
-                        conditions.append("created_by_user_id = %s")
-                        params.append(created_by_user_id)
+                    if tenant_id is not None:
+                        conditions.append("tenant_id = %s::uuid")
+                        params.append(tenant_id)
 
                     where_clause = " AND ".join(conditions) if conditions else "TRUE"
 
                     cur.execute(
                         f"""
-                        SELECT id::text, gemini_store_name, display_name, description,
-                               document_count, is_active, created_by_user_id,
-                               created_at, updated_at
+                        SELECT id::text, tenant_id::text, gemini_store_name, display_name,
+                               description, is_default, is_active, priority, document_count,
+                               created_by::text, created_at, updated_at
                         FROM {self.SCHEMA}.{self.STORES_TABLE}
                         WHERE {where_clause}
-                        ORDER BY created_at DESC
+                        ORDER BY priority DESC, created_at DESC
                         """,
                         params,
                     )
@@ -307,193 +313,129 @@ class KnowledgeBaseStorage:
             return False
 
     # =========================================================================
-    # AGENT-STORE LINKING
+    # TENANT-BASED STORE RESOLUTION (New Schema)
     # =========================================================================
+    # Note: The new lad_dev.knowledge_base_catalog schema uses tenant_id
+    # instead of agent/lead linking tables. Stores are associated directly
+    # with tenants. The old agent/lead linking methods are deprecated.
 
-    async def link_store_to_agent(
+    async def get_stores_for_tenant(
         self,
-        agent_id: int,
-        store_id: str,
-        is_default: bool = False,
-        priority: int = 0,
-    ) -> str:
-        """Link a knowledge base store to an agent."""
+        tenant_id: str,
+        default_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """
+        Get KB stores for a tenant, optionally filtered to defaults only.
+        
+        This is the primary method for call-time KB resolution.
+        
+        Args:
+            tenant_id: Tenant UUID
+            default_only: If True, only return stores where is_default=True
+            
+        Returns:
+            List of store records ordered by priority
+        """
         try:
             with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    # If setting as default, unset other defaults first
-                    if is_default:
-                        cur.execute(
-                            f"""
-                            UPDATE {self.SCHEMA}.{self.AGENT_LINKS_TABLE}
-                            SET is_default = FALSE
-                            WHERE agent_id = %s
-                            """,
-                            (agent_id,),
-                        )
-
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    conditions = ["tenant_id = %s::uuid", "is_active = TRUE"]
+                    if default_only:
+                        conditions.append("is_default = TRUE")
+                    
+                    where_clause = " AND ".join(conditions)
+                    
                     cur.execute(
                         f"""
-                        INSERT INTO {self.SCHEMA}.{self.AGENT_LINKS_TABLE}
-                            (agent_id, store_id, is_default, priority)
-                        VALUES (%s, %s::uuid, %s, %s)
-                        ON CONFLICT (agent_id, store_id) DO UPDATE
-                        SET is_default = EXCLUDED.is_default,
-                            priority = EXCLUDED.priority
-                        RETURNING id::text
+                        SELECT id::text, tenant_id::text, gemini_store_name, display_name,
+                               description, is_default, priority, document_count
+                        FROM {self.SCHEMA}.{self.STORES_TABLE}
+                        WHERE {where_clause}
+                        ORDER BY priority DESC
                         """,
-                        (agent_id, store_id, is_default, priority),
+                        (tenant_id,),
                     )
-                    result = cur.fetchone()
-                    conn.commit()
-                    return result[0] if result else None
+                    return [dict(row) for row in cur.fetchall()]
         except Exception as exc:
-            logger.error("Failed to link store to agent: %s", exc, exc_info=True)
-            raise KnowledgeBaseStorageError(f"Failed to link store to agent: {exc}") from exc
+            logger.error("Failed to get stores for tenant %s: %s", tenant_id, exc, exc_info=True)
+            return []
+
+    async def get_gemini_store_names_for_tenant(self, tenant_id: str) -> list[str]:
+        """
+        Get Gemini store names for a tenant (for tool_builder integration).
+        
+        Only returns active default stores ordered by priority.
+        
+        Args:
+            tenant_id: Tenant UUID
+            
+        Returns:
+            List of Gemini store names (e.g., ["fileSearchStores/xxx"])
+        """
+        stores = await self.get_stores_for_tenant(tenant_id, default_only=True)
+        return [s["gemini_store_name"] for s in stores]
+
+    # =========================================================================
+    # DEPRECATED: Agent/Lead Linking (Use tenant_id instead)
+    # =========================================================================
+    # These methods are kept for backward compatibility but log deprecation warnings.
+    # In the new schema, stores are linked via tenant_id, not agent/lead tables.
+
+    async def link_store_to_agent(self, agent_id: int, store_id: str, **kwargs) -> str:
+        """Deprecated: Use tenant_id association instead."""
+        logger.warning("link_store_to_agent is deprecated - stores are now linked via tenant_id")
+        raise KnowledgeBaseStorageError("Agent-store linking is deprecated. Use tenant_id to associate KB stores.")
 
     async def unlink_store_from_agent(self, agent_id: int, store_id: str) -> bool:
-        """Remove a store link from an agent."""
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"""
-                        DELETE FROM {self.SCHEMA}.{self.AGENT_LINKS_TABLE}
-                        WHERE agent_id = %s AND store_id = %s::uuid
-                        """,
-                        (agent_id, store_id),
-                    )
-                    conn.commit()
-                    return cur.rowcount > 0
-        except Exception as exc:
-            logger.error("Failed to unlink store from agent: %s", exc, exc_info=True)
-            return False
+        """Deprecated: Use tenant_id association instead."""
+        logger.warning("unlink_store_from_agent is deprecated - stores are now linked via tenant_id")
+        return False
 
     async def get_stores_for_agent(self, agent_id: int) -> list[dict[str, Any]]:
-        """Get all stores linked to an agent, ordered by priority."""
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    cur.execute(
-                        f"""
-                        SELECT s.id::text, s.gemini_store_name, s.display_name, s.description,
-                               s.document_count, s.is_active, l.is_default, l.priority
-                        FROM {self.SCHEMA}.{self.STORES_TABLE} s
-                        JOIN {self.SCHEMA}.{self.AGENT_LINKS_TABLE} l ON s.id = l.store_id
-                        WHERE l.agent_id = %s AND s.is_active = TRUE
-                        ORDER BY l.priority DESC, l.is_default DESC
-                        """,
-                        (agent_id,),
-                    )
-                    return [dict(row) for row in cur.fetchall()]
-        except Exception as exc:
-            logger.error("Failed to get stores for agent %s: %s", agent_id, exc, exc_info=True)
-            return []
+        """Deprecated: Use get_stores_for_tenant instead."""
+        logger.warning("get_stores_for_agent is deprecated - use get_stores_for_tenant")
+        return []
 
-    # =========================================================================
-    # LEAD-STORE LINKING
-    # =========================================================================
+    async def link_store_to_lead(self, lead_id: str, store_id: str, **kwargs) -> str:
+        """Deprecated: Use tenant_id association instead."""
+        logger.warning("link_store_to_lead is deprecated - stores are now linked via tenant_id")
+        raise KnowledgeBaseStorageError("Lead-store linking is deprecated. Use tenant_id to associate KB stores.")
 
-    async def link_store_to_lead(
-        self,
-        lead_id: str,  # UUID
-        store_id: str,
-        priority: int = 0,
-    ) -> str:
-        """Link a knowledge base store to a lead for per-call customization."""
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"""
-                        INSERT INTO {self.SCHEMA}.{self.LEAD_LINKS_TABLE}
-                            (lead_id, store_id, priority)
-                        VALUES (%s, %s::uuid, %s)
-                        ON CONFLICT (lead_id, store_id) DO UPDATE
-                        SET priority = EXCLUDED.priority
-                        RETURNING id::text
-                        """,
-                        (lead_id, store_id, priority),
-                    )
-                    result = cur.fetchone()
-                    conn.commit()
-                    return result[0] if result else None
-        except Exception as exc:
-            logger.error("Failed to link store to lead: %s", exc, exc_info=True)
-            raise KnowledgeBaseStorageError(f"Failed to link store to lead: {exc}") from exc
+    async def unlink_store_from_lead(self, lead_id: str, store_id: str) -> bool:
+        """Deprecated: Use tenant_id association instead."""
+        logger.warning("unlink_store_from_lead is deprecated - stores are now linked via tenant_id")
+        return False
 
-    async def unlink_store_from_lead(self, lead_id: str, store_id: str) -> bool:  # lead_id is UUID
-        """Remove a store link from a lead."""
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"""
-                        DELETE FROM {self.SCHEMA}.{self.LEAD_LINKS_TABLE}
-                        WHERE lead_id = %s AND store_id = %s::uuid
-                        """,
-                        (lead_id, store_id),
-                    )
-                    conn.commit()
-                    return cur.rowcount > 0
-        except Exception as exc:
-            logger.error("Failed to unlink store from lead: %s", exc, exc_info=True)
-            return False
-
-    async def get_stores_for_lead(self, lead_id: str) -> list[dict[str, Any]]:  # lead_id is UUID
-        """Get all stores linked to a lead, ordered by priority."""
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    cur.execute(
-                        f"""
-                        SELECT s.id::text, s.gemini_store_name, s.display_name, s.description,
-                               s.document_count, s.is_active, l.priority
-                        FROM {self.SCHEMA}.{self.STORES_TABLE} s
-                        JOIN {self.SCHEMA}.{self.LEAD_LINKS_TABLE} l ON s.id = l.store_id
-                        WHERE l.lead_id = %s AND s.is_active = TRUE
-                        ORDER BY l.priority DESC
-                        """,
-                        (lead_id,),
-                    )
-                    return [dict(row) for row in cur.fetchall()]
-        except Exception as exc:
-            logger.error("Failed to get stores for lead %s: %s", lead_id, exc, exc_info=True)
-            return []
-
-    # =========================================================================
-    # CALL-TIME RESOLUTION
-    # =========================================================================
+    async def get_stores_for_lead(self, lead_id: str) -> list[dict[str, Any]]:
+        """Deprecated: Use get_stores_for_tenant instead."""
+        logger.warning("get_stores_for_lead is deprecated - use get_stores_for_tenant")
+        return []
 
     async def get_stores_for_call(
         self,
-        agent_id: Optional[int] = None,
-        lead_id: Optional[int] = None,
+        tenant_id: Optional[str] = None,
         store_ids: Optional[list[str]] = None,
+        **kwargs,  # Accept but ignore deprecated agent_id/lead_id
     ) -> list[str]:
         """
         Resolve Gemini store names for a call.
         
         Priority order:
         1. Explicit store_ids (if provided)
-        2. Lead-specific stores
-        3. Agent default stores
+        2. Tenant's default stores (via tenant_id)
         
         Args:
-            agent_id: Agent making the call
-            lead_id: Target lead
+            tenant_id: Tenant UUID for auto-resolution
             store_ids: Explicit store UUIDs from call parameters
             
         Returns:
             List of Gemini store names (e.g., ["fileSearchStores/xxx"])
         """
-        gemini_names: list[str] = []
-
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    # Priority 1: Explicit store IDs
-                    if store_ids:
+        # Priority 1: Explicit store IDs
+        if store_ids:
+            try:
+                with self._get_connection() as conn:
+                    with conn.cursor() as cur:
                         placeholders = ",".join(["%s::uuid"] * len(store_ids))
                         cur.execute(
                             f"""
@@ -507,42 +449,12 @@ class KnowledgeBaseStorage:
                         if gemini_names:
                             logger.debug("Resolved %d explicit stores for call", len(gemini_names))
                             return gemini_names
+            except Exception as exc:
+                logger.error("Failed to resolve explicit stores: %s", exc)
 
-                    # Priority 2: Lead-specific stores
-                    if lead_id is not None:
-                        cur.execute(
-                            f"""
-                            SELECT s.gemini_store_name
-                            FROM {self.SCHEMA}.{self.STORES_TABLE} s
-                            JOIN {self.SCHEMA}.{self.LEAD_LINKS_TABLE} l ON s.id = l.store_id
-                            WHERE l.lead_id = %s AND s.is_active = TRUE
-                            ORDER BY l.priority DESC
-                            """,
-                            (lead_id,),
-                        )
-                        gemini_names = [row[0] for row in cur.fetchall()]
-                        if gemini_names:
-                            logger.debug("Resolved %d lead stores for call", len(gemini_names))
-                            return gemini_names
+        # Priority 2: Tenant's default stores
+        if tenant_id:
+            return await self.get_gemini_store_names_for_tenant(tenant_id)
 
-                    # Priority 3: Agent default stores
-                    if agent_id is not None:
-                        cur.execute(
-                            f"""
-                            SELECT s.gemini_store_name
-                            FROM {self.SCHEMA}.{self.STORES_TABLE} s
-                            JOIN {self.SCHEMA}.{self.AGENT_LINKS_TABLE} l ON s.id = l.store_id
-                            WHERE l.agent_id = %s AND s.is_active = TRUE
-                            ORDER BY l.priority DESC, l.is_default DESC
-                            """,
-                            (agent_id,),
-                        )
-                        gemini_names = [row[0] for row in cur.fetchall()]
-                        if gemini_names:
-                            logger.debug("Resolved %d agent stores for call", len(gemini_names))
+        return []
 
-                    return gemini_names
-
-        except Exception as exc:
-            logger.error("Failed to resolve stores for call: %s", exc, exc_info=True)
-            return []
