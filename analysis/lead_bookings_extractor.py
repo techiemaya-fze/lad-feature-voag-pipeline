@@ -88,10 +88,10 @@ class LeadBookingsExtractor:
             }
         }
         
-        # Log the payload being sent to Gemini
-        logger.info(f"Sending payload to Gemini API: temperature={temperature}, maxOutputTokens={max_output_tokens}")
-        logger.info(f"Prompt length: {len(prompt)} characters")
-        logger.info(f"Prompt preview (first 500 chars): {prompt[:500]}..." if len(prompt) > 500 else f"Full prompt: {prompt}")
+        # Log the payload being sent to Gemini (DEBUG level to reduce noise in production)
+        logger.debug(f"Sending payload to Gemini API: temperature={temperature}, maxOutputTokens={max_output_tokens}")
+        logger.debug(f"Prompt length: {len(prompt)} characters")
+        logger.debug(f"Prompt preview (first 500 chars): {prompt[:500]}..." if len(prompt) > 500 else f"Full prompt: {prompt}")
         
         for attempt in range(max_retries):
             try:
@@ -406,71 +406,40 @@ class LeadBookingsExtractor:
     
     async def extract_booking_info(self, conversation_text: str) -> Dict:
         """Extract booking information using Gemini"""
-        prompt = f"""Analyze this phone call conversation and extract booking information.
+        prompt = f"""Analyze this conversation and extract booking information.
 
 CONVERSATION:
 {conversation_text}
 
-Determine:
-1. booking_type: 
-   - "auto_consultation" if lead explicitly books a counselling session, consultation appointment, or meeting (look for phrases like: "book consultation", "schedule counselling", "book a session", "book meeting", "schedule meeting", "book appointment", "I want to book consultation", "let's book counselling", "book counselling for", "schedule a consultation", "book a counselling session", "meeting booked", "appointment scheduled", "counselling scheduled", "let's schedule", "I'd like to book", "can we book", "book it for", "schedule it for", "set up a meeting", "arrange a consultation", "book a call", "schedule a call for consultation")
-   - "auto_followup" for ALL other cases (e.g., "call me after X mins/hours", "call me back in 30 mins", "call me within 1 hour", "call me tomorrow", "call me next week", "follow up with me", "call me later", any callback request, or any conversation where a follow-up is needed but NO meeting/consultation is booked)
-   
-IMPORTANT: 
-- If ANY meeting, consultation, counselling, or appointment is booked/scheduled, use "auto_consultation"
-- Only use "auto_followup" if it's just a callback request with NO meeting booking
-- booking_type MUST always be either "auto_followup" or "auto_consultation", NEVER null. If unsure, default to "auto_followup".
+Extract:
+1. booking_type:
+   - "auto_consultation": ONLY if user EXPLICITLY confirms booking a consultation/meeting with clear "yes/okay/sure/book it"
+   - "auto_followup": All other cases (callback, declined, no confirmation, agent notes "without booking")
+   - CRITICAL: User saying "No thank you", "end the call", "not interested", "maybe later" = NOT a booking = auto_followup
+   - Ambiguous "That one" when unclear context = NOT a booking = auto_followup
+   - Must be "auto_followup" or "auto_consultation", never null (default: auto_followup)
 
-2. scheduled_at: The exact time mentioned for follow-up or consultation
-   - Extract time in format like "2025-12-27 09:00:00" (GST timezone)
-   - Handle formats like "within 30 mins", "after 50 mins", "call me after 15 mins", "call me in 30 minutes", "tomorrow 3 PM", "Monday at 11:00", "next Sunday", "next week", "book for next Sunday"
-   - CRITICAL: Extract the EXACT time phrase mentioned by the user OR agent, even if it's relative
-   - **CRITICAL: If multiple times are mentioned in the conversation (e.g., first 10 AM, then changed to 3 PM), ALWAYS extract the LATEST/MOST RECENT time that was confirmed by the user**
-   - **Example: If agent says "tomorrow 10 AM" and user says yes, then later agent says "can we change to 3 PM" and user agrees, extract "tomorrow 3 PM" (the latest confirmed time with complete day+time)**
-   - **CRITICAL AGENT REJECTION HANDLING: If the user requests a time but the agent says they CANNOT do it (phrases like "unable to", "can't do that", "not possible", "I can't", "unable to call", "not able to"), then set scheduled_at to NULL**
-   - **Example: User: "Call me within 10 mins" + Agent: "I unable to do that" → scheduled_at should be NULL (not "within 10 mins")**
-   - **Example: User: "Call me tomorrow 5 PM" + Agent: "I can't call at that time" → scheduled_at should be NULL**
-   - IMPORTANT: Look for phrases like:
-     * "call me after X mins/minutes" → extract as "after X mins" (e.g., "after 15 mins")
-     * "call me in X mins/minutes" → extract as "in X minutes" or "within X mins" (e.g., "in 30 minutes")
-     * "call me within X mins/minutes" → extract as "within X mins"
-     * "book for next Sunday" → extract as "next Sunday"
-     * "book a meeting for next Sunday" → extract as "next Sunday"
-     * "can I book slot at Sunday at 11" and user says "yeah" → extract as "Sunday at 11" or "Sunday at 11 AM"
-     * "book slot at Sunday at 11" → extract as "Sunday at 11" or "Sunday at 11 AM"
-     * "Sunday at 11" → extract as "Sunday at 11" or "Sunday at 11 AM"
-     * "Sunday at 11 AM" → extract as "Sunday at 11 AM"
-     * "Friday at 12 noon" or "Friday noon" → extract as "Friday at noon" or "Friday noon" (INCLUDE the day)
-     * "schedule for tomorrow" → extract as "tomorrow"
-   - **CRITICAL: ALWAYS include the DAY in your extraction when a specific day is mentioned (e.g., "Friday at noon", "Monday 3 PM", "next Wednesday 10 AM")**
-   - **NEVER extract just the time without the day if a day was mentioned (e.g., if conversation says "Friday at noon", extract "Friday at noon" NOT just "noon")**
-   - CRITICAL: When agent asks "can I book slot at Sunday at 11?" or "Sunday at 11 AM or 3 PM?" and user confirms with "yeah", "yes", "okay", etc., extract the COMPLETE time mentioned by agent (e.g., "Sunday at 11" or "Sunday at 11 AM")
-   - CRITICAL: Return the time phrase AS-IS (e.g., "after 15 mins", "in 30 minutes", "next Sunday", "tomorrow 3 PM", "Sunday at 11", "Sunday at 11 AM", "Friday noon", "Friday at noon")
-   - DO NOT try to convert relative times like "after 15 mins" to datetime format - just return the phrase exactly as mentioned
-   - For absolute dates/times, you can return in "YYYY-MM-DD HH:MM:SS" format if you're certain, but prefer returning the phrase
-   - If NO time is mentioned at all, return null
-   - **MOST IMPORTANT: If agent says they cannot accommodate the user's requested time, return NULL regardless of what time was mentioned**
+2. scheduled_at:
+   - Extract EXACT time phrase mentioned (e.g., "after 15 mins", "tomorrow 3 PM", "Sunday at 11 AM", "Friday noon")
+   - If multiple times mentioned, extract LATEST confirmed time
+   - ALWAYS include day when mentioned ("Friday noon" not just "noon")
+   - Return phrase AS-IS, don't convert to datetime format
+   - Return NULL if: agent/user rejects time, user declines booking, agent notes "without booking", no clear acceptance
+   - Examples: "after 15 mins", "next Sunday", "Monday 3 PM" (keep exact phrases)
 
-3. student_grade: Extract the student's current grade/class if mentioned
-   - Look for phrases like "I'm in grade 10", "class 11", "12th standard", "grade 9", "I'm studying in 10th", "currently in grade 12", etc.
-   - Return as integer (9, 10, 11, 12, etc.) or null if not mentioned
-   - If student mentions they are in college/university/UG/PG/Masters, return 12 (Grade 12+)
+3. student_grade:
+   - Extract if mentioned ("grade 10", "class 11", "12th standard")
+   - Return integer (9-12) or null
+   - College/university = 12
 
-4. call_id: Extract any call ID or reference number mentioned, or return null
+4. call_id: Extract if mentioned, else null
 
-IMPORTANT: 
-- Use "auto_consultation" if ANY meeting, consultation, counselling, or appointment is booked/scheduled/confirmed
-- Use "auto_followup" ONLY if it's just a callback request with NO meeting/consultation booking
-- Look carefully for booking phrases: "book", "schedule", "appointment", "meeting", "counselling", "consultation"
-- booking_type MUST always be either "auto_followup" or "auto_consultation", NEVER null
-- Extract student_grade carefully - look for grade numbers (9, 10, 11, 12) or educational level mentions
-
-Respond ONLY in JSON format:
+Respond in JSON:
 {{
     "booking_type": "auto_followup" or "auto_consultation",
-    "scheduled_at": "2025-12-27 09:00:00" or null,
+    "scheduled_at": "time phrase" or null,
     "student_grade": 10 or null,
-    "call_id": "call-id-value" or null
+    "call_id": "id" or null
 }}"""
 
         # Log the extraction request details being sent to Gemini
@@ -2580,6 +2549,9 @@ async def main():
     parser.add_argument("--debug", action="store_true", help="Enable DEBUG logging to see Gemini API payload")
     
     args = parser.parse_args()
+    
+    # Set default logging level to INFO (production standard)
+    logging.getLogger().setLevel(logging.DEBUG )
     
     # Set logging level to DEBUG if --debug flag is provided
     if args.debug:
