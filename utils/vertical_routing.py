@@ -1,3 +1,4 @@
+
 """
 Vertical Routing Module
 =======================
@@ -215,6 +216,10 @@ async def _route_education_vertical(
         extractor = StudentExtractor()
         student_info = await extractor.extract_student_information(conversation_text)
         
+        logger.info(f"[DEBUG] student_info returned: {student_info}")
+        logger.info(f"[DEBUG] student_info type: {type(student_info)}")
+        logger.info(f"[DEBUG] student_info is falsy: {not student_info}")
+        
         if not student_info:
             logger.info(f"No student info extracted from call {call_log_id}")
             return VerticalRoutingResult(
@@ -223,17 +228,55 @@ async def _route_education_vertical(
                 error="No student info extracted"
             )
         
+        logger.info(f"[DEBUG] Proceeding with database save for call_log_id: {call_log_id}")
+        
+        # Validate db_config before attempting save
+        if not db_config or not isinstance(db_config, dict):
+            logger.error(f"Invalid db_config for call {call_log_id}: {db_config}")
+            return VerticalRoutingResult(
+                vertical="education",
+                routed=False,
+                error="Invalid database configuration"
+            )
+        
+        # Validate required parameters
+        if not call_log_id or not tenant_id:
+            logger.error(f"Missing required parameters - call_log_id: {call_log_id}, tenant_id: {tenant_id}")
+            return VerticalRoutingResult(
+                vertical="education",
+                routed=False,
+                error="Missing required parameters for database save"
+            )
+        
         # Save to education_students table
-        saved = extractor.save_to_database(
-            student_info=student_info,
-            call_log_id=call_log_id,
-            lead_id=lead_id,
-            tenant_id=tenant_id,
-            db_config=db_config
-        )
+        logger.info(f"PRODUCTION: About to call save_to_database - call_log_id: {call_log_id}, lead_id: {lead_id}, tenant_id: {tenant_id}")
+        logger.info(f"PRODUCTION: db_config keys: {list(db_config.keys()) if db_config else 'None'}")
+        
+        saved = False
+        error_details = None
+        
+        try:
+            # Call the async save method
+            saved = await extractor.save_to_database(
+                student_info=student_info,
+                call_log_id=call_log_id,
+                lead_id=lead_id,
+                tenant_id=tenant_id,
+                db_config=db_config
+            )
+            logger.info(f"PRODUCTION: Database save completed with result: {saved}")
+            
+            # Double-check result
+            if saved is not True:
+                logger.warning(f"PRODUCTION: save_to_database returned unexpected value: {saved} (type: {type(saved)})")
+                
+        except Exception as e:
+            error_details = f"{type(e).__name__}: {str(e)}"
+            logger.error(f"PRODUCTION: Exception during save_to_database call: {error_details}", exc_info=True)
+            saved = False
         
         if saved:
-            logger.info(f"Education vertical: Saved student info for call {call_log_id}")
+            logger.info(f"PRODUCTION SUCCESS: Education vertical saved student info to database for call {call_log_id}")
             return VerticalRoutingResult(
                 vertical="education",
                 routed=True,
@@ -241,11 +284,14 @@ async def _route_education_vertical(
                 extracted_data=student_info
             )
         else:
-            logger.warning(f"Failed to save student info for call {call_log_id}")
+            error_msg = f"Database save failed for call {call_log_id}"
+            if error_details:
+                error_msg += f" - {error_details}"
+            logger.error(f"PRODUCTION FAILURE: {error_msg}")
             return VerticalRoutingResult(
                 vertical="education",
                 routed=False,
-                error="Failed to save to database"
+                error=error_msg
             )
             
     except Exception as e:
@@ -276,7 +322,7 @@ async def _route_general_vertical(
     
     try:
         # Convert conversation to text
-        conversation_text = _conversation_to_text(conversation)
+        conversation_text = _format_conversation_for_extraction(conversation)
         
         if not conversation_text or len(conversation_text) < 50:
             logger.debug(f"Insufficient conversation for general extraction: {len(conversation_text)} chars")
