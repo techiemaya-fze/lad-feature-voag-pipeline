@@ -128,6 +128,48 @@ curl -s -X POST "$BASE_URL/knowledge-base/stores/$STORE_ID/documents" \
 
 ---
 
+### Step 4b: Bulk Upload (All Files from Folder)
+
+Upload all supported files from a folder at once:
+
+```bash
+curl -s -X POST "$BASE_URL/knowledge-base/stores/$STORE_ID/bulk-upload" \
+  -H "Content-Type: application/json" \
+  -H "X-Frontend-ID: $FRONTEND_ID" \
+  -H "X-API-Key: $API_KEY" \
+  -d '{
+    "folder_path": "/absolute/path/to/your/folder"
+  }'
+```
+
+**Windows example:**
+```bash
+curl -s -X POST "$BASE_URL/knowledge-base/stores/$STORE_ID/bulk-upload" \
+  -H "Content-Type: application/json" \
+  -H "X-Frontend-ID: $FRONTEND_ID" \
+  -H "X-API-Key: $API_KEY" \
+  -d '{
+    "folder_path": "D:/vonage/vonage-voice-agent/G_links"
+  }'
+```
+
+**Response:**
+```json
+{
+  "store_id": "xxx",
+  "total_files": 5,
+  "successful": 4,
+  "failed": 1,
+  "results": [
+    {"filename": "doc1.pdf", "success": true, "display_name": "doc1"},
+    {"filename": "data.xlsx", "success": true, "display_name": "data"},
+    {"filename": "bad.xyz", "success": false, "error": "Unsupported format"}
+  ]
+}
+```
+
+---
+
 ### Step 5: Query the KB
 
 ```bash

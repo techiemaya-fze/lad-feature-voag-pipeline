@@ -477,5 +477,154 @@ async def query_knowledge_base(request: KBQueryRequest) -> KBQueryResponse:
         )
 
 
+# =============================================================================
+# BULK UPLOAD ENDPOINT
+# =============================================================================
+
+class BulkUploadRequest(BaseModel):
+    """Request body for bulk upload."""
+    folder_path: str = Field(..., description="Absolute path to folder containing files to upload")
+
+
+class BulkUploadResult(BaseModel):
+    """Result of a single file upload."""
+    filename: str
+    success: bool
+    display_name: str | None = None
+    error: str | None = None
+
+
+class BulkUploadResponse(BaseModel):
+    """Response from bulk upload."""
+    store_id: str
+    total_files: int
+    successful: int
+    failed: int
+    results: list[BulkUploadResult]
+
+
+# Supported file extensions for KB upload
+SUPPORTED_EXTENSIONS = {
+    ".txt", ".md", ".pdf", ".html", ".htm", ".json", ".xml",
+    ".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt", ".csv"
+}
+
+
+@router.post("/stores/{store_id}/bulk-upload", response_model=BulkUploadResponse)
+async def bulk_upload_documents(
+    store_id: str,
+    request: BulkUploadRequest,
+) -> BulkUploadResponse:
+    """
+    Bulk upload all supported files from a folder to a KB store.
+    
+    Supported formats: txt, md, pdf, html, json, xml, xlsx, xls, docx, doc, pptx, ppt, csv
+    
+    Args:
+        store_id: The KB store UUID
+        request: Contains folder_path to upload from
+        
+    Returns:
+        Summary of upload results
+    """
+    _check_file_search_enabled()
+    
+    folder_path = request.folder_path
+    
+    # Validate folder exists
+    if not os.path.exists(folder_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Folder not found: {folder_path}"
+        )
+    
+    if not os.path.isdir(folder_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Path is not a directory: {folder_path}"
+        )
+    
+    # Get store info
+    kb_storage = _get_kb_storage()
+    store = await kb_storage.get_store(store_id)
+    
+    if not store:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Store not found: {store_id}"
+        )
+    
+    gemini_store_name = store.get("gemini_store_name")
+    if not gemini_store_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Store has no Gemini store linked"
+        )
+    
+    # Get all supported files
+    files_to_upload = []
+    for filename in os.listdir(folder_path):
+        file_path = os.path.join(folder_path, filename)
+        if os.path.isfile(file_path):
+            ext = os.path.splitext(filename)[1].lower()
+            if ext in SUPPORTED_EXTENSIONS:
+                files_to_upload.append((filename, file_path))
+    
+    if not files_to_upload:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No supported files found in {folder_path}. Supported: {', '.join(SUPPORTED_EXTENSIONS)}"
+        )
+    
+    logger.info(f"Bulk uploading {len(files_to_upload)} files to store {store_id}")
+    
+    # Upload each file
+    from tools.file_search_tool import FileSearchTool
+    file_search = FileSearchTool()
+    
+    results = []
+    successful = 0
+    failed = 0
+    
+    for filename, file_path in files_to_upload:
+        try:
+            # Use filename without extension as display name
+            display_name = os.path.splitext(filename)[0]
+            
+            doc_info = await file_search.upload_document(
+                store_name=gemini_store_name,
+                file_path=file_path,
+                display_name=display_name,
+                wait_for_completion=False,  # Don't wait for each file
+            )
+            
+            results.append(BulkUploadResult(
+                filename=filename,
+                success=True,
+                display_name=display_name,
+            ))
+            successful += 1
+            logger.info(f"Uploaded: {filename}")
+            
+        except Exception as e:
+            results.append(BulkUploadResult(
+                filename=filename,
+                success=False,
+                error=str(e)[:200],
+            ))
+            failed += 1
+            logger.error(f"Failed to upload {filename}: {e}")
+    
+    logger.info(f"Bulk upload complete: {successful} succeeded, {failed} failed")
+    
+    return BulkUploadResponse(
+        store_id=store_id,
+        total_files=len(files_to_upload),
+        successful=successful,
+        failed=failed,
+        results=results,
+    )
+
+
 __all__ = ["router"]
 
