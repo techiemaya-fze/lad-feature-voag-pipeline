@@ -12,7 +12,7 @@ import httpx
 import logging
 import argparse
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Dict, List, Optional
 from pathlib import Path
 from dotenv import load_dotenv
@@ -72,46 +72,77 @@ class LeadBookingsExtractor:
         """Close the database connection pool"""
         await self.storage.close()
     
-    async def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 8192) -> str:
+    async def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 8172, max_retries: int = 3) -> str:
         """Call Gemini API asynchronously with increased token limits to handle long conversations"""
         if not self.gemini_api_key:
             logger.warning("Gemini API key not available")
             return None
         
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={self.gemini_api_key}"
-            
-            headers = {"Content-Type": "application/json"}
-            
-            # Increase timeout for longer conversations
-            data = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": temperature,
-                    "maxOutputTokens": max_output_tokens
-                }
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={self.gemini_api_key}"
+        headers = {"Content-Type": "application/json"}
+        data = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_output_tokens
             }
-            
-            # Use httpx.AsyncClient for async HTTP requests
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(url, headers=headers, json=data)
-                response.raise_for_status()
-                
-                result = response.json()
-                if 'candidates' in result and len(result['candidates']) > 0:
-                    content = result['candidates'][0]['content']['parts'][0]['text']
-                    return content.strip()
-                
+        }
+        
+        # Log the payload being sent to Gemini (DEBUG level to reduce noise in production)
+        logger.debug(f"Sending payload to Gemini API: temperature={temperature}, maxOutputTokens={max_output_tokens}")
+        logger.debug(f"Prompt length: {len(prompt)} characters")
+        logger.debug(f"Prompt preview (first 500 chars): {prompt[:500]}..." if len(prompt) > 500 else f"Full prompt: {prompt}")
+        
+        for attempt in range(max_retries):
+            try:
+                # Use httpx.AsyncClient for async HTTP requests
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(url, headers=headers, json=data)
+                    response.raise_for_status()
+                    
+                    result = response.json()
+                    if 'candidates' in result and len(result['candidates']) > 0:
+                        content = result['candidates'][0]['content']['parts'][0]['text']
+                        return content.strip()
+                    
+                    return None
+                    
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    # Rate limit error - exponential backoff
+                    wait_time = (2 ** attempt) * 2  # 2s, 4s, 8s
+                    logger.warning(f"Rate limit (429) hit. Attempt {attempt + 1}/{max_retries}. Waiting {wait_time}s before retry...")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(f"Rate limit (429) exceeded max retries ({max_retries})")
+                        return None
+                else:
+                    logger.error(f"Gemini API HTTP error {e.response.status_code}: {e}")
+                    return None
+            except httpx.TimeoutException as e:
+                logger.error(f"Gemini API timeout error: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)
+                    continue
                 return None
-        except Exception as e:
-            logger.error(f"Gemini API error: {e}")
-            return None
+            except Exception as e:
+                logger.error(f"Gemini API error: {e}")
+                return None
+        
+        return None
     
     def extract_last_timestamp(self, transcriptions_data) -> Optional[datetime]:
         """
         Extract the last timestamp from transcriptions (UTC +00) and convert to GST
         Returns None if no timestamp found
         """
+        # Handle NULL/None transcripts
+        if transcriptions_data is None:
+            logger.warning("Cannot extract last timestamp - transcriptions_data is NULL")
+            return None
+        
         try:
             UTC = pytz.timezone('UTC')
             messages_list = None
@@ -230,6 +261,11 @@ class LeadBookingsExtractor:
         Extract the first timestamp from transcriptions (UTC +00) and convert to GST
         Returns None if no timestamp found
         """
+        # Handle NULL/None transcripts
+        if transcriptions_data is None:
+            logger.warning("Cannot extract first timestamp - transcriptions_data is NULL")
+            return None
+        
         try:
             UTC = pytz.timezone('UTC')
             messages_list = None
@@ -317,27 +353,49 @@ class LeadBookingsExtractor:
     
     def parse_transcription(self, transcriptions_data) -> str:
         """Parse transcription from various formats - processes ALL conversations without limit"""
+        # Handle NULL/None transcripts
+        if transcriptions_data is None:
+            logger.warning("Transcripts data is NULL/None")
+            return ""
+        
+        # Handle empty string
+        if isinstance(transcriptions_data, str) and not transcriptions_data.strip():
+            logger.warning("Transcripts data is empty string")
+            return ""
+        
         if isinstance(transcriptions_data, dict):
-            if 'messages' in transcriptions_data and isinstance(transcriptions_data['messages'], list):
-                conversation_log = transcriptions_data['messages']
-                # Process ALL messages without any limit
+            # Check for 'segments' key (test files format)
+            if 'segments' in transcriptions_data and isinstance(transcriptions_data['segments'], list):
+                conversation_log = transcriptions_data['segments']
+                # Process ALL segments - ONLY use 'text' field, ignore 'intended_text'
                 conversation_text = "\n".join([
-                    f"{entry.get('role', 'Unknown').title()}: {entry.get('message', entry.get('text', ''))}"
+                    f"{entry.get('role', entry.get('speaker', 'Unknown')).title()}: {entry.get('text', '')}"
+                    for entry in conversation_log
+                ])
+                logger.debug(f"Parsed {len(conversation_log)} segments from transcripts")
+                return conversation_text
+            # Check for 'messages' key (production format)
+            elif 'messages' in transcriptions_data and isinstance(transcriptions_data['messages'], list):
+                conversation_log = transcriptions_data['messages']
+                # Process ALL messages without any limit - ONLY use 'text' field, ignore 'intended_text'
+                conversation_text = "\n".join([
+                    f"{entry.get('role', entry.get('speaker', 'Unknown')).title()}: {entry.get('message', entry.get('text', ''))}"
                     for entry in conversation_log  # No limit - processes all entries
                 ])
                 logger.debug(f"Parsed {len(conversation_log)} messages from transcripts")
                 return conversation_text
-            elif any(key in transcriptions_data for key in ['role', 'message', 'text']):
-                role = transcriptions_data.get('role', 'Unknown').title()
+            elif any(key in transcriptions_data for key in ['role', 'speaker', 'message', 'text']):
+                role = transcriptions_data.get('role') or transcriptions_data.get('speaker', 'Unknown')
+                # CRITICAL: Only use 'message' or 'text', NEVER 'intended_text'
                 message = transcriptions_data.get('message') or transcriptions_data.get('text', '')
-                return f"{role}: {message}"
+                return f"{role.title()}: {message}"
             else:
                 # If it's a complex dict structure, convert to JSON to preserve all data
                 return json.dumps(transcriptions_data, ensure_ascii=False)
         elif isinstance(transcriptions_data, list):
-            # Process ALL entries in the list without any limit
+            # Process ALL entries in the list without any limit - ONLY use 'text' field, ignore 'intended_text'
             conversation_text = "\n".join([
-                f"{entry.get('role', 'Unknown').title()}: {entry.get('message', entry.get('text', ''))}"
+                f"{entry.get('role', entry.get('speaker', 'Unknown')).title()}: {entry.get('message', entry.get('text', ''))}"
                 for entry in transcriptions_data  # No limit - processes all entries
             ])
             logger.debug(f"Parsed {len(transcriptions_data)} entries from transcripts list")
@@ -348,64 +406,44 @@ class LeadBookingsExtractor:
     
     async def extract_booking_info(self, conversation_text: str) -> Dict:
         """Extract booking information using Gemini"""
-        prompt = f"""Analyze this phone call conversation and extract booking information.
+        prompt = f"""Analyze this conversation and extract booking information.
 
 CONVERSATION:
 {conversation_text}
 
-Determine:
-1. booking_type: 
-   - "auto_consultation" if lead explicitly books a counselling session, consultation appointment, or meeting (look for phrases like: "book consultation", "schedule counselling", "book a session", "book meeting", "schedule meeting", "book appointment", "I want to book consultation", "let's book counselling", "book counselling for", "schedule a consultation", "book a counselling session", "meeting booked", "appointment scheduled", "counselling scheduled", "let's schedule", "I'd like to book", "can we book", "book it for", "schedule it for", "set up a meeting", "arrange a consultation", "book a call", "schedule a call for consultation")
-   - "auto_followup" for ALL other cases (e.g., "call me after X mins/hours", "call me back in 30 mins", "call me within 1 hour", "call me tomorrow", "call me next week", "follow up with me", "call me later", any callback request, or any conversation where a follow-up is needed but NO meeting/consultation is booked)
-   
-IMPORTANT: 
-- If ANY meeting, consultation, counselling, or appointment is booked/scheduled, use "auto_consultation"
-- Only use "auto_followup" if it's just a callback request with NO meeting booking
-- booking_type MUST always be either "auto_followup" or "auto_consultation", NEVER null. If unsure, default to "auto_followup".
+Extract:
+1. booking_type:
+   - "auto_consultation": User EXPLICITLY confirms booking with clear "yes/okay/sure/book it"
+   - "auto_followup": Callback, declined, no confirmation, agent notes "without booking"
+   - CRITICAL: User saying "No thank you", "end the call", "not interested", "maybe later" = auto_followup (NOT a booking)
+   - Ambiguous "That one" when agent asks "referring to plan?" = auto_followup
+   - Default: auto_followup
 
-2. scheduled_at: The exact time mentioned for follow-up or consultation
-   - Extract time in format like "2025-12-27 09:00:00" (GST timezone)
-   - Handle formats like "within 30 mins", "after 50 mins", "call me after 15 mins", "call me in 30 minutes", "tomorrow 3 PM", "Monday at 11:00", "next Sunday", "next week", "book for next Sunday"
-   - CRITICAL: Extract the EXACT time phrase mentioned by the user OR agent, even if it's relative
-   - IMPORTANT: Look for phrases like:
-     * "call me after X mins/minutes" → extract as "after X mins" (e.g., "after 15 mins")
-     * "call me in X mins/minutes" → extract as "in X minutes" or "within X mins" (e.g., "in 30 minutes")
-     * "call me within X mins/minutes" → extract as "within X mins"
-     * "book for next Sunday" → extract as "next Sunday"
-     * "book a meeting for next Sunday" → extract as "next Sunday"
-     * "can I book slot at Sunday at 11" and user says "yeah" → extract as "Sunday at 11" or "Sunday at 11 AM"
-     * "book slot at Sunday at 11" → extract as "Sunday at 11" or "Sunday at 11 AM"
-     * "Sunday at 11" → extract as "Sunday at 11" or "Sunday at 11 AM"
-     * "Sunday at 11 AM" → extract as "Sunday at 11 AM"
-     * "schedule for tomorrow" → extract as "tomorrow"
-   - CRITICAL: When agent asks "can I book slot at Sunday at 11?" or "Sunday at 11 AM or 3 PM?" and user confirms with "yeah", "yes", "okay", etc., extract the COMPLETE time mentioned by agent (e.g., "Sunday at 11" or "Sunday at 11 AM")
-   - CRITICAL: Return the time phrase AS-IS (e.g., "after 15 mins", "in 30 minutes", "next Sunday", "tomorrow 3 PM", "Sunday at 11", "Sunday at 11 AM")
-   - DO NOT try to convert relative times like "after 15 mins" to datetime format - just return the phrase exactly as mentioned
-   - For absolute dates/times, you can return in "YYYY-MM-DD HH:MM:SS" format if you're certain, but prefer returning the phrase
-   - If NO time is mentioned at all, return null
+2. scheduled_at:
+   - Extract EXACT time phrase (e.g., "after 15 mins", "tomorrow 3 PM", "Sunday 11 AM")
+   - If multiple times, extract LATEST confirmed time
+   - ALWAYS include day when mentioned ("Friday noon" not "noon")
+   - Return NULL if: User declines ("No thank you", "end the call", "not interested", "maybe later"), agent rejects, agent notes "without booking", no clear acceptance
+   - CRITICAL: Look at ENTIRE conversation, especially the END. If user declines AFTER time mentioned, return NULL
+   - Example: Agent asks "Sunday?" + User "That one" + Later user "end the call" = NULL (user declined at end)
+   - Return phrase AS-IS, don't convert to datetime
 
-3. student_grade: Extract the student's current grade/class if mentioned
-   - Look for phrases like "I'm in grade 10", "class 11", "12th standard", "grade 9", "I'm studying in 10th", "currently in grade 12", etc.
-   - Return as integer (9, 10, 11, 12, etc.) or null if not mentioned
-   - If student mentions they are in college/university/UG/PG/Masters, return 12 (Grade 12+)
+3. student_grade: Extract from "grade 10", "class 11", "12th standard" - Return integer (9-12) or null
 
-4. call_id: Extract any call ID or reference number mentioned, or return null
+4. call_id: Extract if mentioned, else null
 
-IMPORTANT: 
-- Use "auto_consultation" if ANY meeting, consultation, counselling, or appointment is booked/scheduled/confirmed
-- Use "auto_followup" ONLY if it's just a callback request with NO meeting/consultation booking
-- Look carefully for booking phrases: "book", "schedule", "appointment", "meeting", "counselling", "consultation"
-- booking_type MUST always be either "auto_followup" or "auto_consultation", NEVER null
-- Extract student_grade carefully - look for grade numbers (9, 10, 11, 12) or educational level mentions
-
-Respond ONLY in JSON format:
-{{
+Respond in JSON:
+{{{{
     "booking_type": "auto_followup" or "auto_consultation",
-    "scheduled_at": "2025-12-27 09:00:00" or null,
+    "scheduled_at": "time phrase" or null,
     "student_grade": 10 or null,
-    "call_id": "call-id-value" or null
-}}"""
+    "call_id": "id" or null
+}}}}"""
 
+        # Log the extraction request details being sent to Gemini
+        logger.info(f"Calling Gemini API for booking extraction")
+        logger.info(f"Conversation length: {len(conversation_text)} chars")
+        
         # Increased max_output_tokens to handle longer conversations and detailed responses
         response = await self._call_gemini_api(prompt, temperature=0.1, max_output_tokens=4096)
         if not response:
@@ -506,7 +544,7 @@ Respond ONLY in JSON format:
             return dt.replace(microsecond=0)
         return dt
     
-    async def calculate_scheduled_at(self, booking_type: str, scheduled_at_str: str, reference_time: datetime, conversation_text: Optional[str] = None, transcriptions_data: Optional[Dict] = None, started_at: Optional[datetime] = None) -> Optional[datetime]:
+    async def calculate_scheduled_at(self, booking_type: str, scheduled_at_str: str, reference_time: datetime, conversation_text: Optional[str] = None, transcriptions_data: Optional[Dict] = None, started_at: Optional[datetime] = None, student_grade: Optional[int] = None) -> Optional[datetime]:
         """
         Calculate scheduled_at using schedule_calculator based on booking_type (async-compatible)
         For simple "X minutes" patterns, uses direct calculation to ensure correct time
@@ -542,15 +580,22 @@ Respond ONLY in JSON format:
         normalized_lower = normalized_time_str.lower()
         
         # Check for specific month+day dates (e.g., "January 10th", "Saturday, January 10th")
+        # Include common misspellings to handle extraction errors
         months = {
             'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6,
-            'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12
+            'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12,
+            # Common misspellings and variations
+            'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+            'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+            'febrauary': 2, 'febuary': 2, 'feburary': 2,  # Common misspellings of February
+            'sepetmber': 9, 'septmber': 9, 'sepember': 9,  # Common misspellings of September
+            'decmber': 12, 'decembre': 12,  # Common misspellings of December
         }
         
         date_patterns = [
-            r'(?:saturday|sunday|monday|tuesday|wednesday|thursday|friday)[,\s]+(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?',  # "Saturday, January 10th"
-            r'(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?',  # "January 10th"
-            r'(\d{1,2})(?:st|nd|rd|th)?\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)',  # "10th January"
+            r'(?:saturday|sunday|monday|tuesday|wednesday|thursday|friday)[,\s]+(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|febrauary|febuary|feburary|sepetmber|septmber|sepember|decmber|decembre)\s+(\d{1,2})(?:st|nd|rd|th)?',
+            r'(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|febrauary|febuary|feburary|sepetmber|septmber|sepember|decmber|decembre)\s+(\d{1,2})(?:st|nd|rd|th)?',
+            r'(\d{1,2})(?:st|nd|rd|th)?\s+(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|febrauary|febuary|feburary|sepetmber|septmber|sepember|decmber|decembre)',
         ]
         
         for pattern in date_patterns:
@@ -584,6 +629,52 @@ Respond ONLY in JSON format:
                     logger.debug(f"Error parsing date from '{normalized_time_str}': {e}")
                     continue
         
+        # Check for relative month patterns (e.g., "this month 20", "next month 15")
+        if not parsed_date:
+            # Pattern: "this month [day]" or "next month [day]"
+            this_month_match = re.search(r'this\s+month\s+(\d{1,2})(?:st|nd|rd|th)?', normalized_lower)
+            next_month_match = re.search(r'next\s+month\s+(\d{1,2})(?:st|nd|rd|th)?', normalized_lower)
+            
+            if this_month_match:
+                try:
+                    day = int(this_month_match.group(1))
+                    # Use current month and year
+                    current_month = reference_time.month
+                    current_year = reference_time.year
+                    
+                    # Validate day for current month
+                    try:
+                        parsed_date = datetime(current_year, current_month, day).date()
+                        # If the date has already passed this month, use next month
+                        if parsed_date < reference_time.date():
+                            # Try next month
+                            next_month = current_month + 1 if current_month < 12 else 1
+                            next_year = current_year if current_month < 12 else current_year + 1
+                            parsed_date = datetime(next_year, next_month, day).date()
+                        logger.info(f"Found 'this month' date: {parsed_date} (from '{normalized_time_str}')")
+                    except ValueError:
+                        logger.debug(f"Invalid day {day} for current month {current_month}")
+                except (ValueError, IndexError):
+                    pass
+            
+            elif next_month_match:
+                try:
+                    day = int(next_month_match.group(1))
+                    # Use next month
+                    current_month = reference_time.month
+                    current_year = reference_time.year
+                    next_month = current_month + 1 if current_month < 12 else 1
+                    next_year = current_year if current_month < 12 else current_year + 1
+                    
+                    # Validate day for next month
+                    try:
+                        parsed_date = datetime(next_year, next_month, day).date()
+                        logger.info(f"Found 'next month' date: {parsed_date} (from '{normalized_time_str}')")
+                    except ValueError:
+                        logger.debug(f"Invalid day {day} for next month {next_month}")
+                except (ValueError, IndexError):
+                    pass
+        
         # Check for weekday mentions (e.g., "next Monday", "Monday", "this Saturday")
         if not parsed_date:
             weekday_map = {
@@ -598,6 +689,7 @@ Respond ONLY in JSON format:
                     # Calculate days until that weekday
                     current_weekday = reference_time.weekday()
                     days_until = (weekday_num - current_weekday) % 7
+                    logger.info(f"Weekday calculation: reference_time={reference_time}, reference_time.date()={reference_time.date()}, current_weekday={current_weekday}, target={weekday_num}, days_until_raw={(weekday_num - current_weekday) % 7}")
                     if days_until == 0:  # Today is that weekday
                         days_until = 7 if is_next else 0  # If "next", use next week, else use today
                     elif is_next and days_until < 7:  # "next" explicitly mentioned
@@ -607,8 +699,9 @@ Respond ONLY in JSON format:
                     elif not is_next:  # Not today, assume next occurrence
                         days_until = days_until if days_until > 0 else 7
                     
-                    parsed_date = (reference_time + timedelta(days=days_until)).date()
-                    logger.info(f"Found weekday '{weekday_name}' (next={is_next}), scheduling for: {parsed_date}")
+                    target_date = reference_time.date() + timedelta(days=days_until)
+                    parsed_date = target_date
+                    logger.info(f"Found weekday '{weekday_name}' (next={is_next}), ref_date={reference_time.date()}, days_until={days_until}, scheduling for: {parsed_date}")
                     break
         
         # FIRST: Check the normalized scheduled_at_str itself for "tomorrow" mentions
@@ -656,8 +749,44 @@ Respond ONLY in JSON format:
                         logger.info(f"Found 'today' in context with time phrase: '{pattern}'")
                         break
         
-        # PRIORITY 1: Check for absolute time patterns (e.g., "6:20", "6:20 PM", "6:20 GST", "18:20")
+        # PRIORITY 1: Check for absolute time patterns (e.g., "6:20", "6:20 PM", "6:20 GST", "18:20", "noon", "midnight")
         # These should be used as-is without relative calculation
+        
+        # First check for special times: noon and midnight
+        # Use word boundary to avoid matching "afternoon" as "noon"
+        if re.search(r'\bnoon\b', normalized_lower) or '12 noon' in normalized_lower:
+            hour, minute = 12, 0
+            if parsed_date:
+                target_time = GST.localize(datetime.combine(parsed_date, datetime.min.time().replace(hour=hour, minute=minute, second=0, microsecond=0)))
+                logger.info(f"Found 'noon' with parsed date {parsed_date}, scheduling for: {target_time}")
+                return self._normalize_datetime(target_time)
+            elif is_tomorrow_mentioned:
+                target_time_today = reference_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                target_time = target_time_today + timedelta(days=1)
+                logger.info(f"Found 'noon' with 'tomorrow', scheduling for: {target_time}")
+                return self._normalize_datetime(target_time)
+            elif is_today_mentioned:
+                target_time = reference_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                logger.info(f"Found 'noon' with 'today', scheduling for: {target_time}")
+                return self._normalize_datetime(target_time)
+        
+        # Use word boundary to avoid matching "midnight" in other contexts
+        if re.search(r'\bmidnight\b', normalized_lower) or '12 midnight' in normalized_lower:
+            hour, minute = 0, 0
+            if parsed_date:
+                target_time = GST.localize(datetime.combine(parsed_date, datetime.min.time().replace(hour=hour, minute=minute, second=0, microsecond=0)))
+                logger.info(f"Found 'midnight' with parsed date {parsed_date}, scheduling for: {target_time}")
+                return self._normalize_datetime(target_time)
+            elif is_tomorrow_mentioned:
+                target_time_today = reference_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                target_time = target_time_today + timedelta(days=1)
+                logger.info(f"Found 'midnight' with 'tomorrow', scheduling for: {target_time}")
+                return self._normalize_datetime(target_time)
+            elif is_today_mentioned:
+                target_time = reference_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                logger.info(f"Found 'midnight' with 'today', scheduling for: {target_time}")
+                return self._normalize_datetime(target_time)
+        
         absolute_time_patterns = [
             r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "6:20", "6:20 PM", "6:20 GST" - group 1=hour, 2=min, 3=AM/PM
             r'\b(\d{1,2}):(\d{2})\s*(?:GST|IST|UTC)\b',  # "6:20 GST" - group 1=hour, 2=min
@@ -743,43 +872,25 @@ Respond ONLY in JSON format:
         
         # PRIORITY 2: Direct calculation for simple "X minutes" patterns (relative time)
         # This ensures correct time calculation for "in 20 minutes", "after 30 minutes", etc.
-        # For relative times, use FIRST TIMESTAMP DATE (or started_at) + the relative time
+        # For relative times, use LAST TIMESTAMP (reference_time) as the base - when conversation ended
         direct_minutes_match = re.search(r'(?:after|in|within)\s+(\d+)\s*(?:mins?|minutes?)', normalized_time_str.lower())
         if direct_minutes_match:
             try:
                 minutes = int(direct_minutes_match.group(1))
                 # Validate reasonable range (1 minute to 7 days = 10080 minutes)
                 if 1 <= minutes <= 10080:
-                    # For relative times, use FIRST TIMESTAMP DATE (or started_at) as the base date
-                    base_time = None
+                    # For relative times, use LAST TIMESTAMP (reference_time) as the base
+                    # This ensures "after 10 minutes" means 10 minutes after the conversation ended
+                    base_time = reference_time
+                    logger.info(f"Using last transcription timestamp (reference_time) as base for relative time: {base_time}")
                     
-                    # Get the date from first transcription timestamp (or started_at as fallback)
-                    if transcriptions_data:
-                        first_timestamp = self.extract_first_timestamp(transcriptions_data)
-                        if first_timestamp:
-                            base_time = first_timestamp
-                            logger.info(f"Using first transcription timestamp as base for relative time: {base_time}")
-                    
-                    # Fallback to started_at if no transcription timestamp
-                    if not base_time and started_at:
-                        if started_at.tzinfo is None:
-                            base_time = GST.localize(started_at)
-                        else:
-                            base_time = started_at.astimezone(GST)
-                        logger.info(f"Using started_at as base for relative time: {base_time}")
-                    
-                    # Final fallback to reference_time (last timestamp)
-                    if not base_time:
-                        base_time = reference_time
-                        logger.info(f"Using reference_time (last timestamp) as base for relative time: {base_time}")
-                    
-                    # Calculate relative time from base_time
+                    # Calculate relative time from base_time (last timestamp)
                     if is_tomorrow_mentioned:
                         # User said "tomorrow after X minutes" - schedule for tomorrow
                         calculated_time = base_time + timedelta(days=1, minutes=minutes)
                         logger.info(f"Relative time '{normalized_time_str}' with 'tomorrow' mentioned: {base_time} + 1 day + {minutes} minutes = {calculated_time}")
                     else:
-                        # Normal relative time - add minutes to base_time (first timestamp or started_at)
+                        # Normal relative time - add minutes to base_time (last timestamp)
                         calculated_time = base_time + timedelta(minutes=minutes)
                         logger.info(f"Relative time (same day): '{normalized_time_str}' = {base_time} + {minutes} minutes = {calculated_time}")
                     return self._normalize_datetime(calculated_time)
@@ -813,7 +924,7 @@ Respond ONLY in JSON format:
                     return calculator.parse_callback_time(normalized_time_str, reference_time)  # Use normalized string
                 
                 # Calculate next call time using schedule calculator
-                return calculator.calculate_next_call(outcome, outcome_details, None)
+                return calculator.calculate_next_call(outcome, outcome_details, None, reference_time, allow_outside_hours=True)
             
             scheduled_at = await asyncio.to_thread(_calculate)
             
@@ -823,54 +934,326 @@ Respond ONLY in JSON format:
             is_absolute_time = bool(re.search(r'\b\d{1,2}[:.]\d{2}', normalized_time_str))  # Contains time pattern like "7:45"
             
             if scheduled_at:
-                # If absolute time is explicitly mentioned, check if we have a parsed_date
-                # If we have a parsed_date, use it instead of schedule_calculator's date
-                if is_absolute_time and not is_relative_time:
-                    if parsed_date:
-                        # Use parsed_date with the time from schedule_calculator
-                        schedule_time = scheduled_at.time()
-                        combined_datetime = GST.localize(datetime.combine(parsed_date, schedule_time.replace(second=0, microsecond=0)))
-                        logger.info(f"Absolute time with parsed date: using parsed date {parsed_date} with schedule_calculator time {schedule_time} = {combined_datetime}")
-                        return self._normalize_datetime(combined_datetime)
+                # CRITICAL FIX: If we have a parsed_date (from specific date like "December 25"), always use it
+                # This ensures that explicit dates mentioned in conversation are properly honored
+                if parsed_date:
+                    # Extract the correct time from the schedule_calculator or from the original string
+                    schedule_time = scheduled_at.time()
+                    
+                    # CRITICAL FIX: If schedule_calculator adjusted the time (e.g., 12 AM -> 10 AM due to working hours),
+                    # but we have explicit time in the original string, extract it directly
+                    time_patterns = [
+                        r'\b(\d{1,2})\s*(?:am|a\.m\.)\b',  # "12 AM", "12 am"  
+                        r'\b(\d{1,2})\s*(?:pm|p\.m\.)\b',  # "3 PM", "3 pm"
+                        r'\b(\d{1,2}):(\d{2})\s*(?:am|pm|a\.m\.|p\.m\.)\b',  # "3:30 PM"
+                        r'\b(\d{1,2})\s*(?:in the |in |o\'?clock )?(morning|am)\b',  # "10 in the morning", "10 morning", "10 o'clock morning"
+                        r'\b(\d{1,2})\s*(?:in the |in |o\'?clock )?(afternoon|evening|pm)\b',  # "3 in the afternoon", "6 evening"
+                    ]
+                    
+                    original_hour = None
+                    original_minute = 0
+                    for pattern in time_patterns:
+                        time_match = re.search(pattern, scheduled_at_str, re.IGNORECASE)
+                        if time_match:
+                            original_hour = int(time_match.group(1))
+                            if len(time_match.groups()) > 1 and time_match.group(2) and time_match.group(2).isdigit():  # Has minute component (not text like "morning")
+                                original_minute = int(time_match.group(2))
+                            
+                            # Handle AM/PM conversion
+                            matched_text = time_match.group(0).lower()
+                            if 'pm' in matched_text or 'afternoon' in matched_text or 'evening' in matched_text:
+                                if original_hour != 12:  # 12 PM stays 12
+                                    original_hour += 12
+                            elif 'am' in matched_text or 'morning' in matched_text:
+                                if original_hour == 12:  # 12 AM becomes 0
+                                    original_hour = 0
+                            
+                            logger.info(f"Extracted explicit time from original string '{scheduled_at_str}': {original_hour:02d}:{original_minute:02d}")
+                            break
+                    
+                    # Use the extracted time if we found it, otherwise try schedule_calculator's time, then transcription time
+                    if original_hour is not None:
+                        final_time = time(original_hour, original_minute, 0)
+                        combined_datetime = GST.localize(datetime.combine(parsed_date, final_time))
+                        logger.info(f"Using explicit parsed date and time: {parsed_date} at {final_time} = {combined_datetime}")
                     else:
-                        logger.info(f"Absolute time detected in '{normalized_time_str}', using schedule_calculator result as-is: {scheduled_at}")
-                        return self._normalize_datetime(scheduled_at)
-                
-                # For relative times, combine with first timestamp date
-                try:
-                    # Get the date from first transcription timestamp (or started_at as fallback)
-                    first_timestamp_date = None
-                    if transcriptions_data:
-                        first_timestamp = self.extract_first_timestamp(transcriptions_data)
-                        if first_timestamp:
-                            first_timestamp_date = first_timestamp.date()
-                            logger.info(f"Using first transcription timestamp date for relative time: {first_timestamp_date}")
-                    
-                    # Fallback to started_at if no transcription timestamp
-                    if not first_timestamp_date and started_at:
-                        if started_at.tzinfo is None:
-                            started_at_gst = GST.localize(started_at)
+                        # Check if schedule_calculator extracted a meaningful time (not default 10 AM, or has time context words, or hour numbers mentioned)
+                        has_time_context = 'morning' in normalized_time_str.lower() or 'afternoon' in normalized_time_str.lower() or 'evening' in normalized_time_str.lower()
+                        has_hour_mention = any(str(h) in scheduled_at_str for h in range(1, 24))
+                        is_not_default_10am = schedule_time.hour != 10 or schedule_time.minute != 0
+                        
+                        logger.info(f"Time extraction check: schedule_time={schedule_time}, has_time_context={has_time_context}, has_hour_mention={has_hour_mention}, is_not_default_10am={is_not_default_10am}")
+                        
+                        if has_time_context or has_hour_mention or is_not_default_10am:
+                            # Use schedule_calculator's extracted time
+                            combined_datetime = GST.localize(datetime.combine(parsed_date, schedule_time.replace(second=0, microsecond=0)))
+                            logger.info(f"Using explicit parsed date with schedule_calculator extracted time: {parsed_date} at {schedule_time} = {combined_datetime}")
                         else:
-                            started_at_gst = started_at.astimezone(GST)
-                        first_timestamp_date = started_at_gst.date()
-                        logger.info(f"Using started_at date as fallback for relative time: {first_timestamp_date}")
+                            # Use first transcription timestamp time (conversation start time) for future dates
+                            if transcriptions_data:
+                                first_timestamp = self.extract_first_timestamp(transcriptions_data)
+                                if first_timestamp:
+                                    transcription_time = first_timestamp.time()
+                                    combined_datetime = GST.localize(datetime.combine(parsed_date, transcription_time.replace(second=0, microsecond=0)))
+                                    logger.info(f"Using explicit parsed date with first transcription time: {parsed_date} at {transcription_time} = {combined_datetime}")
+                                elif reference_time:
+                                    transcription_time = reference_time.time()
+                                    combined_datetime = GST.localize(datetime.combine(parsed_date, transcription_time.replace(second=0, microsecond=0)))
+                                    logger.info(f"Using explicit parsed date with reference time: {parsed_date} at {transcription_time} = {combined_datetime}")
+                                else:
+                                    # Final fallback to schedule_calculator time if no transcription time
+                                    combined_datetime = GST.localize(datetime.combine(parsed_date, schedule_time.replace(second=0, microsecond=0)))
+                                    logger.info(f"Using explicit parsed date with schedule_calculator time (no transcription time): {parsed_date} with {schedule_time} = {combined_datetime}")
+                            elif reference_time:
+                                transcription_time = reference_time.time()
+                                combined_datetime = GST.localize(datetime.combine(parsed_date, transcription_time.replace(second=0, microsecond=0)))
+                                logger.info(f"Using explicit parsed date with reference time: {parsed_date} at {transcription_time} = {combined_datetime}")
+                            else:
+                                # Final fallback to schedule_calculator time if no transcription time
+                                combined_datetime = GST.localize(datetime.combine(parsed_date, schedule_time.replace(second=0, microsecond=0)))
+                                logger.info(f"Using explicit parsed date with schedule_calculator time (no transcription time): {parsed_date} with {schedule_time} = {combined_datetime}")
                     
-                    # If we have a date from first timestamp, use it with the time from schedule_calculator
-                    if first_timestamp_date:
+                    return self._normalize_datetime(combined_datetime)
+                
+                # CRITICAL FIX: Check if ANY explicit date was mentioned (valid or invalid)
+                # If so, NEVER fall back to same-day scheduling - ALWAYS use Grade 12 timeline instead
+                
+                # Comprehensive detection of explicit date mentions
+                contains_month_name = any(month in normalized_time_str.lower() for month in [
+                    'january', 'february', 'march', 'april', 'may', 'june',
+                    'july', 'august', 'september', 'october', 'november', 'december',
+                    'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 
+                    'sep', 'oct', 'nov', 'dec', 'febrauary', 'febuary', 'feburary',
+                    'sepetmber', 'septmber', 'sepember', 'decmber', 'decembre'
+                ])
+                
+                # Check for various date patterns
+                contains_day_number = bool(re.search(r'\b\d{1,2}(?:st|nd|rd|th)?\b', normalized_time_str))
+                contains_date_pattern = bool(re.search(r'\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b', normalized_time_str))  # "25/12" or "25/12/2026"
+                contains_weekday = any(day in normalized_time_str.lower() for day in [
+                    'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'
+                ])
+                
+                # Check for relative date words that indicate future dates
+                contains_future_indicators = any(word in normalized_time_str.lower() for word in [
+                    'next', 'coming', 'upcoming', 'later this', 'end of', 'this month', 'next month'
+                ])
+                
+                # Check for month-related words (but exclude successfully parsed relative month patterns)
+                contains_month_word = any(word in normalized_time_str.lower() for word in [
+                    'month', 'week', 'year'
+                ])
+                
+                # Check if this was a relative month pattern that was successfully parsed
+                is_parsed_relative_month = (
+                    parsed_date and 
+                    (re.search(r'this\s+month\s+\d{1,2}', normalized_time_str.lower()) or
+                     re.search(r'next\s+month\s+\d{1,2}', normalized_time_str.lower()))
+                )
+                
+                # If ANY explicit date is mentioned but failed to parse properly, use Grade 12 timeline
+                # BUT exclude cases where relative month patterns were successfully parsed
+                # OR where schedule_calculator successfully parsed the date
+                explicit_date_mentioned = (
+                    (contains_month_name and contains_day_number) or  # "march 31", "febrauary 31"
+                    contains_date_pattern or  # "31/03", "31/3/2026"
+                    (contains_weekday and contains_future_indicators) or  # "next monday"
+                    (contains_month_word and contains_day_number and not is_parsed_relative_month) or  # "this month 31", but exclude successfully parsed ones
+                    contains_month_name  # Just month name might indicate date intent
+                )
+                
+                # Check if schedule_calculator successfully parsed the date
+                # If scheduled_at is more than 2 days in the future, consider it successfully parsed
+                schedule_calc_parsed_date = False
+                if scheduled_at:
+                    days_diff = (scheduled_at.date() - reference_time.date()).days
+                    if days_diff > 2:  # More than 2 days ahead means a specific date was parsed
+                        schedule_calc_parsed_date = True
+                        # Extract the parsed date from schedule_calculator result
+                        parsed_date = scheduled_at.date()
+                        logger.info(f"schedule_calculator successfully parsed date: {parsed_date} ({days_diff} days ahead)")
+                
+                if explicit_date_mentioned and not parsed_date and not schedule_calc_parsed_date:
+                    logger.warning(f"Explicit date mentioned in '{normalized_time_str}' but failed to parse - ALWAYS using Grade 12 timeline (NEVER same-day)")
+                    # Extract just the time component and use grade-based timeline for the date
+                    schedule_time = scheduled_at.time()
+                    calculator = ScheduleCalculator()
+                    lead_info = {"student_grade": 12}  # Default grade
+                    # Use grade 12 timeline to get a proper future date (minimum 3 working days)
+                    timeline_result = calculator.calculate_grade12_timeline(lead_info, reference_time)
+                    final_datetime = GST.localize(datetime.combine(timeline_result.date(), schedule_time.replace(second=0, microsecond=0)))
+                    logger.info(f"Applied Grade 12 timeline for failed explicit date parsing: {final_datetime} (ensuring future date, never same day)")
+                    return self._normalize_datetime(final_datetime)
+                
+                # If absolute time is explicitly mentioned without specific date, use schedule_calculator result
+                if is_absolute_time and not is_relative_time:
+                    logger.info(f"Absolute time detected in '{normalized_time_str}', using schedule_calculator result as-is: {scheduled_at}")
+                    return self._normalize_datetime(scheduled_at)
+                
+                # PRIORITY: If parsed_date exists (from weekday/tomorrow/today), use it with schedule_calculator time
+                # Otherwise, combine with first timestamp date for relative times
+                try:
+                    target_date = None
+                    
+                    # Check if schedule_calculator already provided a valid future date
+                    # For absolute time phrases like "on a weekend", "tomorrow", "next Monday", etc.
+                    calc_date = scheduled_at.date()
+                    today = datetime.now(GST).date()
+                    
+                    # Check if the phrase contains explicit time (like "3 PM", "10:00", "at 5")
+                    time_pattern = r'\b(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)|\d{1,2}:\d{2}|at\s+\d{1,2})\b'
+                    has_explicit_time = bool(re.search(time_pattern, scheduled_at_str))
+                    
+                    # Check if a specific month/day was mentioned (like "March 15" or "fifteenth March")
+                    # These should be treated as specific dates, not as requests for timeline-based scheduling
+                    has_specific_month_day = bool(re.search(r'(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)', scheduled_at_str.lower()))
+                    
+                    # If schedule_calculator provided a future date or specific date
+                    # Include "after" for phrases like "after 2 days" which are explicit date requests
+                    if calc_date > today or any(phrase in scheduled_at_str.lower() for phrase in ['weekend', 'tomorrow', 'next', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'after']):
+                        
+                        # Check if this is a relative date request like "after X days" which should be treated as explicit
+                        is_relative_date_request = any(rel_phrase in scheduled_at_str.lower() for rel_phrase in ['after', 'in'])
+                        
+                        if has_explicit_time or is_relative_date_request or has_specific_month_day:
+                            # Explicit time mentioned OR relative date request like "after 2 days" OR specific month/day - use schedule calculator result as-is
+                            # BUT: For specific month/day without time, use first timestamp time
+                            if has_specific_month_day and not has_explicit_time:
+                                # Specific month/day mentioned but no explicit time - use first timestamp time
+                                if transcriptions_data:
+                                    first_timestamp = self.extract_first_timestamp(transcriptions_data)
+                                    if first_timestamp:
+                                        target_time = first_timestamp.time()
+                                        final_datetime = GST.localize(datetime.combine(calc_date, target_time.replace(second=0, microsecond=0)))
+                                        logger.info(f"Schedule calculator provided specific month/day ({calc_date}) without explicit time - using first timestamp time: {final_datetime}")
+                                        return self._normalize_datetime(final_datetime)
+                            logger.info(f"Schedule calculator provided date ({calc_date}) with explicit time or relative date request for '{scheduled_at_str}' - using as-is")
+                            return self._normalize_datetime(scheduled_at)
+                        else:
+                            # No explicit time - should follow Grade 12 timeline rules instead of using transcription time
+                            logger.info(f"Schedule calculator provided date ({calc_date}) but no explicit time in '{scheduled_at_str}' - applying Grade 12 timeline rules")
+                            
+                            # NEVER use default 10 AM - use transcription timestamp or reject without explicit time
+                            target_time = None
+                            if transcriptions_data:
+                                first_timestamp = self.extract_first_timestamp(transcriptions_data)
+                                if first_timestamp:
+                                    target_time = first_timestamp.time().replace(second=0, microsecond=0)
+                                    logger.info(f"Using first timestamp time: {target_time} from transcription")
+                            
+                            # If no timestamp available, use Grade 12 timeline but with transcription time instead of 10 AM default
+                            if target_time is None:
+                                # Use the first timestamp from transcription for the time (not arbitrary 10 AM)
+                                if reference_time:
+                                    transcription_time = reference_time.time()
+                                    logger.info(f"No explicit time mentioned - using transcription timestamp time: {transcription_time}")
+                                    
+                                    # Calculate appropriate timeline based on actual student grade (not hardcoded 12)
+                                    calculator = ScheduleCalculator()
+                                    actual_grade = student_grade if student_grade is not None else 12  # Default to 12 only if not extracted
+                                    lead_info = {"student_grade": actual_grade}
+                                    
+                                    # Use appropriate timeline calculation based on grade
+                                    if actual_grade is not None and actual_grade <= 11:
+                                        # Use stage2_schedule which handles grades 9, 10, 11 specifically
+                                        lead_info["stage2_start"] = reference_time
+                                        lead_info["last_call_time"] = reference_time
+                                        timeline_result = calculator.calculate_stage2_schedule(lead_info, reference_time)
+                                        logger.info(f"Applied Grade {actual_grade} timeline date with transcription time")
+                                    else:
+                                        # Use Grade 12+ timeline for Grade 12 and above
+                                        timeline_result = calculator.calculate_grade12_timeline(lead_info, reference_time)
+                                        logger.info(f"Applied Grade {actual_grade}+ timeline date with transcription time")
+                                    
+                                    # Combine timeline date with transcription time (not 10 AM)
+                                    final_date = timeline_result.date()
+                                    final_datetime = GST.localize(datetime.combine(final_date, transcription_time))
+                                    
+                                    logger.info(f"Applied Grade 12 timeline date with transcription time: {final_datetime}")
+                                    return self._normalize_datetime(final_datetime)
+                                else:
+                                    # Fallback if no reference time available
+                                    actual_grade = student_grade if student_grade is not None else 12
+                                    logger.info(f"No transcription timestamp available - using Grade {actual_grade} timeline default scheduling")
+                                    calculator = ScheduleCalculator()
+                                    lead_info = {"student_grade": actual_grade}
+                                    
+                                    if actual_grade is not None and actual_grade <= 11:
+                                        lead_info["stage2_start"] = datetime.now(GST)
+                                        lead_info["last_call_time"] = datetime.now(GST)
+                                        timeline_result = calculator.calculate_stage2_schedule(lead_info, datetime.now(GST))
+                                    else:
+                                        timeline_result = calculator.calculate_grade12_timeline(lead_info, datetime.now(GST))
+                                    return self._normalize_datetime(timeline_result)
+                            
+                            # Use schedule calculator for grade-based timeline on the target date
+                            calculator = ScheduleCalculator()
+                            
+                            # Create lead info for timeline calculation using actual extracted grade
+                            final_grade = student_grade if student_grade is not None else 12  # Default to 12 only if not extracted
+                            lead_info = {"student_grade": final_grade}
+                            
+                            # Set the target date as stage2_start to calculate timeline from that date
+                            target_datetime = GST.localize(datetime.combine(calc_date, target_time))
+                            lead_info["stage2_start"] = target_datetime
+                            lead_info["last_call_time"] = target_datetime
+                            
+                            # Calculate next call DATE using appropriate timeline based on grade
+                            if final_grade is not None and final_grade <= 11:
+                                # Use stage2_schedule for grades 9, 10, 11
+                                timeline_result = calculator.calculate_stage2_schedule(lead_info, target_datetime)
+                            else:
+                                # Use Grade 12+ timeline
+                                timeline_result = calculator.calculate_grade12_timeline(lead_info, target_datetime)
+                            
+                            # Use the calculated date but preserve the first timestamp's time
+                            final_date = timeline_result.date()
+                            final_datetime = GST.localize(datetime.combine(final_date, target_time))
+                            
+                            logger.info(f"Applied Grade {final_grade} timeline to target date ({calc_date}) using time {target_time} = {final_datetime}")
+                            return self._normalize_datetime(final_datetime)
+                    
+                    # For relative time phrases (like "in 30 minutes"), combine with transcription date
+                    # FIRST: Check if we already have a parsed_date from weekday/tomorrow/today
+                    if parsed_date:
+                        target_date = parsed_date
+                        logger.info(f"Using parsed_date from weekday/tomorrow/today: {target_date}")
+                    else:
+                        # Get the date from first transcription timestamp (or started_at as fallback)
+                        first_timestamp_date = None
+                        if transcriptions_data:
+                            first_timestamp = self.extract_first_timestamp(transcriptions_data)
+                            if first_timestamp:
+                                first_timestamp_date = first_timestamp.date()
+                                logger.info(f"Using first transcription timestamp date for relative time: {first_timestamp_date}")
+                        
+                        # Fallback to started_at if no transcription timestamp
+                        if not first_timestamp_date and started_at:
+                            if started_at.tzinfo is None:
+                                started_at_gst = GST.localize(started_at)
+                            else:
+                                started_at_gst = started_at.astimezone(GST)
+                            first_timestamp_date = started_at_gst.date()
+                            logger.info(f"Using started_at date as fallback for relative time: {first_timestamp_date}")
+                        
+                        target_date = first_timestamp_date
+                    
+                    # If we have a target date, use it with the time from schedule_calculator
+                    if target_date:
                         # Extract time (hour, minute) from schedule_calculator result
                         calc_hour = scheduled_at.hour
                         calc_minute = scheduled_at.minute
                         
-                        # Combine first timestamp date with schedule_calculator time
-                        combined_time = GST.localize(datetime.combine(first_timestamp_date, scheduled_at.time().replace(second=0, microsecond=0)))
-                        logger.info(f"Combined first timestamp date ({first_timestamp_date}) with schedule_calculator time ({calc_hour:02d}:{calc_minute:02d}) = {combined_time}")
+                        # Combine target date with schedule_calculator time
+                        combined_time = GST.localize(datetime.combine(target_date, scheduled_at.time().replace(second=0, microsecond=0)))
+                        logger.info(f"Combined target date ({target_date}) with schedule_calculator time ({calc_hour:02d}:{calc_minute:02d}) = {combined_time}")
                         return self._normalize_datetime(combined_time)
                     else:
-                        # No first timestamp or started_at - use schedule_calculator result as-is
-                        logger.warning(f"No first timestamp or started_at found, using schedule_calculator result as-is: {scheduled_at}")
+                        # No date available - use schedule_calculator result as-is
+                        logger.warning(f"No date found, using schedule_calculator result as-is: {scheduled_at}")
                         return self._normalize_datetime(scheduled_at)
                 except Exception as e:
-                    logger.warning(f"Error combining first timestamp date with schedule_calculator time: {e}, using schedule_calculator result as-is")
+                    logger.warning(f"Error combining date with schedule_calculator time: {e}, using schedule_calculator result as-is")
                     return self._normalize_datetime(scheduled_at)
             
             # Validate that schedule_calculator result is reasonable (for relative times)
@@ -933,9 +1316,17 @@ Respond ONLY in JSON format:
                             first_timestamp_date = started_at_gst.date()
                         
                         if first_timestamp_date:
-                            # Combine first timestamp date with fallback result time
-                            combined_time = GST.localize(datetime.combine(first_timestamp_date, fallback_result.time().replace(second=0, microsecond=0)))
-                            logger.info(f"Combined first timestamp date ({first_timestamp_date}) with fallback parse time = {combined_time}")
+                            # If fallback_result has a time, use it, else use first timestamp's time
+                            if fallback_result.time() != time(0, 0):
+                                combined_time = GST.localize(datetime.combine(first_timestamp_date, fallback_result.time().replace(second=0, microsecond=0)))
+                            else:
+                                # Use first timestamp's time
+                                first_timestamp = self.extract_first_timestamp(transcriptions_data)
+                                if first_timestamp:
+                                    combined_time = GST.localize(datetime.combine(first_timestamp_date, first_timestamp.time().replace(second=0, microsecond=0)))
+                                else:
+                                    combined_time = GST.localize(datetime.combine(first_timestamp_date, time(10, 0)))  # fallback, should not happen
+                            logger.info(f"Combined first timestamp date ({first_timestamp_date}) with time = {combined_time}")
                             return self._normalize_datetime(combined_time)
                     except Exception as e:
                         logger.warning(f"Error combining date with fallback result: {e}")
@@ -976,9 +1367,49 @@ Respond ONLY in JSON format:
                 raise
             
             if not call_data:
-                logger.warning(f"Call log {call_log_id} not found in database")
-                logger.info(f"Tip: Use '--list' to see available call IDs")
-                return None
+                logger.warning(f"Call log {call_log_id} not found in database - creating default booking with 12th grade timeline")
+                # When call log doesn't exist, create a default booking using 12th grade timeline and current time
+                current_time = self._normalize_datetime(datetime.now(GST))
+                
+                # ScheduleCalculator already imported at top of file
+                calculator = ScheduleCalculator()
+                final_grade = 12
+                lead_info = {"student_grade": final_grade}
+                
+                # Calculate schedule date using grade 12 timeline
+                schedule_date = calculator.calculate_grade12_timeline(lead_info, current_time)
+                # Combine schedule date with current time
+                scheduled_at = self._normalize_datetime(GST.localize(datetime.combine(schedule_date.date(), current_time.time().replace(microsecond=0))))
+                buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
+                
+                logger.info(f"Default booking scheduled_at: {scheduled_at}, buffer_until: {buffer_until}")
+                
+                # Create a booking entry for the missing call log
+                booking_data = {
+                    "id": str(uuid.uuid4()),
+                    "tenant_id": "default-tenant",
+                    "lead_id": str(uuid.uuid4()),
+                    "assigned_user_id": "default-user",
+                    "booking_type": "auto_followup",
+                    "booking_source": "system",
+                    "scheduled_at": scheduled_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    "timezone": "GST",
+                    "status": "scheduled",
+                    "retry_count": 0,
+                    "parent_booking_id": None,
+                    "metadata": {"call_id": call_log_id, "reason": "missing_call_log"},
+                    "buffer_until": buffer_until.strftime("%Y-%m-%d %H:%M:%S"),
+                    "created_at": current_time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "updated_at": current_time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "is_deleted": False
+                }
+                
+                return {
+                    'status': 'success',
+                    'booking_data': booking_data,
+                    'call_id': call_log_id,
+                    'message': 'Booking created for missing call log using 12th grade timeline'
+                }
             
             call_id = call_data['id']
             tenant_id = call_data['tenant_id']
@@ -989,14 +1420,75 @@ Respond ONLY in JSON format:
             started_at = call_data['started_at']
             call_status = call_data.get('status')  # Status from voice_call_logs table
             
+            # Check for failed calls or NULL transcripts - special handling: auto_followup, grade 12 timeline, use started_at time
+            is_failed_call = call_status and str(call_status).lower() in ['failed', 'declined', 'rejected', 'no_answer', 'not_interested', 'busy']
+            
+            if transcripts is None or is_failed_call:
+                reason = "NULL transcripts" if transcripts is None else f"failed call (status: {call_status})"
+                logger.warning(f"Special handling for {reason} in call {call_id} - using auto_followup, grade 12 timeline, and started_at time")
+                booking_type = "auto_followup"
+                # Use grade 12 timeline for date
+                # ScheduleCalculator already imported at top of file
+                calculator = ScheduleCalculator()
+                # Use grade 12 if not present
+                final_grade = 12
+                lead_info = {"student_grade": final_grade}
+                # Use started_at from call_data (should be UTC or aware)
+                started_at_val = call_data.get('started_at')
+                if not started_at_val:
+                    logger.error("started_at is missing in call_data, cannot schedule")
+                    return {
+                        'status': 'skipped',
+                        'reason': 'started_at_missing',
+                        'call_id': str(call_id) if call_id else None,
+                        'message': 'Cannot process call - started_at is missing in voice_call_logs table'
+                    }
+                # Parse started_at if string
+                if isinstance(started_at_val, str):
+                    started_at_dt = datetime.fromisoformat(started_at_val.replace('Z', '+00:00'))
+                else:
+                    started_at_dt = started_at_val
+                # Convert to GST
+                if started_at_dt.tzinfo is None:
+                    started_at_dt = GST.localize(started_at_dt)
+                else:
+                    started_at_dt = started_at_dt.astimezone(GST)
+                # Remove microseconds
+                started_at_dt = started_at_dt.replace(microsecond=0)
+                # Get date from grade 12 timeline
+                schedule_date = calculator.calculate_grade12_timeline(lead_info, started_at_dt)
+                # Combine date from schedule_date with time from started_at_dt
+                combined_dt = GST.localize(datetime.combine(schedule_date.date(), started_at_dt.time().replace(microsecond=0)))
+                scheduled_at = self._normalize_datetime(combined_dt)
+                buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
+                logger.info(f"Scheduled_at ({reason}): {scheduled_at}, buffer_until: {buffer_until}")
+                
+                # Set variables for the rest of the processing
+                conversation_text = f"No transcription available ({reason}). Auto-scheduled based on started_at time and grade 12 timeline."
+                booking_info = {"booking_type": booking_type, "scheduled_at": None, "student_grade": final_grade, "call_id": None}
+                explicit_time_mentioned = True
+                time_is_confirmed = True
+                use_glinks_scheduler = False
+                special_handling_mode = True  # Skip normal time processing
+                # Continue with normal processing flow instead of returning early
+            else:
+                # Normal transcription processing - initialize variables
+                scheduled_at = None
+                buffer_until = None
+                booking_type = None
+                explicit_time_mentioned = False
+                time_is_confirmed = False
+                use_glinks_scheduler = False
+            
             # If lead_id is null, try to use call_id as fallback
             # (Some calls might not have lead_id assigned, but we still want to save the booking)
             if not lead_id:
                 logger.warning(f"lead_id is null for call {call_id}, using call_id as fallback for lead_id")
                 lead_id = call_id
             
-            # Parse transcription
-            conversation_text = self.parse_transcription(transcripts)
+            # Parse transcription (skip if already set for NULL transcripts)
+            if not locals().get('conversation_text'):
+                conversation_text = self.parse_transcription(transcripts)
             
             # Extract call_id from transcription JSON (if present)
             transcription_call_id = None
@@ -1027,20 +1519,104 @@ Respond ONLY in JSON format:
                 logger.warning(f"Transcription missing or very short ({len(conversation_text) if conversation_text else 0} chars) for call {call_log_id}")
                 if is_declined:
                     logger.info(f"Status column confirms user declined: {call_status}")
-                # Continue processing but will use Stage 1 timeline pattern
+                
+                # Use 12th grade timeline with started_at time for empty/missing transcriptions
+                reason = "empty/missing transcription"
+                logger.warning(f"Special handling for {reason} in call {call_id} - using auto_followup, grade 12 timeline, and started_at time")
+                booking_type = "auto_followup"
+                
+                # ScheduleCalculator already imported at top of file
+                calculator = ScheduleCalculator()
+                final_grade = 12
+                lead_info = {"student_grade": final_grade}
+                
+                # Use started_at from call_data
+                started_at_val = started_at
+                if started_at_val:
+                    # Parse started_at if string
+                    if isinstance(started_at_val, str):
+                        started_at_dt = datetime.fromisoformat(started_at_val.replace('Z', '+00:00'))
+                    else:
+                        started_at_dt = started_at_val
+                    # Convert to GST
+                    if started_at_dt.tzinfo is None:
+                        started_at_dt = GST.localize(started_at_dt)
+                    else:
+                        started_at_dt = started_at_dt.astimezone(GST)
+                    # Remove microseconds
+                    started_at_dt = started_at_dt.replace(microsecond=0)
+                    
+                    # For missing transcriptions, schedule same day if possible, otherwise next working day
+                    # Don't use Grade 12 timeline (3-5 days) for missed/declined calls
+                    current_time = datetime.now(GST)
+                    
+                    # If call is today and there's still time in working hours, schedule same day
+                    if started_at_dt.date() == current_time.date():
+                        # Same day - try to schedule later today if within working hours
+                        # Add 30 minutes buffer from started_at
+                        target_time = started_at_dt + timedelta(minutes=30)
+                        
+                        # Check if target time is within working hours (9 AM - 8 PM)
+                        if target_time.hour < 9:
+                            target_time = target_time.replace(hour=9, minute=0, second=0, microsecond=0)
+                        elif target_time.hour >= 20:
+                            # After working hours - schedule next working day at started_at time
+                            next_day = started_at_dt + timedelta(days=1)
+                            while not calculator.is_working_day(next_day):
+                                next_day += timedelta(days=1)
+                            target_time = GST.localize(datetime.combine(next_day.date(), started_at_dt.time()))
+                        
+                        scheduled_at = self._normalize_datetime(target_time)
+                        logger.info(f"Same-day callback for {reason}: {scheduled_at}")
+                    else:
+                        # Call was from a previous day - schedule next working day at started_at time
+                        next_day = started_at_dt + timedelta(days=1)
+                        while not calculator.is_working_day(next_day):
+                            next_day += timedelta(days=1)
+                        scheduled_at = self._normalize_datetime(GST.localize(datetime.combine(next_day.date(), started_at_dt.time())))
+                        logger.info(f"Next working day callback for {reason}: {scheduled_at}")
+                    
+                    buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
+                    logger.info(f"Scheduled_at ({reason}): {scheduled_at}, buffer_until: {buffer_until}")
+                    
+                    # Set variables for the rest of the processing
+                    conversation_text = f"No meaningful transcription available ({reason}). Auto-scheduled based on started_at time and grade 12 timeline."
+                    booking_info = {"booking_type": booking_type, "scheduled_at": None, "student_grade": final_grade, "call_id": None}
+                    explicit_time_mentioned = True
+                    time_is_confirmed = True
+                    use_glinks_scheduler = False
+                    special_handling_mode = True  # Skip normal time processing
+                else:
+                    # No started_at available, use current time
+                    current_time = self._normalize_datetime(datetime.now(GST))
+                    schedule_date = calculator.calculate_grade12_timeline(lead_info, current_time)
+                    combined_dt = GST.localize(datetime.combine(schedule_date.date(), current_time.time().replace(microsecond=0)))
+                    scheduled_at = self._normalize_datetime(combined_dt)
+                    buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
+                    logger.info(f"Scheduled_at ({reason}, no started_at): {scheduled_at}, buffer_until: {buffer_until}")
+                    
+                    conversation_text = f"No meaningful transcription and no started_at available ({reason}). Auto-scheduled based on current time and grade 12 timeline."
+                    booking_info = {"booking_type": booking_type, "scheduled_at": None, "student_grade": final_grade, "call_id": None}
+                    explicit_time_mentioned = True
+                    time_is_confirmed = True
+                    use_glinks_scheduler = False
+                    special_handling_mode = True
                 # Set default conversation_text for processing
                 if not conversation_text:
                     conversation_text = "No transcription available. User likely declined or did not answer."
             
-            # Extract booking info using Gemini first
+            # Extract booking info using Gemini first (skip if already set for NULL transcripts)
             logger.info(f"Extracting booking info from conversation (length: {len(conversation_text)} chars)")
-            try:
-                booking_info = await self.extract_booking_info(conversation_text)
-                logger.info(f"Extracted booking info: {booking_info}")
-            except Exception as e:
-                logger.error(f"Gemini API extraction failed: {e}, will use fallback extraction", exc_info=True)
-                # Fallback to empty booking info - will trigger regex extraction
-                booking_info = {"booking_type": "auto_followup", "scheduled_at": None, "student_grade": None, "call_id": None}
+            if not locals().get('booking_info'):
+                try:
+                    booking_info = await self.extract_booking_info(conversation_text)
+                    logger.info(f"Extracted booking info: {booking_info}")
+                except Exception as e:
+                    logger.error(f"Gemini API extraction failed: {e}, will use fallback extraction", exc_info=True)
+                    # Fallback to empty booking info - will trigger regex extraction
+                    booking_info = {"booking_type": "auto_followup", "scheduled_at": None, "student_grade": None, "call_id": None}
+            else:
+                logger.info(f"Using pre-set booking info for NULL transcripts: {booking_info}")
             
             # parent_booking_id: Stores the call_id from metadata of the first booking (where retry_count = 0, parent_booking_id IS NULL)
             # Store call_id in metadata for reference
@@ -1080,18 +1656,42 @@ Respond ONLY in JSON format:
                 logger.info(f"Student grade not mentioned in conversation, will use default Grade 12+ timeline")
             
             # Get reference time for calculations
-            # IMPORTANT: Use the LAST TIMESTAMP from transcriptions (UTC) converted to GST
-            # This ensures scheduling is based on when the conversation actually happened, not when it's processed
+            # IMPORTANT: Use FIRST timestamp for future dates (tomorrow, next week, etc.)
+            #           Use LAST timestamp for same-day callbacks (after 10 mins, in 30 mins, etc.)
+            # This ensures scheduling is based on when the conversation started for future dates,
+            # and when it ended for same-day callbacks
             reference_time = None
-            last_transcript_timestamp = self.extract_last_timestamp(transcripts)
             
-            if last_transcript_timestamp:
-                reference_time = last_transcript_timestamp
-                logger.info(f"Using last transcription timestamp as reference_time: {reference_time} (GST)")
+            # Check if this is a same-day callback or future date
+            is_same_day_callback = False
+            if scheduled_at_str:
+                same_day_patterns = ['after', 'in', 'within', 'minute', 'min', 'hour', 'hr']
+                is_same_day_callback = any(pattern in scheduled_at_str.lower() for pattern in same_day_patterns)
+            
+            if is_same_day_callback:
+                # For same-day callbacks, use LAST timestamp (when conversation ended)
+                last_transcript_timestamp = self.extract_last_timestamp(transcripts)
+                if last_transcript_timestamp:
+                    reference_time = last_transcript_timestamp
+                    logger.info(f"Same-day callback detected - using last transcription timestamp as reference_time: {reference_time} (GST)")
+                else:
+                    reference_time = self._normalize_datetime(datetime.now(GST))
+                    logger.warning(f"No timestamp found in transcriptions, using current time as reference_time: {reference_time}")
             else:
-                # Fallback to current time if no timestamp found in transcriptions
-                reference_time = self._normalize_datetime(datetime.now(GST))
-                logger.warning(f"No timestamp found in transcriptions, using current time as reference_time: {reference_time}")
+                # For future dates, use FIRST timestamp (when conversation started)
+                first_transcript_timestamp = self.extract_first_timestamp(transcripts)
+                if first_transcript_timestamp:
+                    reference_time = first_transcript_timestamp
+                    logger.info(f"Future date detected - using first transcription timestamp as reference_time: {reference_time} (GST)")
+                else:
+                    # Fallback to last timestamp if first not available
+                    last_transcript_timestamp = self.extract_last_timestamp(transcripts)
+                    if last_transcript_timestamp:
+                        reference_time = last_transcript_timestamp
+                        logger.info(f"Using last transcription timestamp as fallback reference_time: {reference_time} (GST)")
+                    else:
+                        reference_time = self._normalize_datetime(datetime.now(GST))
+                        logger.warning(f"No timestamp found in transcriptions, using current time as reference_time: {reference_time}")
             
             # For logging purposes, we still track the original call start time
             call_start_time = None
@@ -1113,27 +1713,33 @@ Respond ONLY in JSON format:
             # PRIORITY 2: If no explicit time mentioned, DO NOT auto-generate a scheduled_at here —
             #             send the booking to the Glinks scheduler instead (booking_source='glinks')
 
-            # Initialize scheduled_at and buffer_until to None before conditional logic
-            scheduled_at = None
-            buffer_until = None
-            use_glinks_scheduler = False
+            # Initialize scheduled_at and buffer_until to None before conditional logic (unless already set by special handling)
+            if not locals().get('scheduled_at'):
+                scheduled_at = None
+            if not locals().get('buffer_until'):
+                buffer_until = None
+            if not locals().get('use_glinks_scheduler'):
+                use_glinks_scheduler = False
 
             # Determine whether an explicit time phrase was provided by Gemini or fallback extraction
             # Also check if the time is "confirmed" vs "uncertain/unconfirmed" (e.g., questions like "within next ten minutes?")
-            explicit_time_mentioned = bool(scheduled_at_str and str(scheduled_at_str).strip())
-            time_is_confirmed = False
+            # But preserve values already set by special handling (NULL transcripts/failed calls)
+            if not locals().get('explicit_time_mentioned'):
+                explicit_time_mentioned = bool(scheduled_at_str and str(scheduled_at_str).strip())
+            if not locals().get('time_is_confirmed'):
+                time_is_confirmed = False
             
-            # Check if time is confirmed (not a question or uncertainty)
+            # Check if time is confirmed (not a question, uncertainty, or vague phrase)
             if explicit_time_mentioned:
                 time_str_lower = str(scheduled_at_str).strip().lower()
-                # Check for uncertainty indicators
+                # Check for uncertainty indicators and vague phrases
                 uncertainty_indicators = ['?', 'maybe', 'perhaps', 'possibly', 'might', 'could', 'should', 'may', 'not sure', 'uncertain']
+                vague_time_phrases = ['later', 'sometime', 'whenever', 'anytime', 'whenever you can', 'whenever is fine', 'whenever works', 'whenever available', 'whenever suits', 'whenever convenient']
                 is_uncertain = any(indicator in time_str_lower for indicator in uncertainty_indicators)
-                # Check for question patterns
+                is_vague = any(phrase in time_str_lower for phrase in vague_time_phrases)
                 is_question = time_str_lower.endswith('?') or '?' in time_str_lower
-                
-                if is_uncertain or is_question:
-                    logger.info(f"Time phrase '{scheduled_at_str}' contains uncertainty/question - treating as UNCONFIRMED time")
+                if is_uncertain or is_question or is_vague:
+                    logger.info(f"Time phrase '{scheduled_at_str}' is vague/uncertain/question - treating as UNCONFIRMED time")
                     time_is_confirmed = False
                     explicit_time_mentioned = False  # Treat as if no time was mentioned
                 else:
@@ -1202,7 +1808,66 @@ Respond ONLY in JSON format:
                     text_cleaned = re.sub(r'\s+', ' ', text)  # Normalize whitespace
                     text_lower = text_cleaned.lower()
                     
-                    # Pattern 1: "call me after/in/within X mins/minutes" (with or without "me")
+                    # ==================================================================================
+                    # PRIORITY ORDER: Check patterns in order of specificity
+                    # 1. Absolute times (HIGHEST PRIORITY) - "11:30 AM GST", "at 7:45 PM"
+                    # 2. Relative times - "after 18 mins", "in 30 minutes"
+                    # 3. Day references - "tomorrow at 5pm", "next Monday"
+                    # ==================================================================================
+                    
+                    # Pattern 1: Absolute times (e.g., "7:45 PM GST", "6:30 PM", "at 7:45") - CHECK FIRST
+                    # These should be extracted directly from conversation
+                    absolute_time_patterns = [
+                        r'(?:call|ring|phone|reach|connect)\s+(?:you|me|him|her|them|us)?\s+(?:back\s+)?(?:at|around|about)?\s*(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "call you back at 7:45 PM GST"
+                        r'(?:at|around|about)\s+(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "at 7:45 PM GST"
+                        r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)\b',  # "7:45 PM GST", "6:30 PM GST"
+                        r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)\b',  # "7:45 PM", "6:30 AM"
+                        r'\b(\d{1,2}):(\d{2})\s*(?:GST|IST|UTC)\b',  # "7:45 GST"
+                        r'\b(\d{1,2})\.(\d{2})\s*(AM|PM|am|pm)?\b',  # "7.45 PM"
+                    ]
+                    
+                    for idx, pattern in enumerate(absolute_time_patterns):
+                        try:
+                            match = re.search(pattern, text_lower, re.IGNORECASE)
+                            if match:
+                                hour = match.group(1)
+                                minute = match.group(2)
+                                ampm = match.group(3) if len(match.groups()) >= 3 and match.group(3) else None
+                                
+                                # Validate hour and minute
+                                try:
+                                    hour_int = int(hour)
+                                    minute_int = int(minute)
+                                    if not (0 <= hour_int <= 23 and 0 <= minute_int <= 59):
+                                        logger.debug(f"Invalid time values: hour={hour_int}, minute={minute_int}, skipping")
+                                        continue
+                                except ValueError:
+                                    logger.debug(f"Could not parse hour/minute: hour={hour}, minute={minute}")
+                                    continue
+                                
+                                # Build time string
+                                if ampm:
+                                    result = f"{hour}:{minute} {ampm.upper()}"
+                                else:
+                                    result = f"{hour}:{minute}"
+                                
+                                # Check if GST/IST/UTC is in the match
+                                matched_text = match.group(0).upper()
+                                if 'GST' in matched_text:
+                                    result += " GST"
+                                elif 'IST' in matched_text:
+                                    result += " IST"
+                                elif 'UTC' in matched_text:
+                                    result += " UTC"
+                                
+                                logger.info(f"Extracted absolute time from conversation using pattern #{idx+1} '{pattern[:60]}...': matched '{match.group(0)}' -> '{result}'")
+                                return result
+                        except (ValueError, IndexError, AttributeError) as e:
+                            logger.debug(f"Error processing absolute time pattern #{idx+1}: {e}")
+                            continue
+                    
+                    # Pattern 2: "call me after/in/within X mins/minutes" - CHECK AFTER ABSOLUTE TIMES
+                    # Only use this if no absolute time was found above
                     # Enhanced patterns to handle various formats and edge cases
                     patterns = [
                         # "call me after 5 mins", "call after 5 mins", "just call me after 5 mins"
@@ -1225,12 +1890,12 @@ Respond ONLY in JSON format:
                         r'(?:connect|reach\s+out)\s+(?:after|in|within)\s+(\d+)\s*(?:mins?|minutes?)',
                     ]
                     
-                    # Pattern 1b: Written numbers (e.g., "twenty minutes", "thirty minutes")
+                    # Pattern 1b: Written numbers (e.g., "six minutes", "twenty minutes", "thirty minutes")
                     written_number_patterns = [
                         # "call me in twenty minutes", "after twenty minutes"
-                        r'(?:just\s+)?(?:call\s+(?:me\s+)?|calling\s+)(?:back\s+)?(?:after|in|within)\s+(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|thirty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|forty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|fifty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine))\s*(?:mins?|minutes?)',
+                        r'(?:just\s+)?(?:call\s+(?:me\s+)?|calling\s+)(?:back\s+)?(?:after|in|within)\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|twenty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|thirty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|forty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|fifty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine))\s*(?:min(?:ute)?s?)',
                         # "in twenty minutes", "after thirty minutes" (standalone)
-                        r'(?:^|[.\s,\'"])(?:after|in|within)\s+(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|thirty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|forty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|fifty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine))\s*(?:mins?|minutes?)(?:\s|\.|$|,|;|\'|")',
+                        r'(?:^|[.\s,\'"])(?:after|in|within)\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|twenty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|thirty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|forty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine)|fifty[-\s]?(?:one|two|three|four|five|six|seven|eight|nine))\s*(?:min(?:ute)?s?)(?:\s|\.|$|,|;|\'|")',
                     ]
                     
                     for idx, pattern in enumerate(patterns):
@@ -1297,63 +1962,17 @@ Respond ONLY in JSON format:
                             logger.debug(f"Error processing written number pattern #{idx+1}: {e}")
                             continue
                     
-                    # Pattern 2: Absolute times (e.g., "7:45 PM GST", "6:30 PM", "at 7:45")
-                    # These should be extracted directly from conversation
-                    absolute_time_patterns = [
-                        r'(?:call|ring|phone|reach|connect)\s+(?:you|me|him|her|them|us)?\s+(?:at|around|about)?\s*(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "call you at 7:45 PM GST"
-                        r'(?:at|around|about)\s+(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "at 7:45 PM GST"
-                        r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)\b',  # "7:45 PM GST", "6:30 PM GST"
-                        r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)\b',  # "7:45 PM", "6:30 AM"
-                        r'\b(\d{1,2}):(\d{2})\s*(?:GST|IST|UTC)\b',  # "7:45 GST"
-                        r'\b(\d{1,2})\.(\d{2})\s*(AM|PM|am|pm)?\b',  # "7.45 PM"
-                    ]
-                    
-                    for idx, pattern in enumerate(absolute_time_patterns):
-                        try:
-                            match = re.search(pattern, text_lower, re.IGNORECASE)
-                            if match:
-                                hour = match.group(1)
-                                minute = match.group(2)
-                                ampm = match.group(3) if len(match.groups()) >= 3 and match.group(3) else None
-                                
-                                # Validate hour and minute
-                                try:
-                                    hour_int = int(hour)
-                                    minute_int = int(minute)
-                                    if not (0 <= hour_int <= 23 and 0 <= minute_int <= 59):
-                                        logger.debug(f"Invalid time values: hour={hour_int}, minute={minute_int}, skipping")
-                                        continue
-                                except ValueError:
-                                    logger.debug(f"Could not parse hour/minute: hour={hour}, minute={minute}")
-                                    continue
-                                
-                                # Build time string
-                                if ampm:
-                                    result = f"{hour}:{minute} {ampm.upper()}"
-                                else:
-                                    result = f"{hour}:{minute}"
-                                
-                                # Check if GST/IST/UTC is in the match
-                                matched_text = match.group(0).upper()
-                                if 'GST' in matched_text:
-                                    result += " GST"
-                                elif 'IST' in matched_text:
-                                    result += " IST"
-                                elif 'UTC' in matched_text:
-                                    result += " UTC"
-                                
-                                logger.info(f"Extracted absolute time from conversation using pattern #{idx+1} '{pattern[:60]}...': matched '{match.group(0)}' -> '{result}'")
-                                return result
-                        except (ValueError, IndexError, AttributeError) as e:
-                            logger.debug(f"Error processing absolute time pattern #{idx+1}: {e}")
-                            continue
-                    
-                    # Pattern 3: "next Sunday", "tomorrow", etc.
+                    # Pattern 3: "next Sunday", "tomorrow", etc. - CHECK LAST
+                    # CRITICAL: Prioritize patterns with TIME first, then fallback to day-only patterns
                     day_patterns = [
-                        r'(?:book|schedule|meeting|call).*?next\s+(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|sunday|monday|tuesday|wednesday|thursday|friday|saturday)',
-                        r'(?:book|schedule|meeting|call).*?tomorrow',
-                        r'next\s+(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|sunday|monday|tuesday|wednesday|thursday|friday|saturday)',
-                        r'tomorrow(?:\s+at)?\s*(\d{1,2})?\s*(?:AM|PM|am|pm)?',
+                        # Priority 1: Day + specific time ("tomorrow at 5pm", "next Monday at 3pm")
+                        r'(?:tomorrow|next\s+(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|sunday|monday|tuesday|wednesday|thursday|friday|saturday))(?:\s+at)?\s+\d{1,2}(?:[:.\s]\d{2})?\s*(?:AM|PM|am|pm)(?:\s*(?:GST|IST|UTC))?',
+                        # Priority 2: Day + vague time ("tomorrow morning", "next week evening") 
+                        r'(?:tomorrow|next\s+(?:week|month|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|sunday|monday|tuesday|wednesday|thursday|friday|saturday))\s+(?:morning|afternoon|evening|night)',
+                        # Priority 3: "call/book tomorrow at 5pm" (capture action + day + time)
+                        r'(?:book|schedule|meeting|call).*?(?:tomorrow|next\s+(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|sunday|monday|tuesday|wednesday|thursday|friday|saturday))(?:\s+at)?\s+\d{1,2}(?:[:.\s]\d{2})?\s*(?:AM|PM|am|pm)?',
+                        # Priority 4: Day-only fallback (NO specific time) - lowest priority
+                        r'(?:book|schedule|meeting|call).*?(?:tomorrow|next\s+(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|sunday|monday|tuesday|wednesday|thursday|friday|saturday))',
                     ]
                     
                     for idx, pattern in enumerate(day_patterns):
@@ -1381,11 +2000,28 @@ Respond ONLY in JSON format:
                     scheduled_at_str = extracted_time
                     explicit_time_mentioned = True
                     logger.info(f"Extracted time from conversation text (fallback): '{scheduled_at_str}'")
+                    
+                    # CRITICAL: Check if extracted time has specific temporal information
+                    # Absolute time: "9:40 AM", "at 3pm", "5pm", "7:45 PM GST", "9.40 am"
+                    # Must have: hour (with optional minutes) + AM/PM indicator
+                    has_absolute_time = bool(re.search(r'\d{1,2}(?:[:.]\d{2})?\s*(?:AM|PM|am|pm)', extracted_time, re.IGNORECASE))
+                    
+                    # Relative time: "after 18 mins", "in 30 minutes", "within 2 hours" (MUST have number + unit)
+                    has_relative_time = bool(re.search(r'(?:after|in|within)\s+\d+\s*(?:min|hour)', extracted_time, re.IGNORECASE))
+                    
+                    if has_absolute_time or has_relative_time:
+                        time_is_confirmed = True
+                        time_type = "absolute" if has_absolute_time else "relative"
+                        logger.info(f"Fallback extraction found {time_type} time '{extracted_time}' - treating as CONFIRMED")
+                    else:
+                        logger.warning(f"Fallback extracted '{extracted_time}' but no specific time found (abs={has_absolute_time}, rel={has_relative_time}) - NOT confirming")
+                        
             # If an explicit CONFIRMED time phrase was provided, calculate scheduled_at using schedule_calculator
-            if explicit_time_mentioned and time_is_confirmed:
+            # Skip this processing if we're in special handling mode (NULL transcripts/failed calls)
+            if explicit_time_mentioned and time_is_confirmed and not locals().get('special_handling_mode'):
                 # Time is explicitly mentioned - use it directly, no stage-based calculation
                 logger.info(f"Time explicitly mentioned in conversation: '{scheduled_at_str}' - using this time directly (no stage-based calculation)")
-                scheduled_at = await self.calculate_scheduled_at(booking_type, scheduled_at_str, reference_time, conversation_text, transcripts, started_at)
+                scheduled_at = await self.calculate_scheduled_at(booking_type, scheduled_at_str, reference_time, conversation_text, transcripts, started_at, student_grade)
                 if not scheduled_at:
                     logger.warning(f"Could not calculate scheduled_at from: '{scheduled_at_str}'")
                     logger.info("Trying to extract time from conversation directly...")
@@ -1425,9 +2061,13 @@ Respond ONLY in JSON format:
                                         first_timestamp = self.extract_first_timestamp(transcripts)
                                         if first_timestamp:
                                             first_timestamp_date = first_timestamp.date()
-                                            combined_time = GST.localize(datetime.combine(first_timestamp_date, calc_result.time().replace(second=0, microsecond=0)))
+                                            # If calc_result has a time, use it, else use first timestamp's time
+                                            if calc_result.time() != time(0, 0):
+                                                combined_time = GST.localize(datetime.combine(first_timestamp_date, calc_result.time().replace(second=0, microsecond=0)))
+                                            else:
+                                                combined_time = GST.localize(datetime.combine(first_timestamp_date, first_timestamp.time().replace(second=0, microsecond=0)))
                                             scheduled_at = self._normalize_datetime(combined_time)
-                                            logger.info(f"Combined first timestamp date with schedule_calculator time: {scheduled_at}")
+                                            logger.info(f"Combined first timestamp date with time: {scheduled_at}")
                                         elif started_at:
                                             if started_at.tzinfo is None:
                                                 started_at_gst = GST.localize(started_at)
@@ -1521,7 +2161,7 @@ Respond ONLY in JSON format:
                         logger.info(f"Final extraction successful! Found time: '{final_extracted_time}'")
                         scheduled_at_str = final_extracted_time
                         # Try to calculate scheduled_at using the extracted time
-                        scheduled_at = await self.calculate_scheduled_at(booking_type, scheduled_at_str, reference_time, conversation_text, transcripts, started_at)
+                        scheduled_at = await self.calculate_scheduled_at(booking_type, scheduled_at_str, reference_time, conversation_text, transcripts, started_at, student_grade)
                         if scheduled_at:
                             buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
                             explicit_time_mentioned = True
@@ -1694,8 +2334,14 @@ Respond ONLY in JSON format:
                         first_time = first_transcript_timestamp.time()  # Extract just the time
                         logger.info(f"Extracted time from first transcription: {first_time}")
                         
-                        # Get the date from schedule_calculator based on booking_type and retry_count
+                        # Get student_grade - default to 12 if not mentioned
+                        default_grade = 12
+                        final_grade = student_grade if student_grade else default_grade
+                        logger.info(f"Using student_grade: {final_grade} (original: {student_grade}, default: {default_grade})")
+                        
+                        # Get the date from schedule_calculator based on booking_type, retry_count, and grade
                         def _get_schedule_date():
+                            # ScheduleCalculator already imported at top of file
                             calculator = ScheduleCalculator()
                             
                             # Determine outcome based on booking_type
@@ -1709,13 +2355,18 @@ Respond ONLY in JSON format:
                                 outcome = "callback_requested"
                                 outcome_details = {}
                             
-                            # Calculate next call date using schedule calculator
-                            # Pass lead_info with retry_count to influence the schedule
+                            # Calculate next call date using schedule calculator with grade-based pattern
+                            # Pass lead_info with retry_count and student_grade to influence the schedule
+                            # Use first transcription time as the reference point, not current time
+                            first_timestamp_datetime = GST.localize(datetime.combine(first_transcript_timestamp.date(), first_transcript_timestamp.time()))
                             lead_info = {
                                 "retry_count": retry_count,
-                                "stage": 1  # Default stage
+                                "stage": 2,  # Stage 2 uses grade-based follow-up patterns
+                                "student_grade": final_grade,  # Use grade for schedule calculation
+                                "stage2_start": first_timestamp_datetime,  # Use transcription time as stage2 start reference
+                                "last_call_time": first_timestamp_datetime  # Use transcription time as last call reference
                             }
-                            schedule_result = calculator.calculate_next_call(outcome, outcome_details, lead_info)
+                            schedule_result = calculator.calculate_next_call(outcome, outcome_details, lead_info, first_timestamp_datetime)
                             return schedule_result
                         
                         schedule_datetime = await asyncio.to_thread(_get_schedule_date)
@@ -1893,8 +2544,17 @@ async def main():
     parser.add_argument("--list", action="store_true", help="List all call IDs from voice_call_logs table")
     parser.add_argument("--all", action="store_true", help="Process all calls")
     parser.add_argument("--limit", type=int, default=100, help="Limit number of calls to list (default: 100)")
+    parser.add_argument("--debug", action="store_true", help="Enable DEBUG logging to see Gemini API payload")
     
     args = parser.parse_args()
+    
+    # Set default logging level to INFO (production standard)
+    logging.getLogger().setLevel(logging.DEBUG )
+    
+    # Set logging level to DEBUG if --debug flag is provided
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.info("DEBUG logging enabled - will show Gemini API payload details")
     
     extractor = LeadBookingsExtractor()
     
