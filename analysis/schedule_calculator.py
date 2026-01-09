@@ -160,31 +160,38 @@ class ScheduleCalculator:
         
         return current
     
-    def add_working_days(self, start_date: datetime, working_days: int) -> datetime:
+    def add_working_days(self, start_date: datetime, working_days: int, preserve_original_time: bool = False) -> datetime:
         """
         Add working days to a date (excluding Mondays and holidays)
         
         Args:
             start_date: Starting date
             working_days: Number of working days to add
+            preserve_original_time: If True, preserve the original time from start_date instead of using working hour start
         
         Returns:
             Date after adding working days
         """
         current = start_date
         days_added = 0
+        original_time = start_date.time()
         
         while days_added < working_days:
             current = current + timedelta(days=1)
             if self.is_working_day(current):
                 days_added += 1
         
-        # Set to start of working hours
-        current = current.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
+        # Either preserve original time or set to start of working hours
+        if preserve_original_time:
+            # Keep the original time from the start_date
+            current = current.replace(hour=original_time.hour, minute=original_time.minute, second=0, microsecond=0)
+        else:
+            # Set to start of working hours (legacy behavior)
+            current = current.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
         
         return current
     
-    def calculate_next_call(self, outcome: str, outcome_details: Dict, lead_info: Optional[Dict] = None) -> Optional[datetime]:
+    def calculate_next_call(self, outcome: str, outcome_details: Dict, lead_info: Optional[Dict] = None, reference_time: Optional[datetime] = None, allow_outside_hours: bool = False) -> Optional[datetime]:
         """
         Main function - calculates next call time based on outcome
         
@@ -200,8 +207,16 @@ class ScheduleCalculator:
             logger.warning("No outcome provided")
             return None
         
-        # Get current time in timezone
-        now = datetime.now(self.timezone)
+        # Get current time in timezone (or use provided reference_time)
+        if reference_time:
+            # Use provided reference time (from transcription)
+            if reference_time.tzinfo is None:
+                now = self.timezone.localize(reference_time)
+            else:
+                now = reference_time.astimezone(self.timezone)
+        else:
+            # Default to current time
+            now = datetime.now(self.timezone)
         
         # If lead_info is None, create a default one
         if lead_info is None:
@@ -244,22 +259,27 @@ class ScheduleCalculator:
                         return parsed_time
                     else:
                         # For absolute times (like "tomorrow at 7 PM", "Monday at 12"), honor the EXACT time requested
-                        # Only adjust if significantly outside working hours (more than 30 mins)
-                        original_time = parsed_time.time()
-                        time_diff_start = (parsed_time.time().hour * 60 + parsed_time.time().minute) - (WORKING_HOUR_START.hour * 60 + WORKING_HOUR_START.minute)
-                        time_diff_end = (WORKING_HOUR_END.hour * 60 + WORKING_HOUR_END.minute) - (parsed_time.time().hour * 60 + parsed_time.time().minute)
-                        
-                        if time_diff_start < -30:  # More than 30 mins before working hours
-                            # Before working hours - move to start of working hours
-                            parsed_time = parsed_time.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
-                            logger.info(f"Adjusted time from {original_time} to {WORKING_HOUR_START} (more than 30 mins before working hours)")
-                        elif time_diff_end < -30:  # More than 30 mins after working hours
-                            # After working hours - move to end of working hours
-                            parsed_time = parsed_time.replace(hour=WORKING_HOUR_END.hour, minute=WORKING_HOUR_END.minute, second=0, microsecond=0)
-                            logger.info(f"Adjusted time from {original_time} to {WORKING_HOUR_END} (more than 30 mins after working hours)")
+                        # If allow_outside_hours is True (explicit agent commitment), use exact time without adjustment
+                        if allow_outside_hours:
+                            # Agent explicitly committed to this time - honor it regardless of working hours
+                            logger.info(f"Using exact requested time: {parsed_time.time()} (agent commitment, overriding working hours)")
                         else:
-                            # Within 30 mins of working hours - use exact time requested
-                            logger.info(f"Using exact requested time: {original_time} (within acceptable range)")
+                            # Only adjust if significantly outside working hours (more than 30 mins)
+                            original_time = parsed_time.time()
+                            time_diff_start = (parsed_time.time().hour * 60 + parsed_time.time().minute) - (WORKING_HOUR_START.hour * 60 + WORKING_HOUR_START.minute)
+                            time_diff_end = (WORKING_HOUR_END.hour * 60 + WORKING_HOUR_END.minute) - (parsed_time.time().hour * 60 + parsed_time.time().minute)
+                            
+                            if time_diff_start < -30:  # More than 30 mins before working hours
+                                # Before working hours - move to start of working hours
+                                parsed_time = parsed_time.replace(hour=WORKING_HOUR_START.hour, minute=WORKING_HOUR_START.minute, second=0, microsecond=0)
+                                logger.info(f"Adjusted time from {original_time} to {WORKING_HOUR_START} (more than 30 mins before working hours)")
+                            elif time_diff_end < -30:  # More than 30 mins after working hours
+                                # After working hours - move to end of working hours
+                                parsed_time = parsed_time.replace(hour=WORKING_HOUR_END.hour, minute=WORKING_HOUR_END.minute, second=0, microsecond=0)
+                                logger.info(f"Adjusted time from {original_time} to {WORKING_HOUR_END} (more than 30 mins after working hours)")
+                            else:
+                                # Within 30 mins of working hours - use exact time requested
+                                logger.info(f"Using exact requested time: {original_time} (within acceptable range)")
                         
                         # Ensure timezone awareness
                         if parsed_time.tzinfo is None:
@@ -269,8 +289,13 @@ class ScheduleCalculator:
                         logger.info(f"Callback absolute time '{callback_time}' parsed to: {parsed_time}")
                         return parsed_time
             else:
-                logger.warning("Callback requested but no callback_time provided")
-                # Fall through to default scheduling
+                logger.warning("Callback requested but no callback_time provided - will use Stage 2 grade-based schedule")
+                # Treat like responsive outcome - use Stage 2 schedule
+                if lead_info.get("stage", 1) == 1:
+                    lead_info["stage"] = 2
+                    lead_info["stage2_start"] = now
+                next_call = self.calculate_stage2_schedule(lead_info, now)
+                return self.get_next_working_datetime(next_call)
         
         # Handle different outcomes
         if outcome == "no_answer":
@@ -416,16 +441,16 @@ class ScheduleCalculator:
             # First 6 months: Once per week (5 working days)
             # After 6 months: Once per month (20 working days)
             if working_days_in_stage <= 120:  # Approximately 6 months of working days
-                next_call = self.add_working_days(last_call_time, 5)
+                next_call = self.add_working_days(last_call_time, 5, preserve_original_time=True)
             else:
-                next_call = self.add_working_days(last_call_time, 20)
+                next_call = self.add_working_days(last_call_time, 20, preserve_original_time=True)
         
         elif student_grade in [10, 11]:
             # Grade 10-11
             # First year: Twice per week (2-3 working days)
             # After first year: Follow Grade 12 timeline
             if working_days_in_stage <= 240:  # Approximately 1 year of working days
-                next_call = self.add_working_days(last_call_time, 2)
+                next_call = self.add_working_days(last_call_time, 2, preserve_original_time=True)
             else:
                 next_call = self.calculate_grade12_timeline(lead_info, now)
         
@@ -434,7 +459,7 @@ class ScheduleCalculator:
         
         # Ensure next call is in the future
         if next_call <= now:
-            next_call = self.add_working_days(now, 1)
+            next_call = self.add_working_days(now, 1, preserve_original_time=True)
         
         return next_call
     
@@ -468,23 +493,23 @@ class ScheduleCalculator:
         
         if working_days_in_timeline <= 120:  # First 6 months
             # 3 times per week (2 working days)
-            next_call = self.add_working_days(last_call_time, 2)
+            next_call = self.add_working_days(last_call_time, 2, preserve_original_time=True)
         elif working_days_in_timeline <= 240:  # Month 7-12
             # 2 times per week (2-3 working days)
-            next_call = self.add_working_days(last_call_time, 2)
+            next_call = self.add_working_days(last_call_time, 2, preserve_original_time=True)
         elif working_days_in_timeline <= 480:  # Year 2
             # Once per week (5 working days)
-            next_call = self.add_working_days(last_call_time, 5)
+            next_call = self.add_working_days(last_call_time, 5, preserve_original_time=True)
         elif working_days_in_timeline <= 960:  # Year 3-4
             # Every alternate week (10 working days)
-            next_call = self.add_working_days(last_call_time, 10)
+            next_call = self.add_working_days(last_call_time, 10, preserve_original_time=True)
         else:  # Year 5-7
             # Once per month (20 working days)
-            next_call = self.add_working_days(last_call_time, 20)
+            next_call = self.add_working_days(last_call_time, 20, preserve_original_time=True)
         
         # Ensure next call is in the future
         if next_call <= now:
-            next_call = self.add_working_days(now, 1)
+            next_call = self.add_working_days(now, 1, preserve_original_time=True)
         
         return next_call
     
@@ -716,8 +741,82 @@ class ScheduleCalculator:
         # Parse relative times
         result_time = reference_time
         
+        # Parse month names with ordinal/numeric days (e.g., "fifteenth March", "March 15", "15th March")
+        month_names = {
+            'january': 1, 'jan': 1,
+            'february': 2, 'feb': 2,
+            'march': 3, 'mar': 3,
+            'april': 4, 'apr': 4,
+            'may': 5,
+            'june': 6, 'jun': 6,
+            'july': 7, 'jul': 7,
+            'august': 8, 'aug': 8,
+            'september': 9, 'sept': 9, 'sep': 9,
+            'october': 10, 'oct': 10,
+            'november': 11, 'nov': 11,
+            'december': 12, 'dec': 12
+        }
+        
+        ordinal_to_number = {
+            'first': 1, 'second': 2, 'third': 3, 'fourth': 4, 'fifth': 5,
+            'sixth': 6, 'seventh': 7, 'eighth': 8, 'ninth': 9, 'tenth': 10,
+            'eleventh': 11, 'twelfth': 12, 'thirteenth': 13, 'fourteenth': 14, 'fifteenth': 15,
+            'sixteenth': 16, 'seventeenth': 17, 'eighteenth': 18, 'nineteenth': 19, 'twentieth': 20,
+            'twenty-first': 21, 'twenty-second': 22, 'twenty-third': 23, 'twenty-fourth': 24,
+            'twenty-fifth': 25, 'twenty-sixth': 26, 'twenty-seventh': 27, 'twenty-eighth': 28,
+            'twenty-ninth': 29, 'thirtieth': 30, 'thirty-first': 31,
+            # Common transcription errors
+            'nighteenth': 19, 'ninteenth': 19  # Common misspellings of "nineteenth"
+        }
+        
+        # Try to extract month and day
+        month_day_found = False
+        target_month = None
+        target_day = None
+        
+        # Pattern 1: "fifteenth March" or "March fifteenth"
+        for ordinal, day_num in ordinal_to_number.items():
+            for month_name, month_num in month_names.items():
+                if ordinal in callback_lower and month_name in callback_lower:
+                    target_month = month_num
+                    target_day = day_num
+                    month_day_found = True
+                    break
+            if month_day_found:
+                break
+        
+        # Pattern 2: "March 15" or "15 March" or "15th March"
+        if not month_day_found:
+            for month_name, month_num in month_names.items():
+                # Match "March 15" or "15 March" or "15th March"
+                month_day_pattern = rf'\b({month_name})\s+(\d{{1,2}})(?:st|nd|rd|th)?\b|\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({month_name})\b'
+                month_day_match = re.search(month_day_pattern, callback_lower)
+                if month_day_match:
+                    target_month = month_num
+                    # Day could be in group 2 or 3
+                    target_day = int(month_day_match.group(2) or month_day_match.group(3))
+                    month_day_found = True
+                    break
+        
+        # If month and day found, set the date
+        if month_day_found and target_month and target_day:
+            try:
+                current_year = reference_time.year
+                # Try current year first
+                target_date = result_time.replace(year=current_year, month=target_month, day=target_day, hour=0, minute=0, second=0, microsecond=0)
+                
+                # If the date is in the past, use next year
+                if target_date.date() < reference_time.date():
+                    target_date = target_date.replace(year=current_year + 1)
+                
+                result_time = target_date
+                logger.info(f"Parsed month/day from '{callback_string}': {target_month}/{target_day} -> {result_time.date()}")
+            except ValueError as e:
+                logger.warning(f"Invalid date: month={target_month}, day={target_day}: {e}")
+                month_day_found = False
+        
         # Extract day
-        if "tomorrow" in callback_lower:
+        if not month_day_found and "tomorrow" in callback_lower:
             result_time = result_time + timedelta(days=1)
         elif "monday" in callback_lower:
             days_until_monday = (0 - result_time.weekday()) % 7
@@ -777,8 +876,8 @@ class ScheduleCalculator:
             (r'\b(\d{1,2})\s+o\'?clock\b', lambda m: int(m.group(1))),
         ]
         
-        hour = 10  # Default hour (start of working hours)
-        minute = 0
+        hour = None  # No default hour
+        minute = None
         time_found = False
         
         for pattern, extractor in time_patterns:
@@ -814,16 +913,21 @@ class ScheduleCalculator:
                     hour = potential_hour
                     time_found = True
                     logger.info(f"Extracted hour {hour} from time context in: {callback_string}")
-        
-        # Set time
-        result_time = result_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # If no time found, do not set a default time. Let the caller handle it (should use first timestamp time)
+        if hour is not None:
+            # If minute is None, default to 0
+            if minute is None:
+                minute = 0
+            result_time = result_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # else: do not set time, let the caller combine with first timestamp time if needed
         
         # Ensure timezone awareness
         if result_time.tzinfo is None:
             result_time = self.timezone.localize(result_time)
         
         # Ensure time is in the future
-        if result_time <= reference_time:
+        # Allow same-day scheduling if the target time is later than reference time
+        if result_time < reference_time:
             result_time = result_time + timedelta(days=1)
         
         return result_time
