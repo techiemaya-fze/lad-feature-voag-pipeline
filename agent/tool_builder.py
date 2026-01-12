@@ -886,33 +886,29 @@ def build_human_support_tools(
         try:
             logger.info(f"[HumanSupport] Initiating SIP call: dial_number={dial_number}, trunk={trunk_id[:16]}..., room={job_context.room.name}")
             
-            # Create SIP participant for the human agent
-            result = await job_context.api.sip.create_sip_participant(
+            # Create SIP participant for the human agent (async - don't wait for answer)
+            # The participant_connected event handler in worker.py will handle when they actually join
+            await job_context.api.sip.create_sip_participant(
                 api.CreateSIPParticipantRequest(
                     room_name=job_context.room.name,
                     sip_trunk_id=trunk_id,
                     sip_call_to=dial_number,
                     participant_identity=f"support-{dial_number}",
                     participant_name="Human Support Agent",
-                    wait_until_answered=True,  # Wait for answer to confirm join
+                    wait_until_answered=False,  # Don't wait - return immediately, event will notify
                     krisp_enabled=True,
                 )
             )
             
-            logger.info(f"[HumanSupport] SUCCESS: Human agent connected, participant_id={result.participant_id if hasattr(result, 'participant_id') else 'unknown'}")
-            _transfer_complete = True
-            _transfer_pending = False
+            logger.info("[HumanSupport] SIP call initiated (async), returning to agent")
+            # Don't mark as complete yet - wait for participant_connected event
+            # Don't mute yet - agent should continue conversation
             
-            # Mute AI agent - disable LLM responses and silence monitoring
-            # voice_assistant can be a direct instance or a getter function
-            assistant = voice_assistant() if callable(voice_assistant) else voice_assistant
-            if assistant and hasattr(assistant, 'mute_for_human_handoff'):
-                assistant.mute_for_human_handoff()
-                logger.info("[HumanSupport] AI agent muted for human handoff")
-            elif not assistant:
-                logger.warning("[HumanSupport] Could not mute AI - voice_assistant not available")
-            
-            return "Great news! I have our support specialist joining us now to help you further. I'll stay on the line to take notes."
+            return (
+                "I'm connecting you to our support team now. "
+                "Please continue our conversation while I try to reach them. "
+                "I'll let you know as soon as they join."
+            )
             
         except Exception as e:
             _transfer_pending = False

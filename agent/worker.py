@@ -806,6 +806,34 @@ async def entrypoint(ctx: agents.JobContext):
         if voice_assistant.silence_monitor:
             voice_assistant.silence_monitor.notify_user_activity()
     
+    # Human support participant event handler
+    @ctx.room.on("participant_connected")
+    async def _on_participant_connected(participant):
+        """Handle when a new participant joins the room (e.g., human support agent)."""
+        identity = getattr(participant, 'identity', '') or ''
+        name = getattr(participant, 'name', '') or ''
+        
+        # Check if this is a human support agent (identity starts with "support-")
+        if identity.startswith("support-"):
+            logger.info(f"[HumanSupport] Human agent joined: identity={identity}, name={name}")
+            
+            # Inject instruction to introduce human and go silent
+            try:
+                await session.generate_reply(
+                    instructions=(
+                        "IMPORTANT: A human support agent has just joined this call. "
+                        "Briefly introduce them to the customer (e.g., 'Great news, our support specialist is now on the line!'). "
+                        "After the introduction, go completely silent and let them handle the conversation. "
+                        "Do not speak again unless explicitly asked by the human agent."
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"[HumanSupport] Failed to inject introduction: {e}")
+            
+            # Mute the AI agent after introduction
+            voice_assistant.mute_for_human_handoff()
+            logger.info("[HumanSupport] AI agent muted, human is in control")
+    
     # Phase 2: Attach usage collector to session for metrics tracking
     if usage_collector:
         from utils.usage_tracker import attach_usage_collector
