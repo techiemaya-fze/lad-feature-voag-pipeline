@@ -57,6 +57,7 @@ class CleanupContext:
         job_id: str | None = None,
         batch_id: str | None = None,  # Batch call tracking
         entry_id: str | None = None,  # Batch entry tracking
+        audit_trail: Any = None,  # Tool audit trail for metadata
     ):
         self.call_recorder = call_recorder
         self.call_log_id = call_log_id
@@ -73,6 +74,7 @@ class CleanupContext:
         self.job_id = job_id
         self.batch_id = batch_id
         self.entry_id = entry_id
+        self.audit_trail = audit_trail
 
 
 # =============================================================================
@@ -180,6 +182,61 @@ async def save_recording_to_db(
     else:
         logger.warning("No recording or transcription captured for call_log_id=%s", call_log_id)
 
+
+# =============================================================================
+# AUDIT TRAIL
+# =============================================================================
+
+async def save_audit_trail(ctx: CleanupContext) -> None:
+    """
+    Save tool audit trail to metadata JSONB (non-blocking).
+    
+    Merges audit_trail into existing metadata without overwriting other fields.
+    Errors are logged but don't break the cleanup flow.
+    
+    Args:
+        ctx: Cleanup context with audit_trail
+    """
+    if not ctx.audit_trail or not ctx.call_log_id or not ctx.call_storage:
+        return
+    
+    try:
+        # Get existing call data to merge metadata
+        call = await ctx.call_storage.get_call_by_id(ctx.call_log_id)
+        if not call:
+            logger.warning("Cannot save audit trail - call not found: %s", ctx.call_log_id)
+            return
+        
+        # Get existing metadata or empty dict
+        existing_metadata = call.get("metadata") or {}
+        if isinstance(existing_metadata, str):
+            import json
+            try:
+                existing_metadata = json.loads(existing_metadata)
+            except json.JSONDecodeError:
+                existing_metadata = {}
+        
+        # Merge audit_trail into metadata
+        existing_metadata["audit_trail"] = ctx.audit_trail.to_dict()
+        
+        # Update metadata
+        await ctx.call_storage.update_call_metadata(
+            ctx.call_log_id,
+            metadata=existing_metadata
+        )
+        logger.info(
+            "Audit trail saved: call_log_id=%s, events=%d",
+            ctx.call_log_id,
+            len(ctx.audit_trail.events)
+        )
+    except Exception as exc:
+        # Non-blocking - log error but don't raise
+        logger.error(
+            "Failed to save audit trail for call_log_id=%s: %s",
+            ctx.call_log_id,
+            exc,
+            exc_info=True
+        )
 
 # =============================================================================
 # COST CALCULATION
@@ -319,7 +376,7 @@ async def update_call_status(
     ended_at: datetime,
     call_cost: float | None,
     cost_breakdown: list | None,
-) -> str:
+) -> None:
     """
     Update call status in database.
     
@@ -328,15 +385,12 @@ async def update_call_status(
         ended_at: When call ended
         call_cost: Calculated cost
         cost_breakdown: Cost details
-        
-    Returns:
-        The final status string used directly in the update.
     """
     call_storage = ctx.call_storage
     call_log_id = ctx.call_log_id
     
     if not call_storage or not call_log_id:
-        return "unknown"
+        return
     
     try:
         call_details = await call_storage.get_call_by_id(call_log_id)
@@ -362,8 +416,6 @@ async def update_call_status(
         )
     except Exception as exc:
         logger.error("Failed to update call status for call_log_id=%s: %s", call_log_id, exc, exc_info=True)
-        
-    return final_status
 
 
 # =============================================================================
@@ -522,6 +574,9 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
     # 3. Save recording to database
     await save_recording_to_db(ctx, recording_url, transcription_data, trimmed_duration)
     
+    # 3.5. Save audit trail to metadata (non-blocking)
+    await save_audit_trail(ctx)
+    
     # Get call details for cost calculation
     call_details = None
     duration_seconds = None
@@ -541,7 +596,7 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
     call_cost, cost_breakdown = await calculate_and_save_cost(ctx, duration_seconds)
     
     # 5. Update call status
-    final_status = await update_call_status(ctx, ended_at, call_cost, cost_breakdown)
+    await update_call_status(ctx, ended_at, call_cost, cost_breakdown)
     
     # Log transcription
     if ctx.call_recorder:
@@ -565,8 +620,9 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
         logger.info("Released semaphore for job %s", ctx.job_id)
     
     # 10. Update batch entry status and check for batch completion
-    # Pass the actual final status (e.g. "cancelled", "failed", "ended")
-    await update_batch_on_call_complete(ctx, final_status)
+    # If cleanup_and_save is called, the call completed normally -> status is "ended"
+    # (call_details has the OLD status from before update_call_status was called)
+    await update_batch_on_call_complete(ctx, "ended")
 
 # =============================================================================
 # BATCH COMPLETION TRACKING

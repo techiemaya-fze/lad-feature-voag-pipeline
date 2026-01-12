@@ -338,11 +338,13 @@ class VoiceAssistant(Agent):
         initiating_user_id: str | int | None = None,
         is_glinks_agent: bool = False,
         knowledge_base_store_ids: list[str] | None = None,
+        audit_trail: Any = None,  # For logging tool calls
     ):
         self.call_recorder = call_recorder
         self.job_context = job_context
         self.silence_monitor = silence_monitor
         self._is_glinks_agent = is_glinks_agent
+        self.audit_trail = audit_trail
         
         # Hangup control flags
         self._hangup_pending = False
@@ -414,6 +416,8 @@ class VoiceAssistant(Agent):
             if getattr(self, '_hangup_cancelled', False):
                 logger.info("Hangup cancelled - human interrupted during parting words")
                 self._hangup_pending = False
+                if self.audit_trail:
+                    self.audit_trail.log_agent_hangup(reason, status="cancelled_interrupted")
                 return "Hangup cancelled - user is speaking"
             
             # Wait 1 second after TTS for natural pause
@@ -423,6 +427,8 @@ class VoiceAssistant(Agent):
             if getattr(self, '_hangup_cancelled', False):
                 logger.info("Hangup cancelled during post-TTS pause")
                 self._hangup_pending = False
+                if self.audit_trail:
+                    self.audit_trail.log_agent_hangup(reason, status="cancelled_interrupted")
                 return "Hangup cancelled - user started speaking"
             
             # Execute hangup
@@ -432,8 +438,12 @@ class VoiceAssistant(Agent):
                         api.DeleteRoomRequest(room=self.job_context.room.name)
                     )
                     logger.info(f"Room {self.job_context.room.name} deleted after graceful goodbye")
+                    if self.audit_trail:
+                        self.audit_trail.log_agent_hangup(reason, status="completed")
                 except Exception as e:
                     logger.error(f"Error deleting room: {e}")
+                    if self.audit_trail:
+                        self.audit_trail.log_agent_hangup(reason, status="error")
                     return f"Error ending call: {e}"
             
             return f"Call ended: {reason}"
@@ -671,6 +681,10 @@ async def entrypoint(ctx: agents.JobContext):
     # Holder for VoiceAssistant - populated after creation, used by human_support tool
     voice_assistant_holder: dict = {"assistant": None}
     
+    # Create audit trail for tool usage tracking
+    from utils.audit_trail import ToolAuditTrail
+    audit_trail = ToolAuditTrail(tenant_id=tenant_id)
+    
     tool_list = await attach_tools(
         None,  # Agent not needed here, just building tools
         tool_config,
@@ -682,7 +696,11 @@ async def entrypoint(ctx: agents.JobContext):
         sip_trunk_id=outbound_trunk_id,  # SIP trunk from call routing
         from_number=from_number,  # For number validation in human support
         voice_assistant_holder=voice_assistant_holder,  # For human handoff muting
+        audit_trail=audit_trail,  # For tool call logging
     )
+    
+    # Record which tools were provided to LLM
+    audit_trail.set_tools_provided([getattr(t, '__name__', str(t)) for t in tool_list])
     logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}, user_id={'set' if initiating_user_id else 'None'}")
     
     # Build instructions (now with valid tool_config that includes hangup instructions)
@@ -726,6 +744,10 @@ async def entrypoint(ctx: agents.JobContext):
     async def on_silence_warning(elapsed: float):
         """Prompt user when silent for 15s."""
         logger.info(f"Silence warning at {elapsed:.1f}s - prompting user")
+        
+        # Log to audit trail
+        audit_trail.log_silence_warning(elapsed)
+        
         sess = session_holder.get("session")
         if sess:
             try:
@@ -740,6 +762,9 @@ async def entrypoint(ctx: agents.JobContext):
     async def on_silence_timeout():
         """End call after full silence timeout."""
         logger.info("Silence timeout - ending call")
+        
+        # Log to audit trail
+        audit_trail.log_silence_hangup(silence_timeout)
         if ctx.room:
             try:
                 await ctx.api.room.delete_room(api.DeleteRoomRequest(room=ctx.room.name))
@@ -772,6 +797,7 @@ async def entrypoint(ctx: agents.JobContext):
         initiating_user_id=initiating_user_id,
         is_glinks_agent=is_glinks_agent,
         knowledge_base_store_ids=knowledge_base_store_ids,
+        audit_trail=audit_trail,  # For tool call logging
     )
     
     # Populate holder so human_support tool can access VoiceAssistant
@@ -833,6 +859,14 @@ async def entrypoint(ctx: agents.JobContext):
             # Mute the AI agent after introduction
             voice_assistant.mute_for_human_handoff()
             logger.info("[HumanSupport] AI agent muted, human is in control")
+            
+            # Log to audit trail
+            audit_trail.log_human_handoff_joined()
+            audit_trail.log_tool_result(
+                "invite_human_agent",
+                status="complete",
+                output="Human agent joined, AI muted"
+            )
     
     # Phase 2: Attach usage collector to session for metrics tracking
     if usage_collector:
@@ -854,6 +888,7 @@ async def entrypoint(ctx: agents.JobContext):
         job_id=job_id,
         batch_id=batch_id,  # For batch completion tracking
         entry_id=entry_id,  # For batch entry status update
+        audit_trail=audit_trail,  # Tool usage audit trail
     )
     
     async def shutdown_callback():

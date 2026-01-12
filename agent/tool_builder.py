@@ -788,6 +788,7 @@ def build_human_support_tools(
     sip_trunk_id: str | None = None,
     from_number: str | None = None,
     voice_assistant: Any = None,  # VoiceAssistant instance for muting
+    audit_trail: Any = None,  # ToolAuditTrail for logging events
 ) -> list[Callable]:
     """
     Build human support tools for transferring calls to a human agent.
@@ -798,6 +799,7 @@ def build_human_support_tools(
         sip_trunk_id: SIP trunk ID from current call (from voice_agent_numbers.rules)
         from_number: From number of current call (for validation/logging)
         voice_assistant: VoiceAssistant instance for muting AI after human joins
+        audit_trail: ToolAuditTrail for logging human handoff events
         
     Returns:
         List of @function_tool decorated functions
@@ -904,6 +906,16 @@ def build_human_support_tools(
             # Don't mark as complete yet - wait for participant_connected event
             # Don't mute yet - agent should continue conversation
             
+            # Log to audit trail
+            if audit_trail:
+                audit_trail.log_tool_call(
+                    "invite_human_agent",
+                    input_data={"reason": reason},
+                    output="Dialing human support",
+                    status="pending"
+                )
+                audit_trail.log_human_handoff_started(dial_number)
+            
             return (
                 "I'm connecting you to our support team now. "
                 "Please continue our conversation while I try to reach them. "
@@ -913,6 +925,17 @@ def build_human_support_tools(
         except Exception as e:
             _transfer_pending = False
             logger.error(f"[HumanSupport] FAILED: SIP call error: {e}", exc_info=True)
+            
+            # Log failure to audit trail
+            if audit_trail:
+                audit_trail.log_tool_call(
+                    "invite_human_agent",
+                    input_data={"reason": reason},
+                    output=f"Failed: {str(e)[:100]}",
+                    status="error"
+                )
+                audit_trail.log_human_handoff_failed(str(e))
+            
             return f"I'm sorry, I couldn't connect you to a human agent. Please try calling back and asking for a human directly."
     
     tools = [invite_human_agent]
@@ -1003,6 +1026,7 @@ async def attach_tools(
     sip_trunk_id: str | None = None,
     from_number: str | None = None,
     voice_assistant_holder: dict | None = None,  # {"assistant": VoiceAssistant} - populated after creation
+    audit_trail: Any = None,  # ToolAuditTrail for logging tool calls
 ) -> list[Any]:
     """
     Attach tools to VoiceAssistant based on configuration.
@@ -1106,6 +1130,7 @@ async def attach_tools(
                     sip_trunk_id=sip_trunk_id,
                     from_number=from_number,
                     voice_assistant=_get_assistant,  # Pass getter function
+                    audit_trail=audit_trail,  # For logging handoff events
                 )
                 attached_tools.extend(tools)
                 logger.info(f"Attached Human Support tools: {len(tools)} functions (trunk={'set' if sip_trunk_id else 'env'})")
