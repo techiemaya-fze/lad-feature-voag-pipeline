@@ -833,9 +833,9 @@ async def entrypoint(ctx: agents.JobContext):
             voice_assistant.silence_monitor.notify_user_activity()
     
     # Human support participant event handler
-    # NOTE: room.on() requires SYNC callback - use asyncio.create_task for async work
-    async def _handle_human_support_join(participant):
-        """Async handler for human support agent joining."""
+    # NOTE: LiveKit's .on() cannot use async callbacks directly, must use sync + create_task
+    async def _handle_participant_connected(participant):
+        """Async handler for when a new participant joins the room (e.g., human support agent)."""
         identity = getattr(participant, 'identity', '') or ''
         name = getattr(participant, 'name', '') or ''
         
@@ -870,8 +870,8 @@ async def entrypoint(ctx: agents.JobContext):
     
     @ctx.room.on("participant_connected")
     def _on_participant_connected(participant):
-        """Sync callback required by LiveKit - spawns async handler."""
-        asyncio.create_task(_handle_human_support_join(participant))
+        """Sync wrapper - LiveKit requires sync callbacks, async work via create_task."""
+        asyncio.create_task(_handle_participant_connected(participant))
     
     # Phase 2: Attach usage collector to session for metrics tracking
     if usage_collector:
