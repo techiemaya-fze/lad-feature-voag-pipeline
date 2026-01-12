@@ -368,11 +368,12 @@ async def cancel_call_or_batch(request: CancelRequest) -> CancelResponse:
         cancelled_room = False
         if room_name:
             try:
-                # Note: LiveKit room deletion would go here
-                # This requires livekit api access which uses env vars
-                # For now, we just update the status
-                cancelled_room = True
-                logger.info("Would delete LiveKit room %s to cancel call %s", room_name, resource_id)
+                call_service = get_call_service()
+                cancelled_room = await call_service.end_call(room_name)
+                if cancelled_room:
+                    logger.info("Requested LiveKit room deletion for %s (call %s)", room_name, resource_id)
+                else:
+                    logger.warning("LiveKit room deletion returned False for %s (call %s)", room_name, resource_id)
             except Exception as exc:
                 logger.warning(
                     "Failed to delete LiveKit room %s for call %s: %s",

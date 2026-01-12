@@ -319,7 +319,7 @@ async def update_call_status(
     ended_at: datetime,
     call_cost: float | None,
     cost_breakdown: list | None,
-) -> None:
+) -> str:
     """
     Update call status in database.
     
@@ -328,12 +328,15 @@ async def update_call_status(
         ended_at: When call ended
         call_cost: Calculated cost
         cost_breakdown: Cost details
+        
+    Returns:
+        The final status string used directly in the update.
     """
     call_storage = ctx.call_storage
     call_log_id = ctx.call_log_id
     
     if not call_storage or not call_log_id:
-        return
+        return "unknown"
     
     try:
         call_details = await call_storage.get_call_by_id(call_log_id)
@@ -359,6 +362,8 @@ async def update_call_status(
         )
     except Exception as exc:
         logger.error("Failed to update call status for call_log_id=%s: %s", call_log_id, exc, exc_info=True)
+        
+    return final_status
 
 
 # =============================================================================
@@ -536,7 +541,7 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
     call_cost, cost_breakdown = await calculate_and_save_cost(ctx, duration_seconds)
     
     # 5. Update call status
-    await update_call_status(ctx, ended_at, call_cost, cost_breakdown)
+    final_status = await update_call_status(ctx, ended_at, call_cost, cost_breakdown)
     
     # Log transcription
     if ctx.call_recorder:
@@ -560,9 +565,8 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
         logger.info("Released semaphore for job %s", ctx.job_id)
     
     # 10. Update batch entry status and check for batch completion
-    # If cleanup_and_save is called, the call completed normally -> status is "ended"
-    # (call_details has the OLD status from before update_call_status was called)
-    await update_batch_on_call_complete(ctx, "ended")
+    # Pass the actual final status (e.g. "cancelled", "failed", "ended")
+    await update_batch_on_call_complete(ctx, final_status)
 
 # =============================================================================
 # BATCH COMPLETION TRACKING

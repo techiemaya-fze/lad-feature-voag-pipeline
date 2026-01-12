@@ -505,6 +505,59 @@ class CallService:
         voice_log_id = _coerce_uuid_string(voice_context.db_voice_id)
         
         # Resolve tenant_id - prefer user's tenant, fall back to agent's tenant
+
+    async def end_call(self, room_name: str) -> bool:
+        """
+        End a call by deleting the LiveKit room.
+        
+        Args:
+            room_name: LiveKit room name
+            
+        Returns:
+            True if room deletion was requested, False otherwise.
+        """
+        try:
+            url, api_key, api_secret = _validate_livekit_credentials()
+            async with api.LiveKitAPI(url, api_key, api_secret) as livekit_api:
+                await livekit_api.room.delete_room(
+                    api.DeleteRoomRequest(room=room_name)
+                )
+            logger.info(f"Requested deletion of LiveKit room: {room_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete LiveKit room {room_name}: {e}")
+            return False
+
+    async def dispatch_call(
+        self,
+        *,
+        job_id: str,
+        voice_id: str,
+        voice_context: VoiceContext,
+        from_number: str | None,
+        to_number: str,
+        context: str | None,
+        initiated_by: str | None,  # UUID
+        agent_id: int | None,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
+        knowledge_base_store_ids: list[str] | None = None,
+        lead_name: str | None = None,  # For lead creation/update
+        lead_id_override: str | None = None,  # UUID
+        batch_id: str | None = None,  # Batch call tracking
+        entry_id: str | None = None,  # Batch entry tracking
+    ) -> DispatchResult:
+        """
+        Dispatch a single outbound call via LiveKit.
+        
+        Returns DispatchResult with room_name, dispatch_id, call_log_id.
+        """
+        await self._ensure_storage()
+        
+        url, api_key, api_secret = _validate_livekit_credentials()
+        voice_log_id = _coerce_uuid_string(voice_context.db_voice_id)
+        
+        # Resolve tenant_id - prefer user's tenant, fall back to agent's tenant
         tenant_id = None
         if initiated_by:
             tenant_id = await self._user_storage.get_user_tenant_id(initiated_by)
