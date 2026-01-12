@@ -319,23 +319,50 @@ async def cancel_call_or_batch(request: CancelRequest) -> CancelResponse:
         if cancelled_count > 0:
             await batch_storage.increment_batch_counters(batch_id, cancelled_delta=cancelled_count)
         
-        # Get running entries for info (we don't forcibly stop active calls)
+        # Get running entries
         running_entries = await batch_storage.get_running_entries_with_call_logs(batch_id)
+        terminated_count = 0
+        
+        # If force=true, also terminate running calls
+        if request.force and running_entries:
+            from api.services.call_service import get_call_service
+            call_service = get_call_service()
+            
+            for entry in running_entries:
+                call_log_id = entry.get("call_log_id")
+                room_name = entry.get("room_name")
+                
+                if room_name:
+                    terminated = await call_service.terminate_call(room_name)
+                    if terminated:
+                        terminated_count += 1
+                
+                # Update call and entry status
+                if call_log_id:
+                    await call_storage.update_call_metadata(call_log_id, status="cancelled")
+                await batch_storage.update_batch_entry_status(
+                    batch_id, entry["entry_index"], "cancelled"
+                )
+            
+            if terminated_count > 0:
+                await batch_storage.increment_batch_counters(batch_id, cancelled_delta=terminated_count)
         
         message = f"Batch stopped. {cancelled_count} pending entries cancelled."
-        if running_entries:
-            message += f" {len(running_entries)} active call(s) will complete naturally."
+        if request.force and terminated_count > 0:
+            message += f" {terminated_count} running call(s) forcefully terminated."
+        elif running_entries and not request.force:
+            message += f" {len(running_entries)} active call(s) will complete naturally. Use force=true to terminate them."
         
         logger.info(
-            "Batch %s stopped: cancelled=%d pending entries, %d running calls will complete",
-            resource_id, cancelled_count, len(running_entries)
+            "Batch %s stopped: pending_cancelled=%d, running_terminated=%d, force=%s",
+            resource_id, cancelled_count, terminated_count, request.force
         )
         
         return CancelResponse(
             resource_id=resource_id,
             resource_type="batch",
             status="stopped",
-            cancelled_count=cancelled_count,
+            cancelled_count=cancelled_count + terminated_count,
             message=message,
         )
     else:
@@ -364,21 +391,12 @@ async def cancel_call_or_batch(request: CancelRequest) -> CancelResponse:
                 message=f"Call already in terminal state: {current_status}",
             )
         
-        # Try to delete the LiveKit room to end the call
-        cancelled_room = False
+        # Forcefully terminate the LiveKit room to end the call
+        room_deleted = False
         if room_name:
-            try:
-                call_service = get_call_service()
-                cancelled_room = await call_service.end_call(room_name)
-                if cancelled_room:
-                    logger.info("Requested LiveKit room deletion for %s (call %s)", room_name, resource_id)
-                else:
-                    logger.warning("LiveKit room deletion returned False for %s (call %s)", room_name, resource_id)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to delete LiveKit room %s for call %s: %s",
-                    room_name, resource_id, exc
-                )
+            from api.services.call_service import get_call_service
+            call_service = get_call_service()
+            room_deleted = await call_service.terminate_call(room_name)
         
         # Update call status to cancelled
         await call_storage.update_call_metadata(resource_id, status="cancelled")
@@ -395,9 +413,16 @@ async def cancel_call_or_batch(request: CancelRequest) -> CancelResponse:
                     await batch_storage.increment_batch_counters(str(batch_id), cancelled_delta=1)
                     break
         
-        message = "Call cancelled and marked as terminated."
-        if cancelled_room:
-            message += " LiveKit room deletion requested."
+        message = "Call cancelled."
+        if room_deleted:
+            message += " LiveKit room terminated."
+        elif room_name:
+            message += " Room may have already ended."
+        
+        logger.info(
+            "Call %s cancelled: room=%s, room_deleted=%s, batch_id=%s",
+            resource_id, room_name, room_deleted, batch_id
+        )
         
         return CancelResponse(
             resource_id=resource_id,

@@ -29,8 +29,8 @@ curl -X POST "https://voag.techiemaya.com/calls/cancel" \
 
 **How to get the call_log_id:**
 - Returned from `POST /calls/start-call` response as `results[0].call_log_id`
-- Found in call logs database
-- From Sentry/logs: look for `call_log_id` in log messages
+- From database: `SELECT id FROM call_logs_voiceagent WHERE room_name = 'RM_xxx';`
+- From logs: look for `call_log_id` in log messages
 
 **Response (success):**
 ```json
@@ -39,14 +39,14 @@ curl -X POST "https://voag.techiemaya.com/calls/cancel" \
   "resource_type": "call",
   "status": "cancelled",
   "cancelled_count": 1,
-  "message": "Call cancelled and marked as terminated."
+  "message": "Call cancelled. LiveKit room terminated."
 }
 ```
 
 **What happens:**
-1. ✅ Call status updated to `cancelled` in DB
-2. ✅ If part of batch, batch entry updated to `cancelled`
-3. ⚠️ **Note:** LiveKit room termination is placeholder only (doesn't actually force-disconnect the room - call may continue on network level)
+1. ✅ LiveKit room is deleted (disconnects all participants immediately)
+2. ✅ Call status updated to `cancelled` in DB
+3. ✅ If part of batch, batch entry also updated to `cancelled`
 
 ---
 
@@ -54,7 +54,7 @@ curl -X POST "https://voag.techiemaya.com/calls/cancel" \
 
 **Endpoint:** `POST /calls/cancel`
 
-**Request:**
+**Request (graceful - running calls complete):**
 ```bash
 curl -X POST "https://voag.techiemaya.com/calls/cancel" \
   -H "Content-Type: application/json" \
@@ -63,55 +63,55 @@ curl -X POST "https://voag.techiemaya.com/calls/cancel" \
   -d '{"resource_id": "batch-JOB_ID_HERE"}'
 ```
 
+**Request (force - terminate running calls too):**
+```bash
+curl -X POST "https://voag.techiemaya.com/calls/cancel" \
+  -H "Content-Type: application/json" \
+  -H "X-Frontend-ID: console" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -d '{"resource_id": "batch-JOB_ID_HERE", "force": true}'
+```
+
 **How to get the batch job_id:**
 - Returned from `POST /batch/trigger-batch-call` response
-- Starts with `batch-` prefix
-- Example: `batch-abc123def456`
+- Starts with `batch-` prefix (e.g., `batch-abc123def456`)
 
-**Response:**
+**Response (graceful):**
 ```json
 {
   "resource_id": "batch-abc123",
   "resource_type": "batch",
   "status": "stopped",
   "cancelled_count": 5,
-  "message": "Batch stopped. 5 pending entries cancelled. 2 active call(s) will complete naturally."
+  "message": "Batch stopped. 5 pending entries cancelled. 2 active call(s) will complete naturally. Use force=true to terminate them."
 }
 ```
 
-**What happens:**
-1. ✅ Batch status set to `stopped`
-2. ✅ All **pending** entries marked as `cancelled`
-3. ✅ Cancelled count incremented in batch counters
-4. ⚠️ **Active calls continue** - running calls are allowed to complete naturally
-
----
-
-## 3. Alternative: Cancel Batch by Path Parameter
-
-**Endpoint:** `POST /batch/batch-cancel/{batch_id}`
-
-**Request:**
-```bash
-curl -X POST "https://voag.techiemaya.com/batch/batch-cancel/batch-abc123" \
-  -H "X-Frontend-ID: console" \
-  -H "X-API-Key: YOUR_API_KEY"
-```
-
-**Response:**
+**Response (force):**
 ```json
 {
-  "batch_id": "uuid",
-  "job_id": "batch-abc123",
+  "resource_id": "batch-abc123",
+  "resource_type": "batch",
   "status": "stopped",
-  "cancelled_count": 3,
-  "message": "Batch stopped. 3 pending entries cancelled."
+  "cancelled_count": 7,
+  "message": "Batch stopped. 5 pending entries cancelled. 2 running call(s) forcefully terminated."
 }
 ```
 
+**What happens (graceful, default):**
+1. ✅ Batch status set to `stopped`
+2. ✅ All **pending** entries marked as `cancelled`
+3. ⏳ Running calls are **allowed to complete** naturally
+
+**What happens (force=true):**
+1. ✅ Batch status set to `stopped`
+2. ✅ All **pending** entries marked as `cancelled`
+3. ✅ All **running** calls have their LiveKit rooms deleted (forcefully terminated)
+4. ✅ Running entries marked as `cancelled`
+
 ---
 
-## 4. Check Status After Cancellation
+## 3. Check Status After Cancellation
 
 **Endpoint:** `GET /calls/status/{resource_id}`
 
@@ -121,7 +121,7 @@ curl "https://voag.techiemaya.com/calls/status/CALL_LOG_ID" \
   -H "X-Frontend-ID: console" \
   -H "X-API-Key: YOUR_API_KEY"
 
-# For batch
+# For batch  
 curl "https://voag.techiemaya.com/calls/status/batch-JOB_ID" \
   -H "X-Frontend-ID: console" \
   -H "X-API-Key: YOUR_API_KEY"
@@ -132,65 +132,63 @@ curl "https://voag.techiemaya.com/calls/status/batch-JOB_ID" \
 ## Status Values
 
 ### Call Status
-- `ringing`, `running` - Active call
-- `ended`, `completed` - Normal end
-- `cancelled` - Cancelled via API
-- `failed`, `error` - Call failed
-- `declined`, `rejected`, `busy`, `no_answer`, `not_reachable` - Not answered
+| Status | Description |
+|--------|-------------|
+| `ringing` | Call is ringing |
+| `running` | Call is active |
+| `ended`, `completed` | Normal end |
+| `cancelled` | Cancelled via API |
+| `failed`, `error` | Call failed |
+| `declined`, `rejected`, `busy`, `no_answer`, `not_reachable` | Not answered |
 
 ### Batch Status
-- `processing` - Running
-- `stopped` - Cancelled via API (pending entries cancelled, active calls complete)
-- `completed` - All entries done
-- `cancelled` - Alternative cancelled state
+| Status | Description |
+|--------|-------------|
+| `processing` | Batch is running |
+| `stopped` | Cancelled via API |
+| `completed` | All entries done |
+| `cancelled` | Alternative cancelled state |
 
 ---
 
-## Important Notes
-
-### Limitations
-1. **LiveKit Room Not Force-Terminated**: Currently, cancelling a call only updates the database status. The actual LiveKit room is NOT deleted. The call may continue if network is still connected.
-
-2. **No Retry Prevention**: There's no explicit retry prevention mechanism. If the worker checks for this call again, it should see `cancelled` status and skip.
-
-### Recommended Usage
-1. For stuck calls: Use `/calls/cancel` with the call_log_id
-2. For stuck batches: Use `/calls/cancel` with the batch job_id
-3. After cancelling, verify with `/calls/status/{id}` that status is `cancelled`/`stopped`
-
-### Finding IDs from Logs
+## Finding IDs from Logs
 
 **From prod logs:**
 ```bash
-# Find call_log_id
-grep "call_log_id" /var/log/syslog | grep "room_id"
+# Find call_log_id for a room
+grep "room_name" /var/log/syslog | grep "RM_xxxxx"
 
 # Find batch job_id
 grep "batch-" /var/log/syslog | grep "job_id"
 ```
 
-**From the log message you provided:**
+**From database:**
+```sql
+-- Find call by room name
+SELECT id, room_name, status FROM call_logs_voiceagent 
+WHERE room_name = 'RM_xxxxx'
+ORDER BY created_at DESC LIMIT 1;
+
+-- Find active batches
+SELECT id, job_id, status, total_calls, completed_calls
+FROM batch_logs_voiceagent 
+WHERE status = 'processing'
+ORDER BY created_at DESC;
 ```
-"job_id": "AJ_A2zYh98RDf5X", "room_id": "RM_iPMjFyQymh2b"
-```
-- This is a **LiveKit job_id/room_id**, NOT the call_log_id
-- Need to find call_log_id from the database or earlier logs
 
 ---
 
-## Example: Cancel Your Stuck Call
+## Example: Cancel a Stuck Call
 
-Based on your logs:
+**Given logs:**
 ```
-"job_id": "AJ_A2zYh98RDf5X"
-"room_id": "RM_iPMjFyQymh2b"
+"job_id": "AJ_A2zYh98RDf5X", "room_id": "RM_iPMjFyQymh2b"
 ```
 
 **Step 1:** Find call_log_id from database
 ```sql
-SELECT id, room_name, status FROM call_logs_voiceagent 
-WHERE room_name = 'RM_iPMjFyQymh2b'
-ORDER BY created_at DESC LIMIT 1;
+SELECT id FROM call_logs_voiceagent 
+WHERE room_name = 'RM_iPMjFyQymh2b';
 ```
 
 **Step 2:** Cancel using call_log_id
@@ -200,4 +198,27 @@ curl -X POST "https://voag.techiemaya.com/calls/cancel" \
   -H "X-Frontend-ID: console" \
   -H "X-API-Key: YOUR_KEY" \
   -d '{"resource_id": "THE_UUID_FROM_STEP_1"}'
+```
+
+---
+
+## API Request Schema
+
+### CancelRequest
+```typescript
+{
+  resource_id: string;  // Call log UUID or batch job_id (with batch- prefix)
+  force?: boolean;      // Default: false. If true, forcefully terminate running calls
+}
+```
+
+### CancelResponse
+```typescript
+{
+  resource_id: string;
+  resource_type: "call" | "batch";
+  status: string;
+  cancelled_count: number;
+  message: string;
+}
 ```

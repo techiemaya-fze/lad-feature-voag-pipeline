@@ -273,6 +273,7 @@ class BatchStatusResponse(BaseModel):
 
 class CancelRequest(BaseModel):
     resource_id: str = Field(..., description="Call log UUID or batch job_id")
+    force: bool = Field(False, description="If true, forcefully terminate running calls (not just pending)")
 
 
 class CancelResponse(BaseModel):
