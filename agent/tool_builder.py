@@ -787,6 +787,7 @@ def build_human_support_tools(
     job_context: Any = None,
     sip_trunk_id: str | None = None,
     from_number: str | None = None,
+    voice_assistant: Any = None,  # VoiceAssistant instance for muting
 ) -> list[Callable]:
     """
     Build human support tools for transferring calls to a human agent.
@@ -796,6 +797,7 @@ def build_human_support_tools(
         job_context: LiveKit job context for SIP transfer API access
         sip_trunk_id: SIP trunk ID from current call (from voice_agent_numbers.rules)
         from_number: From number of current call (for validation/logging)
+        voice_assistant: VoiceAssistant instance for muting AI after human joins
         
     Returns:
         List of @function_tool decorated functions
@@ -808,7 +810,7 @@ def build_human_support_tools(
     _transfer_complete = False
     
     # Log initial configuration
-    logger.info(f"[HumanSupport] Config: human_number={phone_number}, sip_trunk={'from_call' if sip_trunk_id else 'from_env'}, from_number={from_number[:4] if from_number else 'None'}***")
+    logger.info(f"[HumanSupport] Config: human_number={phone_number}, sip_trunk={'from_call' if sip_trunk_id else 'from_env'}, from_number={from_number[:4] if from_number else 'None'}***, voice_assistant={'set' if voice_assistant else 'None'}")
     
     @function_tool
     async def invite_human_agent(reason: str = "customer_request") -> str:
@@ -900,6 +902,15 @@ def build_human_support_tools(
             logger.info(f"[HumanSupport] SUCCESS: Human agent connected, participant_id={result.participant_id if hasattr(result, 'participant_id') else 'unknown'}")
             _transfer_complete = True
             _transfer_pending = False
+            
+            # Mute AI agent - disable LLM responses and silence monitoring
+            # voice_assistant can be a direct instance or a getter function
+            assistant = voice_assistant() if callable(voice_assistant) else voice_assistant
+            if assistant and hasattr(assistant, 'mute_for_human_handoff'):
+                assistant.mute_for_human_handoff()
+                logger.info("[HumanSupport] AI agent muted for human handoff")
+            elif not assistant:
+                logger.warning("[HumanSupport] Could not mute AI - voice_assistant not available")
             
             return "Great news! I have our support specialist joining us now to help you further. I'll stay on the line to take notes."
             
@@ -995,6 +1006,7 @@ async def attach_tools(
     job_context: Any = None,
     sip_trunk_id: str | None = None,
     from_number: str | None = None,
+    voice_assistant_holder: dict | None = None,  # {"assistant": VoiceAssistant} - populated after creation
 ) -> list[Any]:
     """
     Attach tools to VoiceAssistant based on configuration.
@@ -1085,11 +1097,19 @@ async def attach_tools(
         logger.info(f"[HumanSupport] Resolved phone: {phone[:4] if phone else 'None'}***")
         if phone:
             try:
+                # Create a getter that retrieves VoiceAssistant from holder at call time
+                # This allows the tool to be built before VoiceAssistant is created
+                def _get_assistant():
+                    if voice_assistant_holder:
+                        return voice_assistant_holder.get("assistant")
+                    return None
+                
                 tools = build_human_support_tools(
                     phone,
                     job_context=job_context,
                     sip_trunk_id=sip_trunk_id,
                     from_number=from_number,
+                    voice_assistant=_get_assistant,  # Pass getter function
                 )
                 attached_tools.extend(tools)
                 logger.info(f"Attached Human Support tools: {len(tools)} functions (trunk={'set' if sip_trunk_id else 'env'})")

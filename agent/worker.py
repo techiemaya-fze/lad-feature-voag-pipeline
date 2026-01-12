@@ -449,6 +449,26 @@ class VoiceAssistant(Agent):
 
     def set_silence_monitor(self, monitor: SilenceMonitor | None) -> None:
         self.silence_monitor = monitor
+    
+    def mute_for_human_handoff(self) -> None:
+        """
+        Prepare for human handoff by muting AI agent.
+        
+        - Disables silence monitor (human agent will talk)
+        - Sets _human_joined flag to prevent AI from interrupting
+        - hangup_call tool becomes a no-op (call ends when participants leave)
+        """
+        logger.info("Muting AI agent for human handoff")
+        
+        # Disable silence monitoring - human agent will be talking
+        if self.silence_monitor:
+            self.silence_monitor.disable()
+        
+        # Mark human as joined - prevents AI from generating responses
+        self._human_joined = True
+        self._human_invite_pending = False
+        
+        logger.info("AI agent muted: silence_monitor=disabled, _human_joined=True")
 
 
 # =============================================================================
@@ -647,6 +667,10 @@ async def entrypoint(ctx: agents.JobContext):
     # Fetch tools BEFORE building instructions (Phase 17c: tool instructions require valid tool_config)
     # NOTE: This must happen before build_instructions_async() so hangup instruction is included!
     tool_config, tool_configs = await get_enabled_tools({}, tenant_id)
+    
+    # Holder for VoiceAssistant - populated after creation, used by human_support tool
+    voice_assistant_holder: dict = {"assistant": None}
+    
     tool_list = await attach_tools(
         None,  # Agent not needed here, just building tools
         tool_config,
@@ -657,6 +681,7 @@ async def entrypoint(ctx: agents.JobContext):
         job_context=ctx,  # For human support SIP transfer
         sip_trunk_id=outbound_trunk_id,  # SIP trunk from call routing
         from_number=from_number,  # For number validation in human support
+        voice_assistant_holder=voice_assistant_holder,  # For human handoff muting
     )
     logger.info(f"Built {len(tool_list)} tools for tenant {tenant_id}, user_id={'set' if initiating_user_id else 'None'}")
     
@@ -692,10 +717,28 @@ async def entrypoint(ctx: agents.JobContext):
         )
     else:
         logger.debug("Component cost tracking disabled (ENABLE_COMPONENT_COST_TRACKING=false)")
-    # Create silence monitor
+    # Create silence monitor with warning milestone
     silence_timeout = pipeline_config.silence.silence_timeout_seconds
+    
+    # Session holder for callbacks (populated after session creation)
+    session_holder: dict = {"session": None}
+
+    async def on_silence_warning(elapsed: float):
+        """Prompt user when silent for 15s."""
+        logger.info(f"Silence warning at {elapsed:.1f}s - prompting user")
+        sess = session_holder.get("session")
+        if sess:
+            try:
+                await sess.generate_reply(
+                    instructions="The user has been silent for a while. "
+                    "Ask if they are still there and if they need any help. "
+                    "Keep it brief and friendly."
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send silence warning prompt: {e}")
 
     async def on_silence_timeout():
+        """End call after full silence timeout."""
         logger.info("Silence timeout - ending call")
         if ctx.room:
             try:
@@ -703,10 +746,20 @@ async def entrypoint(ctx: agents.JobContext):
             except Exception as e:
                 logger.error(f"Error ending call on timeout: {e}")
 
+    # Warning at 15s, hangup at full timeout (typically 30s)
+    silence_milestones = [
+        SilenceMilestone(
+            seconds=15.0,
+            callback=on_silence_warning,
+            label="first_warning"
+        ),
+    ]
+
     silence_monitor = SilenceMonitor(
         timeout_seconds=silence_timeout,
         on_timeout=on_silence_timeout,
         logger=logger,
+        milestones=silence_milestones,
     )
     
     # Create voice assistant with tools (tools already fetched above before instruction building)
@@ -721,6 +774,9 @@ async def entrypoint(ctx: agents.JobContext):
         knowledge_base_store_ids=knowledge_base_store_ids,
     )
     
+    # Populate holder so human_support tool can access VoiceAssistant
+    voice_assistant_holder["assistant"] = voice_assistant
+    
     # Create agent session
     session = AgentSession(
         llm=llm_instance,
@@ -730,6 +786,25 @@ async def entrypoint(ctx: agents.JobContext):
         min_endpointing_delay=pipeline_config.endpointing.min_endpointing_delay,
         max_endpointing_delay=pipeline_config.endpointing.max_endpointing_delay,
     )
+    
+    # Populate session reference for silence warning callback
+    session_holder["session"] = session
+    
+    # Hook up session events to silence monitor
+    @session.on("agent_started_speaking")
+    def _on_agent_start():
+        if voice_assistant.silence_monitor:
+            voice_assistant.silence_monitor.notify_agent_started()
+    
+    @session.on("agent_stopped_speaking")
+    def _on_agent_stop():
+        if voice_assistant.silence_monitor:
+            voice_assistant.silence_monitor.notify_agent_completed()
+    
+    @session.on("user_started_speaking")
+    def _on_user_start():
+        if voice_assistant.silence_monitor:
+            voice_assistant.silence_monitor.notify_user_activity()
     
     # Phase 2: Attach usage collector to session for metrics tracking
     if usage_collector:
