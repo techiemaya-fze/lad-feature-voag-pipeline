@@ -365,25 +365,31 @@ async def fetch_batch_call_data(batch_id: str) -> List[Dict]:
     try:
         with conn.cursor() as cur:
             cur.execute(f"""
-                SELECT 
+                SELECT DISTINCT ON (cl.id)
                     cl.id as call_log_id,
                     cl.started_at,
                     cl.ended_at,
                     cl.status as call_status,
                     cl.duration_seconds as call_duration,
+                    cl.lead_id,
                     COALESCE(l.first_name || ' ' || l.last_name, '') as lead_name,
                     COALESCE(l.phone, '') as lead_number,
                     a.summary,
                     a.sentiment,
                     a.key_points,
-                    a.lead_extraction,
-                    a.raw_analysis
+                    a.disposition,
+                    a.recommended_action,
+                    a.lead_category,
+                    a.engagement_level,
+                    a.prospect_questions,
+                    a.prospect_concerns,
+                    a.recommendations
                 FROM {BATCH_ENTRIES_FULL} be
                 INNER JOIN {CALL_LOGS_FULL} cl ON be.call_log_id = cl.id
                 LEFT JOIN {ANALYSIS_FULL} a ON a.call_log_id = cl.id
                 LEFT JOIN {LEADS_FULL} l ON cl.lead_id = l.id
                 WHERE be.batch_id = %s::uuid
-                ORDER BY cl.started_at ASC
+                ORDER BY cl.id, a.created_at DESC NULLS LAST, cl.started_at ASC
             """, (str(batch_id),))
 
             
@@ -394,66 +400,56 @@ async def fetch_batch_call_data(batch_id: str) -> List[Dict]:
             for row in rows:
                 row_dict = dict(zip(columns, row))
                 
-                # Parse lead_extraction JSONB
-                lead_extraction = row_dict.get('lead_extraction') or {}
-                if isinstance(lead_extraction, str):
-                    try:
-                        lead_extraction = json.loads(lead_extraction)
-                    except json.JSONDecodeError:
-                        lead_extraction = {}
+                # Create a clean record to avoid any data corruption
+                clean_record = {
+                    'call_log_id': row_dict.get('call_log_id'),
+                    'started_at': row_dict.get('started_at'),
+                    'ended_at': row_dict.get('ended_at'),
+                    'call_status': row_dict.get('call_status'),
+                    'call_duration': row_dict.get('call_duration'),
+                    'lead_id': row_dict.get('lead_id'),
+                    'lead_name': row_dict.get('lead_name', ''),
+                    'lead_number': row_dict.get('lead_number', ''),
+                    'summary': row_dict.get('summary', ''),
+                    'sentiment': row_dict.get('sentiment', ''),
+                    'disposition': row_dict.get('disposition', ''),
+                    'recommended_action': row_dict.get('recommended_action', ''),
+                    'lead_category': row_dict.get('lead_category', ''),
+                    'engagement_level': row_dict.get('engagement_level', ''),
+                    'recommendations': row_dict.get('recommendations', ''),
+                }
                 
-                # Parse raw_analysis JSONB for additional fields
-                raw_analysis = row_dict.get('raw_analysis') or {}
-                if isinstance(raw_analysis, str):
-                    try:
-                        raw_analysis = json.loads(raw_analysis)
-                    except json.JSONDecodeError:
-                        raw_analysis = {}
-                
-                # Extract lead_category/priority from lead_extraction (from lead_score)
-                row_dict['lead_category'] = lead_extraction.get('lead_category', '')
-                row_dict['priority'] = lead_extraction.get('priority', '')
-                
-                # Extract disposition/recommended_action from lead_extraction
-                row_dict['disposition'] = lead_extraction.get('disposition', '')
-                row_dict['recommended_action'] = lead_extraction.get('recommended_action', '')
-                
-                # Extract engagement_level from raw_analysis->quality_metrics
-                quality_metrics = raw_analysis.get('quality_metrics') or {}
-                row_dict['engagement_level'] = quality_metrics.get('engagement_level', '')
-                
-                # Get lead_score from raw_analysis
-                lead_score_data = raw_analysis.get('lead_score') or {}
-                if not row_dict['lead_category'] and lead_score_data:
-                    row_dict['lead_category'] = lead_score_data.get('lead_category', '')
-                    row_dict['priority'] = lead_score_data.get('priority', '')
-                
-                # Get disposition from raw_analysis->lead_disposition if not in lead_extraction
-                lead_disposition = raw_analysis.get('lead_disposition') or {}
-                if not row_dict['disposition'] and lead_disposition:
-                    row_dict['disposition'] = lead_disposition.get('disposition', '')
-                    row_dict['recommended_action'] = lead_disposition.get('recommended_action', '')
-                
-                # Recommendations - not stored separately, construct from disposition reasoning
-                row_dict['recommendations'] = lead_disposition.get('reasoning', '')
-                
-                # Extract key_points from JSONB
+                # Handle key_points (JSONB array)
                 key_points = row_dict.get('key_points') or []
                 if isinstance(key_points, str):
                     try:
                         key_points = json.loads(key_points)
                     except json.JSONDecodeError:
                         key_points = []
-                row_dict['key_discussion_points'] = key_points
-                row_dict['key_phrases'] = []
-                row_dict['prospect_questions'] = []
-                row_dict['prospect_concerns'] = []
+                clean_record['key_discussion_points'] = key_points
+                
+                # Handle prospect questions (JSONB array)
+                prospect_questions = row_dict.get('prospect_questions') or []
+                if isinstance(prospect_questions, str):
+                    try:
+                        prospect_questions = json.loads(prospect_questions)
+                    except json.JSONDecodeError:
+                        prospect_questions = []
+                clean_record['prospect_questions'] = prospect_questions
+                
+                # Handle prospect concerns (JSONB array)
+                prospect_concerns = row_dict.get('prospect_concerns') or []
+                if isinstance(prospect_concerns, str):
+                    try:
+                        prospect_concerns = json.loads(prospect_concerns)
+                    except json.JSONDecodeError:
+                        prospect_concerns = []
+                clean_record['prospect_concerns'] = prospect_concerns
                 
                 # Handle sentiment
-                sentiment = row_dict.get('sentiment', '')
-                row_dict['sentiment_description'] = sentiment or ''
+                clean_record['sentiment_description'] = clean_record['sentiment']
                 
-                data.append(row_dict)
+                data.append(clean_record)
             
             return data
     finally:
@@ -560,7 +556,7 @@ async def list_batches(limit: int = 50) -> List[Dict]:
             cur.execute(f"""
                 SELECT 
                     id, metadata->>'job_id' as job_id, status, total_calls, completed_calls,
-                    failed_calls, cancelled_calls, created_at, updated_at
+                    failed_calls, created_at, finished_at
                 FROM {BATCHES_FULL}
                 ORDER BY created_at DESC
                 LIMIT %s
@@ -575,9 +571,9 @@ async def list_batches(limit: int = 50) -> List[Dict]:
                     "total_calls": row[3],
                     "completed_calls": row[4],
                     "failed_calls": row[5],
-                    "cancelled_calls": row[6],
-                    "created_at": row[7],
-                    "completed_at": row[8],
+                    "cancelled_calls": 0,  # Default to 0 since column doesn't exist
+                    "created_at": row[6],
+                    "completed_at": row[7],
                 })
             
             return batches
@@ -614,7 +610,11 @@ def _get_time_period(started_at: datetime) -> str:
 def _format_list_field(value) -> str:
     """Format list/JSON field for Excel display"""
     if isinstance(value, list):
-        return ", ".join(str(item) for item in value) if value else ""
+        if not value:
+            return ""
+        # Format as bullet points for better readability in Excel
+        bullet_points = [f"• {str(item)}" for item in value if str(item).strip()]
+        return "\n".join(bullet_points)
     elif isinstance(value, dict):
         return json.dumps(value, indent=2)
     elif value is None:
@@ -654,59 +654,96 @@ def _apply_excel_formatting(worksheet, df):
     if not EXCEL_AVAILABLE:
         return
     
-    # Define styles
-    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-    header_font = Font(bold=True, color="FFFFFF", size=11)
-    border = Border(
-        left=Side(style='thin'),
-        right=Side(style='thin'),
-        top=Side(style='thin'),
-        bottom=Side(style='thin')
-    )
-    wrap_alignment = Alignment(wrap_text=True, vertical='top', horizontal='left')
-    center_alignment = Alignment(vertical='center', horizontal='center')
+    # Define professional color scheme
+    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")  # Professional dark blue
+    alt_row_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")  # Light gray alternate rows
     
-    # Format header row
+    # Define enhanced fonts
+    header_font = Font(bold=True, color="FFFFFF", size=12, name="Calibri")
+    data_font = Font(size=10, name="Calibri")
+    
+    # Define professional borders
+    thick_border = Border(
+        left=Side(style='medium', color='1F4E79'),
+        right=Side(style='medium', color='1F4E79'),
+        top=Side(style='medium', color='1F4E79'),
+        bottom=Side(style='medium', color='1F4E79')
+    )
+    thin_border = Border(
+        left=Side(style='thin', color='D0D0D0'),
+        right=Side(style='thin', color='D0D0D0'),
+        top=Side(style='thin', color='D0D0D0'),
+        bottom=Side(style='thin', color='D0D0D0')
+    )
+    
+    # Define alignments
+    header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    data_alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+    center_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    
+    # Format header row with enhanced styling
     for cell in worksheet[1]:
         cell.fill = header_fill
         cell.font = header_font
-        cell.alignment = center_alignment
-        cell.border = border
+        cell.alignment = header_alignment
+        cell.border = thick_border
     
-    worksheet.row_dimensions[1].height = 25
+    worksheet.row_dimensions[1].height = 35  # Taller header for better appearance
     
-    # Format data rows
+    # Format data rows with alternating colors and enhanced styling
     for row_idx, row in enumerate(worksheet.iter_rows(min_row=2, max_row=worksheet.max_row), start=2):
-        for cell in row:
-            cell.border = border
-            cell.alignment = wrap_alignment
-        worksheet.row_dimensions[row_idx].height = 20
+        is_even_row = (row_idx - 2) % 2 == 0
+        
+        for col_idx, cell in enumerate(row, start=1):
+            # Apply alternating row colors
+            if is_even_row:
+                cell.fill = alt_row_fill
+            
+            cell.font = data_font
+            cell.border = thin_border
+            
+            # Special formatting for specific columns
+            col_letter = cell.column_letter
+            if col_letter in ['A']:  # Call Log ID - center aligned
+                cell.alignment = center_alignment
+            elif col_letter in ['D', 'E', 'F', 'G']:  # Date/Time columns - center aligned
+                cell.alignment = center_alignment
+            elif col_letter in ['H', 'I', 'J', 'K', 'L', 'M']:  # Status and category columns - center aligned
+                cell.alignment = center_alignment
+            else:  # Text columns - left aligned with wrap
+                cell.alignment = data_alignment
+        
+        # Set row height for better readability
+        worksheet.row_dimensions[row_idx].height = 25
     
-    # Set column widths
+    # Enhanced column widths for better presentation
     column_widths = {
-        'Call Log ID': 40,
-        'Lead Name': 20,
-        'Lead Number': 15,
-        'Date': 12,
-        'Start Time (GST)': 14,
-        'End Time (GST)': 14,
-        'Duration': 10,
-        'Call Status': 12,
-        'Time Period (GST)': 22,
-        'Disposition': 20,
-        'Recommended Action': 40,
-        'Lead Category': 15,
-        'Engagement Level': 15,
-        'Sentiment': 50,
-        'Summary': 60,
-        'Key Discussion Points': 50,
-        'Prospect Questions': 50,
-        'Prospect Concerns': 50,
-        'Recommendations': 50,
+        'Call Log ID': 25,
+        'Lead Name': 25,
+        'Lead Number': 18,
+        'Date': 15,
+        'Start Time (GST)': 18,
+        'End Time (GST)': 18,
+        'Duration': 12,
+        'Call Status': 15,
+        'Time Period (GST)': 25,
+        'Disposition': 25,
+        'Recommended Action': 45,
+        'Lead Category': 20,
+        'Engagement Level': 18,
+        'Sentiment': 30,
+        'Summary': 70,
+        'Key Discussion Points': 55,
+        'Prospect Questions': 55,
+        'Prospect Concerns': 55,
+        'Recommendations': 55,
     }
     
+    # Apply column widths and additional formatting
     for idx, col in enumerate(df.columns, start=1):
         col_letter = get_column_letter(idx)
+        
+        # Set custom widths or calculate optimal width
         if col in column_widths:
             worksheet.column_dimensions[col_letter].width = column_widths[col]
         else:
@@ -714,13 +751,235 @@ def _apply_excel_formatting(worksheet, df):
                 df[col].astype(str).map(len).max() if len(df) > 0 else 0,
                 len(str(col))
             )
-            worksheet.column_dimensions[col_letter].width = min(max_length + 2, 60)
+            worksheet.column_dimensions[col_letter].width = min(max_length + 3, 70)
     
-    # Freeze header row
-    worksheet.freeze_panes = 'A2'
+    # Freeze header row and first column for better navigation
+    worksheet.freeze_panes = 'B2'
     
-    # Enable filter
+    # Enable advanced filtering
     worksheet.auto_filter.ref = worksheet.dimensions
+    
+    # Add a title row above headers (optional enhancement)
+    worksheet.insert_rows(1)
+    title_cell = worksheet['A1']
+    title_cell.value = f"Batch Call Analysis Report"
+    title_cell.font = Font(bold=True, size=16, color="1F4E79", name="Calibri")
+    title_cell.alignment = Alignment(horizontal='left', vertical='center')
+    
+    # Merge title across several columns for better appearance
+    worksheet.merge_cells('A1:F1')
+    worksheet.row_dimensions[1].height = 30
+    
+    # Update freeze panes to account for title row
+    worksheet.freeze_panes = 'B3'
+
+
+def _apply_enhanced_excel_formatting(worksheet, df):
+    """Apply enterprise-grade formatting inspired by the provided HTML template"""
+    if not EXCEL_AVAILABLE:
+        return
+    
+    # Professional color palette (matching HTML template design)
+    HEADER_DARK = "0F172A"      # Dark slate (matching template gradient start)
+    HEADER_GRADIENT = "1E293B"  # Medium slate (matching template gradient middle)
+    ACCENT_BLUE = "3B82F6"      # Professional blue (matching template accent)
+    BACKGROUND_WHITE = "FFFFFF" # Clean white
+    ALT_ROW_LIGHT = "F8FAFC"    # Very light blue-gray (matching template)
+    BORDER_LIGHT = "E2E8F0"     # Light border (matching template)
+    TEXT_DARK = "0F172A"        # Dark text (matching template)
+    TEXT_MUTED = "64748B"       # Muted text (matching template)
+    
+    # Status badge colors (matching HTML template status badges)
+    STATUS_SUCCESS = "D1FAE5"   # Light green background
+    STATUS_SUCCESS_TEXT = "065F46"  # Dark green text
+    STATUS_WARNING = "FEF3C7"   # Light amber background  
+    STATUS_WARNING_TEXT = "92400E"  # Dark amber text
+    STATUS_DANGER = "FEE2E2"    # Light red background
+    STATUS_DANGER_TEXT = "991B1B"   # Dark red text
+    
+    # Professional typography (matching HTML template Inter/Segoe UI hierarchy)
+    title_font = Font(bold=True, size=20, color="FFFFFF", name="Inter")
+    subtitle_font = Font(size=11, color="CBD5E1", name="Inter")
+    header_font = Font(bold=True, color="FFFFFF", size=11, name="Inter")
+    data_font = Font(size=10, color=TEXT_DARK, name="Inter")
+    
+    # Professional fill patterns
+    header_fill = PatternFill(start_color=HEADER_DARK, end_color=HEADER_DARK, fill_type="solid")
+    alt_row_fill = PatternFill(start_color=ALT_ROW_LIGHT, end_color=ALT_ROW_LIGHT, fill_type="solid")
+    
+    # Clean border styles
+    header_border = Border(
+        left=Side(style='thin', color=HEADER_DARK),
+        right=Side(style='thin', color="FFFFFF"),
+        top=Side(style='thin', color=HEADER_DARK),
+        bottom=Side(style='thin', color=HEADER_DARK)
+    )
+    data_border = Border(
+        left=Side(style='thin', color=BORDER_LIGHT),
+        right=Side(style='thin', color=BORDER_LIGHT),
+        top=Side(style='hair', color=BORDER_LIGHT),
+        bottom=Side(style='thin', color=BORDER_LIGHT)
+    )
+    
+    # Professional alignments
+    title_alignment = Alignment(horizontal='left', vertical='center')
+    header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    data_alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    center_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    
+    # Create executive dashboard header (matching HTML template)
+    worksheet.insert_rows(1, 5)  # Insert 5 rows for enhanced header section
+    
+    # Company header (matching template's "APEX CORPORATION" style)
+    company_cell = worksheet['A1']
+    company_cell.value = "VOICE AGENT ANALYTICS PLATFORM"
+    company_cell.font = Font(bold=True, size=10, color=ACCENT_BLUE, name="Inter")
+    company_cell.alignment = title_alignment
+    company_cell.fill = PatternFill(start_color=HEADER_DARK, end_color=HEADER_DARK, fill_type="solid")
+    worksheet.merge_cells('A1:T1')
+    worksheet.row_dimensions[1].height = 20
+    
+    # Main title (matching template's main heading style)
+    title_cell = worksheet['A2']
+    title_cell.value = "Voice Agent Performance Dashboard Report"
+    title_cell.font = title_font
+    title_cell.alignment = title_alignment
+    title_cell.fill = PatternFill(start_color=HEADER_DARK, end_color=HEADER_DARK, fill_type="solid")
+    worksheet.merge_cells('A2:T2')
+    worksheet.row_dimensions[2].height = 40
+    
+    # Subtitle (matching template's executive summary style)
+    subtitle_cell = worksheet['A3']
+    subtitle_cell.value = f"Executive Summary of Voice Agent Performance & Lead Conversion Analytics • Generated {datetime.now(GST).strftime('%B %d, %Y at %H:%M GST')}"
+    subtitle_cell.font = subtitle_font
+    subtitle_cell.alignment = title_alignment
+    subtitle_cell.fill = PatternFill(start_color=HEADER_DARK, end_color=HEADER_DARK, fill_type="solid")
+    worksheet.merge_cells('A3:T3')
+    worksheet.row_dimensions[3].height = 28
+    
+    # Separator rows for clean spacing
+    worksheet.row_dimensions[4].height = 12
+    worksheet.row_dimensions[5].height = 8
+    
+    # Format header row (now row 6) with executive table styling
+    header_row = 6
+    for col_idx, cell in enumerate(worksheet[header_row], start=1):
+        cell.fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")  # Light gray header
+        cell.font = Font(bold=True, size=11, color="475569", name="Inter")  # Template header text color
+        cell.alignment = header_alignment
+        cell.border = Border(
+            left=Side(style='thin', color=BORDER_LIGHT),
+            right=Side(style='thin', color=BORDER_LIGHT),
+            top=Side(style='medium', color=BORDER_LIGHT),
+            bottom=Side(style='medium', color=BORDER_LIGHT)
+        )
+    
+    worksheet.row_dimensions[header_row].height = 45
+    
+    # Format data rows with executive table styling (matching HTML template hover effects)
+    for row_idx, row in enumerate(worksheet.iter_rows(min_row=header_row+1, max_row=worksheet.max_row), start=header_row+1):
+        is_even_row = (row_idx - header_row - 1) % 2 == 0
+        
+        for col_idx, cell in enumerate(row, start=1):
+            # Apply clean alternating row design (matching HTML template)
+            if not is_even_row:  # Odd rows get light background
+                cell.fill = PatternFill(start_color=ALT_ROW_LIGHT, end_color=ALT_ROW_LIGHT, fill_type="solid")
+            
+            cell.font = Font(size=10, color="334155", name="Inter")  # Template body text color
+            cell.border = Border(
+                left=Side(style='hair', color=BORDER_LIGHT),
+                right=Side(style='hair', color=BORDER_LIGHT),
+                top=Side(style='hair', color="F1F5F9"),
+                bottom=Side(style='thin', color="F1F5F9")
+            )
+            
+            # Column-specific formatting (matching HTML template badge system)
+            if col_idx <= len(df.columns):
+                col_name = df.columns[col_idx-1]
+                
+                # Status badge formatting (exactly like HTML template)
+                if col_name == 'Call Status':
+                    if str(cell.value).lower() == 'completed':
+                        cell.fill = PatternFill(start_color=STATUS_SUCCESS, end_color=STATUS_SUCCESS, fill_type="solid")
+                        cell.font = Font(color=STATUS_SUCCESS_TEXT, bold=True, size=10, name="Inter")
+                    elif str(cell.value).lower() in ['failed', 'error']:
+                        cell.fill = PatternFill(start_color=STATUS_DANGER, end_color=STATUS_DANGER, fill_type="solid")
+                        cell.font = Font(color=STATUS_DANGER_TEXT, bold=True, size=10, name="Inter")
+                    elif str(cell.value).lower() in ['in-progress', 'pending']:
+                        cell.fill = PatternFill(start_color=STATUS_WARNING, end_color=STATUS_WARNING, fill_type="solid")
+                        cell.font = Font(color=STATUS_WARNING_TEXT, bold=True, size=10, name="Inter")
+                    cell.alignment = center_alignment
+                    
+                # Clean formatting for different data types
+                elif col_name in ['Call Log ID']:
+                    cell.alignment = center_alignment
+                    cell.font = Font(size=9, color=TEXT_MUTED, name="Courier New")  # Monospace like HTML template
+                    cell.fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")  # Light background
+                    
+                elif col_name in ['Date', 'Start Time (GST)', 'End Time (GST)', 'Duration', 'Time Period (GST)']:
+                    cell.alignment = center_alignment
+                    cell.font = Font(size=10, name="Segoe UI")
+                    
+                elif col_name in ['Lead Name', 'Lead Number']:
+                    cell.alignment = Alignment(horizontal='left', vertical='center')
+                    cell.font = Font(bold=True, size=10, name="Inter", color=TEXT_DARK)  # Bold like HTML template
+                    
+                elif col_name in ['Disposition', 'Lead Category', 'Engagement Level']:
+                    cell.alignment = center_alignment
+                    cell.font = Font(size=10, name="Segoe UI", color=TEXT_DARK)
+                    
+                elif col_name in ['Summary', 'Key Discussion Points', 'Recommendations', 'Prospect Questions', 'Prospect Concerns', 'Recommended Action']:
+                    cell.alignment = data_alignment
+                    cell.font = Font(size=9, name="Segoe UI", color=TEXT_DARK)
+                    
+                else:
+                    cell.alignment = center_alignment
+                    cell.font = Font(size=10, name="Segoe UI", color=TEXT_DARK)
+            
+        # Executive table row spacing (matching HTML template)
+        worksheet.row_dimensions[row_idx].height = 28
+        
+    # Executive column widths (optimized for professional dashboard view)
+    column_widths = {
+        'Call Log ID': 16,
+        'Lead Name': 20,
+        'Lead Number': 16,
+        'Date': 14,
+        'Start Time (GST)': 16,
+        'End Time (GST)': 16,
+        'Duration': 12,
+        'Call Status': 15,
+        'Time Period (GST)': 20,
+        'Disposition': 18,
+        'Recommended Action': 40,
+        'Lead Category': 16,
+        'Engagement Level': 16,
+        'Sentiment': 22,
+        'Summary': 50,
+        'Key Discussion Points': 40,
+        'Prospect Questions': 40,
+        'Prospect Concerns': 40,
+        'Recommendations': 40,
+    }
+    
+    # Apply executive dashboard column widths
+    for idx, col in enumerate(df.columns, start=1):
+        col_letter = get_column_letter(idx)
+        
+        if col in column_widths:
+            worksheet.column_dimensions[col_letter].width = column_widths[col]
+        else:
+            max_length = max(
+                df[col].astype(str).map(len).max() if len(df) > 0 else 0,
+                len(str(col))
+            )
+            worksheet.column_dimensions[col_letter].width = min(max_length + 3, 50)
+    
+    # Executive navigation (freeze panes at data start)
+    worksheet.freeze_panes = f'A{header_row + 1}'
+    
+    # Professional filtering system
+    worksheet.auto_filter.ref = f'A{header_row}:{get_column_letter(len(df.columns))}{worksheet.max_row}'
 
 
 def export_to_excel(
@@ -838,15 +1097,15 @@ def export_to_excel(
                 
                 sheet_name = period[:31].replace(':', '-').replace('/', '-')
                 period_df.to_excel(writer, sheet_name=sheet_name, index=False)
-                _apply_excel_formatting(writer.sheets[sheet_name], period_df)
+                _apply_enhanced_excel_formatting(writer.sheets[sheet_name], period_df)
             
             # Also add an 'All Calls' sheet
             df_all = df.drop(columns=['Time Period (GST)'], errors='ignore')
             df_all.to_excel(writer, sheet_name='All Calls', index=False)
-            _apply_excel_formatting(writer.sheets['All Calls'], df_all)
+            _apply_enhanced_excel_formatting(writer.sheets['All Calls'], df_all)
         else:
             df.to_excel(writer, sheet_name='Call Analysis', index=False)
-            _apply_excel_formatting(writer.sheets['Call Analysis'], df)
+            _apply_enhanced_excel_formatting(writer.sheets['Call Analysis'], df)
     
     logger.info(f"Excel report created: {output_path} ({len(data)} records)")
     return str(output_path)
@@ -1155,26 +1414,49 @@ def _build_html_email_body(
     
     html = f"""
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="utf-8">
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strategic Call Analytics Report</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    </style>
 </head>
-<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f4;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color: #f4f4f4;">
+<body style="margin: 0; padding: 0; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f8f9fa; line-height: 1.6;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background: #f8f9fa; padding: 30px 20px;">
         <tr>
-            <td style="padding: 20px 0;">
-                <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" align="center" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+            <td>
+                <table role="presentation" width="800" cellspacing="0" cellpadding="0" border="0" align="center" style="background: #ffffff; box-shadow: 0 4px 6px rgba(0,0,0,0.02), 0 12px 24px rgba(0,0,0,0.08); border-radius: 12px; overflow: hidden;">
                     
-                    <!-- Header -->
+                    <!-- Executive Header Section -->
                     <tr>
-                        <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px 40px; border-radius: 8px 8px 0 0;">
-                            <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-weight: 600;">
-                                📊 Batch Call Report
+                        <td style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%); padding: 40px 50px; position: relative;">
+                            <div style="color: #3b82f6; font-size: 14px; font-weight: 700; letter-spacing: 2px; margin-bottom: 15px; text-transform: uppercase;">VOICE AGENT ANALYTICS PLATFORM</div>
+                            <h1 style="color: #ffffff; margin: 0; font-size: 32px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.5px;">
+                                Strategic Call Analytics Report – Q1 2026
                             </h1>
-                            <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0; font-size: 14px;">
-                                Automated Voice Agent Report
+                            <p style="color: #cbd5e1; margin: 0; font-size: 15px; font-weight: 400; margin-bottom: 25px;">
+                                Executive Summary of Voice Agent Performance & Lead Conversion Analytics
                             </p>
+                            <div style="display: flex; gap: 40px; flex-wrap: wrap;">
+                                <div>
+                                    <div style="color: #94a3b8; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">Report Period</div>
+                                    <div style="color: #ffffff; font-size: 14px; font-weight: 500;">{gst_now.strftime('%B %d, %Y')}</div>
+                                </div>
+                                <div>
+                                    <div style="color: #94a3b8; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">Total Interactions</div>
+                                    <div style="color: #ffffff; font-size: 14px; font-weight: 500;">{total_calls} Voice Calls</div>
+                                </div>
+                                <div>
+                                    <div style="color: #94a3b8; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">Success Rate</div>
+                                    <div style="color: #ffffff; font-size: 14px; font-weight: 500;">{success_rate}%</div>
+                                </div>
+                                <div>
+                                    <div style="color: #94a3b8; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">Last Updated</div>
+                                    <div style="color: #ffffff; font-size: 14px; font-weight: 500;">{report_time} GST</div>
+                                </div>
+                            </div>
                         </td>
                     </tr>
                     
@@ -1428,28 +1710,41 @@ async def generate_batch_report(
             initiated_by=batch_info.get('initiated_by')
         )
         if recipients:
-            subject = f"Batch Call Report - {batch_info['status'].title()} - {len(call_data)} Calls"
+            subject = f"Strategic Call Analytics Report – {batch_info['status'].title()} – {len(call_data)} Voice Interactions"
             body = f"""
-Batch Call Report
+STRATEGIC CALL ANALYTICS REPORT
+Executive Summary of Voice Agent Performance
 
+═══════════════════════════════════════════
+BATCH OVERVIEW
+═══════════════════════════════════════════
 Batch ID: {batch_id}
-Status: {batch_info['status']}
-Total Calls: {batch_info['total_calls']}
-Completed: {batch_info['completed_calls']}
-Failed: {batch_info['failed_calls']}
-Cancelled: {batch_info['cancelled_calls']}
-Created: {batch_info.get('created_at', 'N/A')}
-Completed: {batch_info.get('completed_at', 'N/A')}
+Status: {batch_info['status'].upper()}
+Total Voice Interactions: {batch_info['total_calls']}
+Successfully Completed: {batch_info['completed_calls']}
+Failed Attempts: {batch_info['failed_calls']}
+Cancelled Operations: {batch_info['cancelled_calls']}
 
-Calls with Analysis: {calls_with_analysis}
-Calls without Analysis: {calls_without_analysis}
+═══════════════════════════════════════════
+ANALYTICS COVERAGE
+═══════════════════════════════════════════
+Calls with AI Analysis: {calls_with_analysis}
+Pending Analysis: {calls_without_analysis}
+Analysis Coverage: {round((calls_with_analysis / len(call_data) * 100), 1) if call_data else 0}%
 
-Report Generated: {gst_now.strftime('%Y-%m-%d %H:%M:%S')} GST (Gulf Standard Time)
+═══════════════════════════════════════════
+REPORT DETAILS
+═══════════════════════════════════════════
+Generated: {gst_now.strftime('%Y-%m-%d %H:%M:%S')} GST (Gulf Standard Time)
+Report Type: Comprehensive Executive Dashboard
 
-{"The attached Excel report contains detailed call analysis organized by time periods (GST)." if excel_path else "Note: Excel report could not be generated (missing dependencies)."}
+{"📊 The attached Excel report provides detailed performance analytics organized by time periods (GST) with executive-grade formatting and interactive filtering." if excel_path else "⚠️  Note: Excel report could not be generated (missing dependencies)."}
 
-Best regards,
-Voice Agent Automated Report System
+═══════════════════════════════════════════
+
+This automated report is generated by the Voice Agent Analytics Platform.
+For questions or technical support, please contact your system administrator.
+
             """
             
             email_sent = await send_report_email(
