@@ -413,17 +413,22 @@ CONVERSATION:
 
 Extract:
 1. booking_type:
-   - "auto_consultation": User EXPLICITLY confirms booking with clear "yes/okay/sure/book it"
-   - "auto_followup": Callback, declined, no confirmation, agent notes "without booking"
+   - "auto_consultation": User EXPLICITLY confirms booking/appointment with clear "yes/okay/sure/book it/confirmed/I'll be there"
+   - "auto_followup": Callback request ("call me back", "call me tomorrow", "I'll call you"), declined, no confirmation, agent notes "without booking"
+   - CRITICAL: If user asks agent to "call me back" or "call me tomorrow" or schedules a callback = auto_followup (NOT a booking)
    - CRITICAL: User saying "No thank you", "end the call", "not interested", "maybe later" = auto_followup (NOT a booking)
    - Ambiguous "That one" when agent asks "referring to plan?" = auto_followup
    - Default: auto_followup
+   - Examples:
+     * User: "Call me tomorrow at 4 PM" = auto_followup (callback)
+     * User: "Yes, I'll attend the session at 4 PM" = auto_consultation (confirmed appointment)
 
 2. scheduled_at:
    - Extract EXACT time phrase (e.g., "after 15 mins", "tomorrow 3 PM", "Sunday 11 AM")
    - If multiple times, extract LATEST confirmed time
    - ALWAYS include day when mentioned ("Friday noon" not "noon")
    - Return NULL if: User declines ("No thank you", "end the call", "not interested", "maybe later"), agent rejects, agent notes "without booking", no clear acceptance
+   - Return NULL if: ONLY discussing PAST consultations/calls with NO mention of NEXT/future follow-up or consultation
    - CRITICAL: Look at ENTIRE conversation, especially the END. If user declines AFTER time mentioned, return NULL
    - Example: Agent asks "Sunday?" + User "That one" + Later user "end the call" = NULL (user declined at end)
    - Return phrase AS-IS, don't convert to datetime
@@ -432,12 +437,15 @@ Extract:
 
 4. call_id: Extract if mentioned, else null
 
+5. has_future_discussion: true if conversation mentions NEXT/future followup/consultation/callback, false if only discussing past events
+
 Respond in JSON:
 {{{{
     "booking_type": "auto_followup" or "auto_consultation",
     "scheduled_at": "time phrase" or null,
     "student_grade": 10 or null,
-    "call_id": "id" or null
+    "call_id": "id" or null,
+    "has_future_discussion": true or false
 }}}}"""
 
         # Log the extraction request details being sent to Gemini
@@ -464,6 +472,20 @@ Respond in JSON:
                         booking_info["student_grade"] = int(booking_info["student_grade"])
                     except (ValueError, TypeError):
                         booking_info["student_grade"] = None
+                
+                # If no future discussion mentioned and scheduled_at is null, force auto_followup with default timing
+                # This handles cases where conversation only discusses past consultations
+                has_future = booking_info.get("has_future_discussion", True)
+                if not has_future and not booking_info.get("scheduled_at"):
+                    logger.info("No future discussion detected - forcing auto_followup with grade 12 default")
+                    booking_info["booking_type"] = "auto_followup"
+                    booking_info["scheduled_at"] = "use_default_timing"  # Signal to use first timestamp + schedule calculator
+                    if not booking_info.get("student_grade"):
+                        booking_info["student_grade"] = 12  # Default to grade 12
+                
+                # Remove has_future_discussion from final result (internal use only)
+                booking_info.pop("has_future_discussion", None)
+                
                 return booking_info
             else:
                 logger.warning(f"Could not parse JSON from response: {response}")

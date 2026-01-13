@@ -2207,7 +2207,21 @@ CONFIDENCE: [High/Medium/Low]"""
         logger.info(f"Analyzing call {call_id}...")
         
         # Handle both new (structured) and old (string) formats
-        if isinstance(conversation_log, list) and len(conversation_log) > 0 and isinstance(conversation_log[0], dict):
+        if isinstance(conversation_log, dict):
+            # Dict format - extract conversation or messages
+            if 'conversation' in conversation_log:
+                conversation_text = conversation_log['conversation']
+            elif 'messages' in conversation_log:
+                # List of messages in dict
+                messages = conversation_log['messages']
+                if isinstance(messages, list):
+                    conversation_text = "\n".join([f"{msg.get('role', 'Unknown').title()}: {msg.get('message', '')}" for msg in messages])
+                else:
+                    conversation_text = str(messages)
+            else:
+                # Try to convert entire dict to readable format
+                conversation_text = str(conversation_log)
+        elif isinstance(conversation_log, list) and len(conversation_log) > 0 and isinstance(conversation_log[0], dict):
             # New format: List of dicts with timestamps
             # Convert to text for analytics
             conversation_text = "\n".join([f"{entry['role'].title()}: {entry['message']}" for entry in conversation_log])
@@ -2216,7 +2230,7 @@ CONFIDENCE: [High/Medium/Low]"""
             if isinstance(conversation_log, list):
                 conversation_text = "\n".join(conversation_log)
             else:
-                conversation_text = conversation_log
+                conversation_text = str(conversation_log)
         
         word_count = len(conversation_text.split())
         logger.info(f"Processing call - Word count: {word_count}, Duration: {duration_seconds}s, Text length: {len(conversation_text)} chars")
@@ -2694,6 +2708,32 @@ CONFIDENCE: [High/Medium/Low]"""
             cursor.execute(query, values)
             conn.commit()
             
+            # Update tags column in leads table with lead_category value
+            lead_category_value = lead.get("lead_category", "")
+            if lead_category_value and call_log_id_value:
+                try:
+                    import json
+                    # Get lead_id from voice_call_logs using call_log_id
+                    cursor.execute(
+                        "SELECT lead_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
+                        (call_log_id_value,)
+                    )
+                    lead_result = cursor.fetchone()
+                    
+                    if lead_result and lead_result[0]:
+                        lead_id_from_call = lead_result[0]
+                        # Update tags column in leads table as JSON array
+                        from datetime import timezone
+                        cursor.execute(
+                            "UPDATE lad_dev.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
+                            (json.dumps([lead_category_value]), datetime.now(timezone.utc), lead_id_from_call)
+                        )
+                        conn.commit()
+                        logger.info(f"Updated tags column in leads table (lead_id: {lead_id_from_call}, tags: {[lead_category_value]})")
+                except Exception as tag_update_error:
+                    logger.warning(f"Failed to update tags in leads table: {tag_update_error}")
+                    # Don't fail the whole operation if tag update fails
+            
             logger.info(f"Analytics saved to database (call_log_id: {call_log_id})")
             return True
             
@@ -2800,6 +2840,43 @@ CONFIDENCE: [High/Medium/Low]"""
             
             if analysis_id:
                 logger.info(f"Analytics saved to lad_dev.voice_call_analysis (id={analysis_id})")
+                
+                # Update tags column in leads table with lead_category value
+                lead_category_value = lead_score.get("lead_category", "")
+                if lead_category_value:
+                    try:
+                        # Import LeadStorage to update tags
+                        from db.storage.leads import LeadStorage
+                        from db.storage.calls import CallStorage
+                        
+                        # Get lead_id from voice_call_logs
+                        call_storage = CallStorage()
+                        call_log = await call_storage.get_call_by_id(call_log_id)
+                        
+                        if call_log and call_log.get('lead_id'):
+                            lead_id_from_call = call_log.get('lead_id')
+                            
+                            # Update tags in leads table using direct SQL
+                            # (LeadStorage doesn't have a method to update just tags)
+                            import psycopg2
+                            import json
+                            from datetime import timezone
+                            from db.connection_pool import get_db_connection
+                            from db.db_config import get_db_config
+                            
+                            db_config = get_db_config()
+                            with get_db_connection(db_config) as conn:
+                                with conn.cursor() as cursor:
+                                    cursor.execute(
+                                        "UPDATE lad_dev.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
+                                        (json.dumps([lead_category_value]), datetime.now(timezone.utc), lead_id_from_call)
+                                    )
+                                    conn.commit()
+                                    logger.info(f"Updated tags column in leads table (lead_id: {lead_id_from_call}, tags: {[lead_category_value]})")
+                    except Exception as tag_update_error:
+                        logger.warning(f"Failed to update tags in leads table: {tag_update_error}")
+                        # Don't fail the whole operation if tag update fails
+                
                 return True
             else:
                 logger.error("Failed to save analytics to lad_dev")
@@ -3106,6 +3183,14 @@ class StandaloneAnalytics:
             db_call_id, transcripts, started_at, ended_at = call_data[:4]
             recording_url = call_data[4] if len(call_data) > 4 else None
             
+            # Get tenant_id for save_to_lad_dev
+            cursor.execute(
+                "SELECT tenant_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
+                (str(db_call_id),)
+            )
+            tenant_result = cursor.fetchone()
+            tenant_id = tenant_result[0] if tenant_result else None
+            
             # Calculate duration from timestamps
             if started_at and ended_at:
                 duration = int((ended_at - started_at).total_seconds())
@@ -3113,7 +3198,19 @@ class StandaloneAnalytics:
                 duration = 0
             
             # Get transcript from transcripts column
-            conversation_text = transcripts if transcripts else ""
+            # Handle both JSONB (dict/list) and text formats
+            if transcripts:
+                if isinstance(transcripts, dict):
+                    # JSONB dict - extract messages
+                    conversation_text = transcripts
+                elif isinstance(transcripts, list):
+                    # JSONB list - pass as is
+                    conversation_text = transcripts
+                else:
+                    # Plain text
+                    conversation_text = str(transcripts)
+            else:
+                conversation_text = ""
             
             if not conversation_text:
                 raise ValueError(f"No transcript found for call {call_log_id}")
@@ -3130,8 +3227,17 @@ class StandaloneAnalytics:
                 call_start_time=started_at
             )
             
-            logger.info("Saving analytics to post_call_analysis_voiceagent table...")
-            success = self.analytics.save_to_database(result, db_call_id, self.db_config)
+            # Add tenant_id to result for tracking
+            if tenant_id:
+                result['tenant_id'] = str(tenant_id)
+            
+            # Save to database - use new method if tenant_id is available
+            if tenant_id and STORAGE_CLASSES_AVAILABLE:
+                logger.info("Saving analytics to lad_dev.voice_call_analysis table...")
+                success = await self.analytics.save_to_lad_dev(result, str(db_call_id), str(tenant_id))
+            else:
+                logger.info("Saving analytics to post_call_analysis_voiceagent table (legacy)...")
+                success = self.analytics.save_to_database(result, db_call_id, self.db_config)
             
             if success:
                 logger.info("Analytics saved to database successfully!")
