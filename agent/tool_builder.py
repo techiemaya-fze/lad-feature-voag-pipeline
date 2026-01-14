@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import logging
+import asyncio
 from typing import Any, Callable
 
 from livekit.agents.llm import function_tool
@@ -171,9 +172,38 @@ TOOL_INSTRUCTIONS = {
 """,
 
     "human_support": """
-## Human Support Tools  
-- **invite_human_agent**: Escalate call to human support
-  - Use when customer requests human assistance or AI cannot resolve issue
+## Connecting to a Specialist
+You have an **invite_human_agent** function to bring a specialist/expert into the call.
+
+**When to use:**
+- Customer explicitly asks to speak with a real person, specialist, or someone else
+- Customer says things like: "Can I talk to someone?", "I want to speak to an expert", "Transfer me"
+- You cannot adequately answer their question or handle their concern
+- Customer is frustrated or upset and needs personal attention
+
+**IMPORTANT - How to use:**
+1. Ask for consent FIRST: "Would you like me to connect you with one of our specialists?"
+2. Only call the tool AFTER they confirm (yes/okay/please)
+3. The tool returns a message - KEEP TALKING while the specialist is being called in the background
+4. Ask follow-up questions: "While I'm arranging that, is there anything else you'd like me to note?"
+5. The specialist may take 10-30 seconds to join
+6. When they join, you'll be prompted to introduce them briefly then go SILENT
+
+**⚠️ CRITICAL - NEVER call hangup_call during this process:**
+- After calling invite_human_agent, DO NOT call hangup_call under ANY circumstances
+- The call continues with the specialist - you DO NOT end it
+- If the specialist fails to join, you'll be instructed to continue helping yourself
+- Only the customer or specialist can end the call - NOT you
+- Your job after introduction is COMPLETE SILENCE - no hangup, no talking
+
+**Example flow:**
+- User: "Can I speak to someone?"
+- You: "Of course! Would you like me to connect you with one of our specialists?"
+- User: "Yes please"
+- [Call invite_human_agent tool]
+- You: "Great! I'm arranging that now. While we wait, is there anything specific you'd like me to pass on?"
+- [Continue chatting naturally until specialist joins]
+- [When specialist joins, say brief intro then go completely silent - NO hangup_call]
 """,
 
     "hangup": """
@@ -810,36 +840,77 @@ def build_human_support_tools(
     # State tracking for the transfer
     _transfer_pending = False
     _transfer_complete = False
+    _transfer_failed = False
+    _last_attempt_time: float = 0.0  # Timestamp of last attempt completion
+    _RETRY_COOLDOWN = 10.0  # Seconds before retry is allowed after failure
     
     # Log initial configuration
     logger.info(f"[HumanSupport] Config: human_number={phone_number}, sip_trunk={'from_call' if sip_trunk_id else 'from_env'}, from_number={from_number[:4] if from_number else 'None'}***, voice_assistant={'set' if voice_assistant else 'None'}")
     
+    # Reference to session for background task (set by worker.py)
+    _session_ref: dict = {"session": None}
+    
+    def set_session(session):
+        """Called by worker.py to set session reference for background task."""
+        _session_ref["session"] = session
+    
     @function_tool
     async def invite_human_agent(reason: str = "customer_request") -> str:
         """
-        Invite a human support agent to join this call.
+        Connect the caller with a specialist/expert.
         
-        Use this tool when the caller specifically asks to speak
-        with a human, or when you cannot adequately help them.
+        Use this tool ONLY AFTER getting customer consent (e.g., they said "yes" 
+        when you asked "Would you like me to connect you with a specialist?").
+        
+        This is NON-BLOCKING - it dials in the background while you continue
+        the conversation naturally. Do NOT announce "connecting" or "transferring".
         
         Args:
             reason: Reason for the transfer (e.g., "customer_request", "complex_issue")
             
         Returns:
-            Status message about the transfer
+            Empty string (continue conversation normally)
         """
-        nonlocal _transfer_pending, _transfer_complete
+        nonlocal _transfer_pending, _transfer_complete, _transfer_failed, _last_attempt_time
         
-        logger.info(f"[HumanSupport] invite_human_agent called, reason={reason}")
+        import time
+        current_time = time.monotonic()
         
-        # Prevent duplicate transfers
+        # Detailed state logging at entry
+        logger.info(f"[HumanSupport] ========== TOOL CALLED ==========")
+        logger.info(f"[HumanSupport] reason={reason}")
+        logger.info(f"[HumanSupport] State: pending={_transfer_pending}, complete={_transfer_complete}, failed={_transfer_failed}")
+        logger.info(f"[HumanSupport] Session ref available: {_session_ref.get('session') is not None}")
+        
+        # If transfer is already pending, return status
         if _transfer_pending:
             logger.info("[HumanSupport] Transfer already pending")
-            return "A human support agent is already being connected. Please hold."
+            return (
+                "I'm already connecting you with a specialist - they'll join very soon. "
+                "Continue our conversation while we wait. DO NOT call hangup_call."
+            )
         
+        # If transfer already completed successfully, agent is muted
         if _transfer_complete:
             logger.info("[HumanSupport] Transfer already complete")
-            return "A human support agent has already joined this call."
+            # Agent should already be muted, just return silently
+            return "The specialist is already on the line. Let them handle the conversation."
+        
+        # If transfer failed, check if cooldown has passed
+        if _transfer_failed:
+            time_since_failure = current_time - _last_attempt_time
+            if time_since_failure < _RETRY_COOLDOWN:
+                wait_remaining = int(_RETRY_COOLDOWN - time_since_failure)
+                logger.info(f"[HumanSupport] In cooldown period, {wait_remaining}s remaining")
+                return (
+                    f"I just tried to reach a specialist but they weren't available. "
+                    f"I can try again in {wait_remaining} seconds. "
+                    "For now, continue helping the customer yourself. DO NOT call hangup_call."
+                )
+            else:
+                # Cooldown passed, reset and allow retry
+                logger.info("[HumanSupport] Cooldown passed, allowing retry")
+                _transfer_failed = False
         
         # Validate we have required context
         if not job_context:
@@ -885,58 +956,152 @@ def build_human_support_tools(
         # Mark as pending
         _transfer_pending = True
         
-        try:
-            logger.info(f"[HumanSupport] Initiating SIP call: dial_number={dial_number}, trunk={trunk_id[:16]}..., room={job_context.room.name}")
+        # Background task to dial human and handle success/failure
+        async def _invite_human_in_background():
+            nonlocal _transfer_pending, _transfer_complete, _transfer_failed, _last_attempt_time
             
-            # Create SIP participant for the human agent (async - don't wait for answer)
-            # The participant_connected event handler in worker.py will handle when they actually join
-            await job_context.api.sip.create_sip_participant(
-                api.CreateSIPParticipantRequest(
-                    room_name=job_context.room.name,
-                    sip_trunk_id=trunk_id,
-                    sip_call_to=dial_number,
-                    participant_identity=f"support-{dial_number}",
-                    participant_name="Human Support Agent",
-                    wait_until_answered=False,  # Don't wait - return immediately, event will notify
-                    krisp_enabled=True,
+            import time
+            
+            try:
+                logger.info(f"[HumanSupport] Background: Dialing human agent: {dial_number}")
+                
+                # Create SIP participant - wait_until_answered=True blocks until answered
+                await job_context.api.sip.create_sip_participant(
+                    api.CreateSIPParticipantRequest(
+                        room_name=job_context.room.name,
+                        sip_trunk_id=trunk_id,
+                        sip_call_to=dial_number,
+                        participant_identity=f"support-{dial_number}",
+                        participant_name="Human Support Agent",
+                        wait_until_answered=True,  # Block until human answers
+                        krisp_enabled=True,
+                    )
                 )
+                
+                # Human answered!
+                _transfer_complete = True
+                _transfer_pending = False
+                logger.info("[HumanSupport] Background: Human agent answered and joined")
+                
+                # CRITICAL: Mute the AI agent IMMEDIATELY - before intro injection
+                # This disables silence monitor, stops TTS/LLM, and prevents hangup
+                # voice_assistant is a getter function, so we need to call it
+                assistant = voice_assistant() if callable(voice_assistant) else voice_assistant
+                if assistant:
+                    try:
+                        assistant.mute_for_human_handoff()
+                        logger.info("[HumanSupport] Background: AI agent muted IMMEDIATELY - silence_monitor disabled, TTS/LLM stopped")
+                    except Exception as e:
+                        logger.error(f"[HumanSupport] Background: Failed to mute AI agent: {e}")
+                else:
+                    logger.warning("[HumanSupport] Background: No voice_assistant available - cannot mute!")
+                
+                # Inject SIMPLE introduction - no [Specialist Name] placeholder, just a brief handoff
+                session = _session_ref.get("session")
+                if session:
+                    try:
+                        # Simple, direct intro - no placeholders
+                        session.generate_reply(
+                            instructions=(
+                                "Say ONLY this brief introduction and NOTHING ELSE: "
+                                "'Great news! Our specialist is now on the line to help you!' "
+                                "After saying this, STOP COMPLETELY. Do not speak again. Do not call any tools."
+                            )
+                        )
+                        logger.info("[HumanSupport] Background: Introduction instruction injected")
+                    except Exception as e:
+                        logger.warning(f"[HumanSupport] Background: Failed to inject introduction: {e}")
+                
+                # NO MORE WAITING - muting was already done above
+                
+                # Log to audit trail
+                if audit_trail:
+                    audit_trail.log_human_handoff_joined()
+                    
+            except Exception as e:
+                # Human didn't answer or call failed
+                _transfer_failed = True
+                _transfer_pending = False  # Reset to allow retry after cooldown
+                _last_attempt_time = time.monotonic()  # Record time for cooldown
+                logger.error(f"[HumanSupport] Background: SIP call failed: {e}")
+                logger.info("[HumanSupport] Background: Attempting to inject failure instruction NOW")
+                
+                # Inject instruction to handle failure
+                session = _session_ref.get("session")
+                if session:
+                    try:
+                        failure_instruction = (
+                            "URGENT: The specialist could NOT be reached - the connection FAILED. "
+                            "You MUST apologize immediately and continue helping them yourself. "
+                            "Say: 'I apologize, unfortunately our specialist wasn't available right now. "
+                            "Let me continue helping you myself - what would you like to know?'"
+                        )
+                        logger.info(f"[HumanSupport] Background: Injecting failure instruction (len={len(failure_instruction)})")
+                        # generate_reply returns SpeechHandle synchronously, not a coroutine
+                        handle = session.generate_reply(instructions=failure_instruction)
+                        logger.info(f"[HumanSupport] Background: Failure instruction injected, SpeechHandle: {type(handle).__name__}")
+                    except Exception as e2:
+                        logger.warning(f"[HumanSupport] Background: Failed to inject failure instruction: {e2}")
+                else:
+                    logger.error("[HumanSupport] Background: No session ref - cannot inject failure instruction!")
+                
+                # Log to audit trail
+                if audit_trail:
+                    audit_trail.log_human_handoff_failed(str(e))
+        
+        # Start background task - returns immediately
+        asyncio.create_task(_invite_human_in_background())
+        
+        logger.info("[HumanSupport] Background task started, returning to conversation")
+        
+        # CRITICAL: Inject instruction IMMEDIATELY to override any goodbye speech
+        # the LLM might be generating in parallel with this tool call
+        session = _session_ref.get("session")
+        if session:
+            try:
+                # generate_reply returns a SpeechHandle synchronously, not a coroutine
+                # This injects an instruction that should override any pending goodbye speech
+                override_instruction = (
+                    "URGENT OVERRIDE: You just initiated a specialist connection. "
+                    "DO NOT say goodbye or end the call! "
+                    "Say something like: 'Great, I'm arranging that connection now. "
+                    "While we wait for the specialist, is there anything specific you'd like me to pass along to them?' "
+                    "KEEP THE CONVERSATION GOING. Never call hangup_call during this process."
+                )
+                logger.info(f"[HumanSupport] Injecting override instruction (len={len(override_instruction)})")
+                handle = session.generate_reply(instructions=override_instruction)
+                logger.info(f"[HumanSupport] Override instruction injected, SpeechHandle: {type(handle).__name__}")
+            except Exception as e:
+                logger.warning(f"[HumanSupport] Failed to inject override instruction: {e}")
+        else:
+            logger.warning("[HumanSupport] No session ref - cannot inject override instruction!")
+        
+        # Log to audit trail
+        if audit_trail:
+            audit_trail.log_tool_call(
+                "invite_human_agent",
+                input_data={"reason": reason},
+                output="Dialing in background",
+                status="pending"
             )
-            
-            logger.info("[HumanSupport] SIP call initiated (async), returning to agent")
-            # Don't mark as complete yet - wait for participant_connected event
-            # Don't mute yet - agent should continue conversation
-            
-            # Log to audit trail
-            if audit_trail:
-                audit_trail.log_tool_call(
-                    "invite_human_agent",
-                    input_data={"reason": reason},
-                    output="Dialing human support",
-                    status="pending"
-                )
-                audit_trail.log_human_handoff_started(dial_number)
-            
-            return (
-                "I'm connecting you to our support team now. "
-                "Please continue our conversation while I try to reach them. "
-                "I'll let you know as soon as they join."
-            )
-            
-        except Exception as e:
-            _transfer_pending = False
-            logger.error(f"[HumanSupport] FAILED: SIP call error: {e}", exc_info=True)
-            
-            # Log failure to audit trail
-            if audit_trail:
-                audit_trail.log_tool_call(
-                    "invite_human_agent",
-                    input_data={"reason": reason},
-                    output=f"Failed: {str(e)[:100]}",
-                    status="error"
-                )
-                audit_trail.log_human_handoff_failed(str(e))
-            
-            return f"I'm sorry, I couldn't connect you to a human agent. Please try calling back and asking for a human directly."
+            audit_trail.log_human_handoff_started(dial_number)
+        
+        # Return instruction telling agent to CONTINUE conversation
+        # Note: This may not be seen if LLM already generated parallel speech,
+        # which is why we also inject via generate_reply above
+        return_msg = (
+            "I'm connecting you with a specialist now. "
+            "IMPORTANT: Continue the conversation naturally while I arrange this. "
+            "Ask a follow-up question like 'While I'm arranging that, is there anything else you'd like me to note for the specialist?' "
+            "DO NOT call hangup_call - the specialist will join when ready and I will tell you. "
+            "Keep talking until you hear that the specialist has joined."
+        )
+        logger.info(f"[HumanSupport] Tool returning message (length={len(return_msg)})")
+        logger.info(f"[HumanSupport] ========== TOOL COMPLETE ==========")
+        return return_msg
+    
+    # Attach session setter to the tool for worker.py to use
+    invite_human_agent.set_session = set_session
     
     tools = [invite_human_agent]
     logger.info(f"[HumanSupport] Tool built: invite_human_agent (phone={phone_number[:4]}***, trunk={'call' if sip_trunk_id else 'env'})")
@@ -1112,9 +1277,27 @@ async def attach_tools(
     if config.human_support:
         cfg = tool_configs.get("voice-agent-tool-human-support", {})
         logger.info(f"[HumanSupport] tool_configs entry: {cfg}")
-        # Check both potential key names
-        phone = cfg.get("human_agent_number") or cfg.get("phone_number") or os.getenv("HUMAN_SUPPORT_NUMBER")
-        logger.info(f"[HumanSupport] Resolved phone: {phone[:4] if phone else 'None'}***")
+        # Check both potential key names - trace the source
+        phone_from_cfg1 = cfg.get("human_agent_number")
+        phone_from_cfg2 = cfg.get("phone_number")
+        phone_from_env = os.getenv("HUMAN_SUPPORT_NUMBER")
+        phone = phone_from_cfg1 or phone_from_cfg2 or phone_from_env
+        
+        # Log source tracing
+        if phone_from_cfg1:
+            phone_source = "tool_configs.human_agent_number (DB)"
+        elif phone_from_cfg2:
+            phone_source = "tool_configs.phone_number (DB)"
+        elif phone_from_env:
+            phone_source = "HUMAN_SUPPORT_NUMBER (ENV)"
+        else:
+            phone_source = "NONE FOUND"
+        logger.info(f"[HumanSupport] ========== PHONE SOURCE TRACE ==========")
+        logger.info(f"[HumanSupport] cfg.human_agent_number: {phone_from_cfg1}")
+        logger.info(f"[HumanSupport] cfg.phone_number: {phone_from_cfg2}")
+        logger.info(f"[HumanSupport] env.HUMAN_SUPPORT_NUMBER: {phone_from_env}")
+        logger.info(f"[HumanSupport] RESOLVED phone: {phone} (source: {phone_source})")
+        logger.info(f"[HumanSupport] =========================================")
         if phone:
             try:
                 # Create a getter that retrieves VoiceAssistant from holder at call time

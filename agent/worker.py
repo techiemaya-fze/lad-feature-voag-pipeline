@@ -34,6 +34,18 @@ _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env
 load_dotenv(_env_path)
 
 # ============================================================================
+# DISABLE OPENTELEMETRY EXPORTS (must be set before livekit imports)
+# ============================================================================
+# These prevent the 429 quota errors from LiveKit Cloud telemetry
+# Set via .env: OTEL_TRACES_EXPORTER=none, OTEL_LOGS_EXPORTER=none
+if os.getenv("OTEL_TRACES_EXPORTER", "").lower() == "none":
+    os.environ["OTEL_TRACES_EXPORTER"] = "none"
+if os.getenv("OTEL_LOGS_EXPORTER", "").lower() == "none":
+    os.environ["OTEL_LOGS_EXPORTER"] = "none"
+if os.getenv("OTEL_METRICS_EXPORTER", "").lower() == "none":
+    os.environ["OTEL_METRICS_EXPORTER"] = "none"
+
+# ============================================================================
 # AGENT LOG LEVEL CONFIGURATION
 # ============================================================================
 # AGENT_LOG_LEVEL takes precedence, falls back to LOG_LEVEL
@@ -48,6 +60,21 @@ _agent_log_level = _resolve_log_level(
     os.getenv("AGENT_LOG_LEVEL") or os.getenv("LOG_LEVEL")
 )
 logging.basicConfig(level=_agent_log_level, format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
+
+# Silence noisy third-party loggers
+logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
+logging.getLogger("opentelemetry").setLevel(logging.CRITICAL)
+logging.getLogger("opentelemetry.exporter").setLevel(logging.CRITICAL)
+
+# Suppress LiveKit session report upload errors (429 quota)
+# These are harmless - calls still work, just no telemetry to LiveKit Cloud
+_lk_agents_logger = logging.getLogger("livekit.agents")
+_original_lk_error = _lk_agents_logger.error
+def _filtered_lk_error(msg, *args, **kwargs):
+    if "session report" in str(msg).lower():
+        return  # Suppress session report errors
+    _original_lk_error(msg, *args, **kwargs)
+_lk_agents_logger.error = _filtered_lk_error
 
 from livekit import agents, api
 from livekit.agents import (
@@ -178,22 +205,26 @@ class SilenceMonitor:
     def notify_agent_completed(self) -> None:
         """Resume silence monitoring after agent finishes speaking."""
         if not self._enabled:
+            self._logger.info("[SilenceMonitor] notify_agent_completed skipped - disabled")
             return
         self._triggered = False
         if self._remaining is None or self._remaining <= 0.0:
             self._remaining = self._timeout
             self._elapsed = 0.0
             self._milestones_fired.clear()
+        self._logger.info(f"[SilenceMonitor] Starting timer: remaining={self._remaining:.1f}s, timeout={self._timeout}s")
         self._start_timer()
 
     def notify_user_activity(self) -> None:
         """Reset silence monitoring when user speaks."""
         if not self._enabled:
+            self._logger.info("[SilenceMonitor] notify_user_activity skipped - disabled")
             return
         self._triggered = False
         self._cancel_pending_callbacks()
         self._reset_state()
         self._cancel_timer()
+        self._logger.info("[SilenceMonitor] Timer reset due to user activity")
 
     def disable(self) -> None:
         """Permanently disable silence monitoring."""
@@ -253,6 +284,15 @@ class SilenceMonitor:
         if not task.done():
             task.cancel()
 
+    async def _fire_milestone(self, milestone: SilenceMilestone) -> None:
+        """Execute a milestone callback."""
+        try:
+            result = milestone.callback(self._elapsed)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as e:
+            self._logger.error(f"Error executing milestone '{milestone.label}' callback: {e}", exc_info=True)
+
     async def _await_timeout(self) -> None:
         try:
             loop = asyncio.get_running_loop()
@@ -268,7 +308,15 @@ class SilenceMonitor:
                         continue
                     remaining_to_milestone = milestone.seconds - self._elapsed
                     if remaining_to_milestone <= 0.0:
+                        # Fire the milestone callback
                         self._milestones_fired.add(idx)
+                        self._logger.info(f"[SilenceMonitor] Milestone '{milestone.label}' triggered at {self._elapsed:.1f}s")
+                        try:
+                            task = asyncio.create_task(self._fire_milestone(milestone))
+                            self._pending_callbacks.add(task)
+                            task.add_done_callback(self._pending_callbacks.discard)
+                        except Exception as e:
+                            self._logger.error(f"Failed to fire milestone callback: {e}")
                         continue
                     next_wait = min(next_wait, remaining_to_milestone)
 
@@ -360,7 +408,9 @@ class VoiceAssistant(Agent):
         self._google_workspace = None
         self._human_invite_pending = False
         self._human_joined = False
+        self._agent_listening_only = False  # When True, agent only transcribes, no LLM/TTS
         self._knowledge_base_store_ids = knowledge_base_store_ids or []
+        self._session = None  # AgentSession reference for pausing on human handoff
         
         # Register interruption callback to cancel pending hangup
         if self.call_recorder and hasattr(self.call_recorder, 'register_agent_speech_end_callback'):
@@ -375,6 +425,32 @@ class VoiceAssistant(Agent):
         if was_interrupted and self._hangup_pending:
             logger.info("Agent speech interrupted during hangup - cancelling hangup")
             self._hangup_cancelled = True
+    
+    async def on_user_turn_completed(self, turn_ctx, new_message):
+        """
+        Handle user speech completion - this is the KEY for human handoff muting.
+        
+        When _agent_listening_only is True (after human support joins),
+        this method raises StopResponse to prevent the LLM from generating any response.
+        The transcription still runs, but the AI agent stays silent.
+        
+        Args:
+            turn_ctx: Turn context from LiveKit
+            new_message: Message object containing user's transcribed speech
+        """
+        from livekit.agents import StopResponse
+        
+        # In listening-only mode, don't let the LLM respond at all
+        if self._agent_listening_only:
+            text = getattr(new_message, "text_content", None)
+            if text:
+                logger.info(f"[HumanHandoff] Listening-only mode - captured transcript: {text[:50]}...")
+            logger.debug("[HumanHandoff] Blocking LLM pipeline with StopResponse")
+            raise StopResponse()
+        
+        # Normal mode - process as usual
+        if self.silence_monitor:
+            self.silence_monitor.notify_user_activity()
 
     @function_tool
     async def hangup_call(self, reason: str = "call_complete") -> str:
@@ -391,6 +467,11 @@ class VoiceAssistant(Agent):
             Confirmation message
         """
         import asyncio
+        
+        # GUARD: Do NOT hang up if human agent has joined the call
+        if getattr(self, '_human_joined', False):
+            logger.info(f"hangup_call BLOCKED: Human agent has joined the call, refusing to hangup (reason: {reason})")
+            return "Hangup blocked - a human specialist is now handling the call. Do not attempt to end the call."
         
         logger.info(f"Agent initiating graceful hangup (reason: {reason})")
         
@@ -460,25 +541,46 @@ class VoiceAssistant(Agent):
     def set_silence_monitor(self, monitor: SilenceMonitor | None) -> None:
         self.silence_monitor = monitor
     
+    def set_session(self, session) -> None:
+        """Set the AgentSession reference for pausing on human handoff."""
+        self._session = session
+    
     def mute_for_human_handoff(self) -> None:
         """
-        Prepare for human handoff by muting AI agent.
+        Prepare for human handoff by FULLY muting AI agent.
         
         - Disables silence monitor (human agent will talk)
         - Sets _human_joined flag to prevent AI from interrupting
+        - Sets _agent_listening_only flag to block LLM via StopResponse
         - hangup_call tool becomes a no-op (call ends when participants leave)
         """
-        logger.info("Muting AI agent for human handoff")
+        logger.info("[HumanHandoff] Muting AI agent COMPLETELY for human handoff")
         
-        # Disable silence monitoring - human agent will be talking
+        # 1. Disable silence monitoring - human agent will be talking
         if self.silence_monitor:
             self.silence_monitor.disable()
+            logger.info("[HumanHandoff] Silence monitor disabled")
         
-        # Mark human as joined - prevents AI from generating responses
+        # 2. Mark human as joined - prevents hangup_call tool from working
         self._human_joined = True
         self._human_invite_pending = False
+        logger.info("[HumanHandoff] _human_joined=True, hangup_call is now blocked")
         
-        logger.info("AI agent muted: silence_monitor=disabled, _human_joined=True")
+        # 3. CRITICAL: Set listening-only mode - blocks LLM from responding
+        # The on_user_turn_completed() method will raise StopResponse when this is True
+        self._agent_listening_only = True
+        logger.info("[HumanHandoff] _agent_listening_only=True, LLM will be blocked via StopResponse")
+        
+        # 4. Interrupt any current speech so agent stops talking immediately
+        if self._session:
+            try:
+                if hasattr(self._session, 'interrupt'):
+                    self._session.interrupt()
+                    logger.info("[HumanHandoff] Session interrupted - current speech cancelled")
+            except Exception as e:
+                logger.warning(f"[HumanHandoff] Error interrupting session: {e}")
+        
+        logger.info("[HumanHandoff] AI agent muted: silence=off, human_joined=True, listening_only=True")
 
 
 # =============================================================================
@@ -816,62 +918,87 @@ async def entrypoint(ctx: agents.JobContext):
     # Populate session reference for silence warning callback
     session_holder["session"] = session
     
-    # Hook up session events to silence monitor
-    @session.on("agent_started_speaking")
-    def _on_agent_start():
-        if voice_assistant.silence_monitor:
-            voice_assistant.silence_monitor.notify_agent_started()
+    # Set session reference in HumanAwareAgent for muting on human handoff
+    voice_assistant.set_session(session)
+    logger.debug("Session reference set in voice_assistant for human handoff pause")
     
-    @session.on("agent_stopped_speaking")
-    def _on_agent_stop():
-        if voice_assistant.silence_monitor:
-            voice_assistant.silence_monitor.notify_agent_completed()
+    # Set session reference in human support tool for background task
+    for tool in tool_list:
+        if hasattr(tool, 'set_session'):
+            tool.set_session(session)
+            logger.info("[HumanSupport] Session reference set in tool")
     
-    @session.on("user_started_speaking")
-    def _on_user_start():
-        if voice_assistant.silence_monitor:
-            voice_assistant.silence_monitor.notify_user_activity()
+    # Track last agent state for state change detection
+    last_agent_state = None
     
-    # Human support participant event handler
-    # NOTE: LiveKit's .on() cannot use async callbacks directly, must use sync + create_task
-    async def _handle_participant_connected(participant):
-        """Async handler for when a new participant joins the room (e.g., human support agent)."""
-        identity = getattr(participant, 'identity', '') or ''
-        name = getattr(participant, 'name', '') or ''
+    # Hook up session events to silence monitor (using correct event names from old agent.py)
+    @session.on("agent_state_changed")
+    def _on_agent_state_changed(ev):
+        nonlocal last_agent_state
+        new_state = getattr(ev, "new_state", None)
         
-        # Check if this is a human support agent (identity starts with "support-")
-        if identity.startswith("support-"):
-            logger.info(f"[HumanSupport] Human agent joined: identity={identity}, name={name}")
-            
-            # Inject instruction to introduce human and go silent
-            try:
-                await session.generate_reply(
-                    instructions=(
-                        "IMPORTANT: A human support agent has just joined this call. "
-                        "Briefly introduce them to the customer (e.g., 'Great news, our support specialist is now on the line!'). "
-                        "After the introduction, go completely silent and let them handle the conversation. "
-                        "Do not speak again unless explicitly asked by the human agent."
-                    )
-                )
-            except Exception as e:
-                logger.warning(f"[HumanSupport] Failed to inject introduction: {e}")
-            
-            # Mute the AI agent after introduction
-            voice_assistant.mute_for_human_handoff()
-            logger.info("[HumanSupport] AI agent muted, human is in control")
-            
-            # Log to audit trail
-            audit_trail.log_human_handoff_joined()
-            audit_trail.log_tool_result(
-                "invite_human_agent",
-                status="complete",
-                output="Human agent joined, AI muted"
-            )
+        if new_state == "speaking":
+            logger.info("[SilenceMonitor] Event: agent_state_changed → speaking, pausing timer")
+            if voice_assistant.silence_monitor:
+                voice_assistant.silence_monitor.notify_agent_started()
+        elif last_agent_state == "speaking":
+            # Agent just stopped speaking
+            logger.info("[SilenceMonitor] Event: agent_state_changed → stopped speaking, starting timer")
+            if voice_assistant.silence_monitor:
+                voice_assistant.silence_monitor.notify_agent_completed()
+        
+        last_agent_state = new_state
     
+    @session.on("user_state_changed")
+    def _on_user_state_changed(ev):
+        new_state = getattr(ev, "new_state", None)
+        if new_state == "speaking":
+            logger.info("[SilenceMonitor] Event: user_state_changed → speaking, resetting timer")
+            if voice_assistant.silence_monitor:
+                voice_assistant.silence_monitor.notify_user_activity()
+    
+    # Human support participant event handler - just for logging
+    # The actual handoff logic is in the background task in tool_builder.py
     @ctx.room.on("participant_connected")
     def _on_participant_connected(participant):
-        """Sync wrapper - LiveKit requires sync callbacks, async work via create_task."""
-        asyncio.create_task(_handle_participant_connected(participant))
+        """Log when new participants join (human support handled by background task)."""
+        identity = getattr(participant, 'identity', '') or ''
+        if identity.startswith("support-"):
+            logger.info(f"[HumanSupport] Participant connected event: {identity}")
+    
+    @ctx.room.on("participant_disconnected")
+    def _on_participant_disconnected(participant):
+        """
+        Handle participant disconnects - end call if human support or client leaves.
+        
+        When in listening-only mode (after human handoff), the call should end
+        automatically when either:
+        - The human support agent disconnects
+        - The client/prospect disconnects
+        """
+        identity = getattr(participant, 'identity', '') or ''
+        
+        # Check if we're in listening-only mode (human handoff active)
+        if voice_assistant._agent_listening_only:
+            if identity.startswith("support-"):
+                # Human support agent left - end the call
+                logger.info(f"[HumanHandoff] Human support disconnected: {identity} - ending call")
+            else:
+                # Client/prospect left - end the call  
+                logger.info(f"[HumanHandoff] Client disconnected: {identity} - ending call")
+            
+            # Delete the room to end the call for all participants
+            async def _end_call():
+                try:
+                    await ctx.api.room.delete_room(
+                        api.DeleteRoomRequest(room=ctx.room.name)
+                    )
+                    logger.info(f"[HumanHandoff] Room {ctx.room.name} deleted - call ended")
+                except Exception as e:
+                    logger.warning(f"[HumanHandoff] Error deleting room: {e}")
+            
+            import asyncio
+            asyncio.create_task(_end_call())
     
     # Phase 2: Attach usage collector to session for metrics tracking
     if usage_collector:
