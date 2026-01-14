@@ -408,6 +408,79 @@ class CallAnalytics:
             'phone_number': phone_number
         }
     
+    def _parse_voiceagent_segments(self, segments: List[Dict]) -> str:
+        """
+        Parse voiceagent transcription segments format.
+        
+        CRITICAL RULES:
+        - Include BOTH agent and user messages for full context
+        - ALWAYS use 'text' field (actual spoken), NEVER use 'intended_text'
+        - Filter out phone system messages (voicemail prompts)
+        - Analysis will focus on USER behavior with full conversation context
+        """
+        # Phone system messages to filter out
+        SYSTEM_MESSAGES = [
+            "call has been forwarded to voice mail",
+            "the person you're trying to reach is not available",
+            "at the tone",
+            "please record your message",
+            "when you",
+            "to leave a callback number",
+            "press",
+            "hang up",
+            "send a numeric page",
+            "to repeat this message",
+            "for more options"
+        ]
+        
+        conversation_lines = []
+        user_message_count = 0
+        voicemail_indicators = 0
+        
+        for segment in segments:
+            speaker = segment.get('speaker', '').lower()
+            text = segment.get('text', '').strip()
+            
+            # ALWAYS use 'text' field only, ignore 'intended_text'
+            if not text:
+                continue
+            
+            # Count voicemail indicators (from system/user messages)
+            if speaker == 'user' and any(indicator in text.lower() for indicator in ["forwarded", "voice mail", "voicemail", "not available", "at the tone", "record"]):
+                voicemail_indicators += 1
+            
+            # Filter out phone system messages (usually from 'user' speaker in voicemail)
+            is_system_message = any(sys_msg in text.lower() for sys_msg in SYSTEM_MESSAGES)
+            if is_system_message:
+                logger.debug(f"Filtered out system message: {text[:50]}...")
+                continue
+            
+            # Filter out very short likely-system messages from 'user' speaker
+            if speaker == 'user' and len(text.split()) <= 2 and text.lower() in ['hello', 'hello?', 'hi', 'when you', 'this', 'that']:
+                logger.debug(f"Filtered out short system fragment: {text}")
+                continue
+            
+            # Map speaker names
+            if speaker == 'agent':
+                role = 'Bot'
+            elif speaker == 'user':
+                role = 'User'
+                user_message_count += 1
+            else:
+                role = speaker.title()
+            
+            conversation_lines.append(f"{role}: {text}")
+        
+        conversation_text = "\n".join(conversation_lines)
+        logger.info(f"Parsed {len(conversation_lines)} total messages from voiceagent format ({user_message_count} user, {len(conversation_lines) - user_message_count} agent, filtered from {len(segments)} total segments)")
+        
+        # Detect voicemail: no user messages OR multiple voicemail indicators with minimal real content
+        if user_message_count == 0 or (voicemail_indicators >= 2 and user_message_count <= 1):
+            logger.warning(f"VOICEMAIL DETECTED - voicemail indicators: {voicemail_indicators}, user messages: {user_message_count}")
+            conversation_text = "[VOICEMAIL - No customer response, call went to voicemail]"
+        
+        return conversation_text
+    
     def _extract_user_messages(self, conversation_text: str) -> str:
         """Extract only user messages from conversation (exclude bot/agent messages)"""
         lines = conversation_text.split('\n')
@@ -1690,33 +1763,33 @@ CONFIDENCE: [High/Medium/Low]"""
         Calculate lead_score and lead_category based on disposition.
         
         Mapping:
-        - "PROCEED IMMEDIATELY" → lead_score = 10/10, lead_category = "Hot"
-        - "FOLLOW UP IN 3 DAYS" → lead_score = 8/10, lead_category = "Warm"
-        - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "Cold"
-        - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Not Qualified"
+        - "PROCEED IMMEDIATELY" → lead_score = 10/10, lead_category = "Hot Lead"
+        - "FOLLOW UP IN 3 DAYS" → lead_score = 8/10, lead_category = "warm Lead"
+        - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "Warm Lead"
+        - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Cold Lead"
         """
         disposition_str = disposition.get('disposition', '').upper()
         
         if disposition_str == 'PROCEED IMMEDIATELY':
             lead_score = 10.0
-            lead_category = "Hot"
+            lead_category = "Hot Lead"
             priority = "High"
         elif disposition_str == 'FOLLOW UP IN 3 DAYS':
             lead_score = 8.0
-            lead_category = "Warm"
+            lead_category = "warm Lead"
             priority = "High"
         elif disposition_str in ['FOLLOW UP IN 7 DAYS', 'NURTURE (7 DAYS)', 'NURTURE']:
             lead_score = 6.0
-            lead_category = "Cold"
+            lead_category = "Warm Lead"
             priority = "Medium"
         elif disposition_str == "DON'T PURSUE" or disposition_str == "DONT PURSUE":
             lead_score = 4.0
-            lead_category = "Not Qualified"
+            lead_category = "Cold Lead"
             priority = "Low"
         else:
             # Default/Unknown disposition
             lead_score = 5.0
-            lead_category = "Warm"
+            lead_category = "Warm Lead"
             priority = "Medium"
         
         return {
@@ -2208,8 +2281,10 @@ CONFIDENCE: [High/Medium/Low]"""
         
         # Handle both new (structured) and old (string) formats
         if isinstance(conversation_log, dict):
-            # Dict format - extract conversation or messages
-            if 'conversation' in conversation_log:
+            # Dict format - check for voiceagent 'segments' first
+            if 'segments' in conversation_log:
+                conversation_text = self._parse_voiceagent_segments(conversation_log['segments'])
+            elif 'conversation' in conversation_log:
                 conversation_text = conversation_log['conversation']
             elif 'messages' in conversation_log:
                 # List of messages in dict
@@ -2222,9 +2297,13 @@ CONFIDENCE: [High/Medium/Low]"""
                 # Try to convert entire dict to readable format
                 conversation_text = str(conversation_log)
         elif isinstance(conversation_log, list) and len(conversation_log) > 0 and isinstance(conversation_log[0], dict):
-            # New format: List of dicts with timestamps
-            # Convert to text for analytics
-            conversation_text = "\n".join([f"{entry['role'].title()}: {entry['message']}" for entry in conversation_log])
+            # Check if it's voiceagent segments format (has 'speaker' and 'text' fields)
+            if 'speaker' in conversation_log[0] and 'text' in conversation_log[0]:
+                conversation_text = self._parse_voiceagent_segments(conversation_log)
+            else:
+                # New format: List of dicts with timestamps
+                # Convert to text for analytics
+                conversation_text = "\n".join([f"{entry['role'].title()}: {entry['message']}" for entry in conversation_log])
         else:
             # Legacy format: String with "User:" and "Bot:" lines
             if isinstance(conversation_log, list):
@@ -3201,11 +3280,19 @@ class StandaloneAnalytics:
             # Handle both JSONB (dict/list) and text formats
             if transcripts:
                 if isinstance(transcripts, dict):
-                    # JSONB dict - extract messages
-                    conversation_text = transcripts
+                    # JSONB dict - check for voiceagent segments or other formats
+                    if 'segments' in transcripts:
+                        conversation_text = transcripts  # Pass dict to analyze_call for segment parsing
+                    else:
+                        # Other dict format
+                        conversation_text = transcripts
                 elif isinstance(transcripts, list):
-                    # JSONB list - pass as is
-                    conversation_text = transcripts
+                    # JSONB list - check if it's voiceagent segments
+                    if transcripts and isinstance(transcripts[0], dict) and 'speaker' in transcripts[0]:
+                        conversation_text = transcripts  # Pass list to analyze_call for segment parsing
+                    else:
+                        # Other list format
+                        conversation_text = transcripts
                 else:
                     # Plain text
                     conversation_text = str(transcripts)
@@ -3348,4 +3435,3 @@ Examples:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
