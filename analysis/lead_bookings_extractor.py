@@ -1568,35 +1568,13 @@ Respond in JSON:
                     # Remove microseconds
                     started_at_dt = started_at_dt.replace(microsecond=0)
                     
-                    # For missing transcriptions, schedule same day if possible, otherwise next working day
-                    # Don't use Grade 12 timeline (3-5 days) for missed/declined calls
-                    current_time = datetime.now(GST)
-                    
-                    # If call is today and there's still time in working hours, schedule same day
-                    if started_at_dt.date() == current_time.date():
-                        # Same day - try to schedule later today if within working hours
-                        # Add 30 minutes buffer from started_at
-                        target_time = started_at_dt + timedelta(minutes=30)
-                        
-                        # Check if target time is within working hours (9 AM - 8 PM)
-                        if target_time.hour < 9:
-                            target_time = target_time.replace(hour=9, minute=0, second=0, microsecond=0)
-                        elif target_time.hour >= 20:
-                            # After working hours - schedule next working day at started_at time
-                            next_day = started_at_dt + timedelta(days=1)
-                            while not calculator.is_working_day(next_day):
-                                next_day += timedelta(days=1)
-                            target_time = GST.localize(datetime.combine(next_day.date(), started_at_dt.time()))
-                        
-                        scheduled_at = self._normalize_datetime(target_time)
-                        logger.info(f"Same-day callback for {reason}: {scheduled_at}")
-                    else:
-                        # Call was from a previous day - schedule next working day at started_at time
-                        next_day = started_at_dt + timedelta(days=1)
-                        while not calculator.is_working_day(next_day):
-                            next_day += timedelta(days=1)
-                        scheduled_at = self._normalize_datetime(GST.localize(datetime.combine(next_day.date(), started_at_dt.time())))
-                        logger.info(f"Next working day callback for {reason}: {scheduled_at}")
+                    # For missing/empty transcriptions, use Grade 12 timeline (2 days later) at started_at time
+                    # Schedule 2 working days later regardless of whether call is today or previous day
+                    next_day = started_at_dt + timedelta(days=2)
+                    while not calculator.is_working_day(next_day):
+                        next_day += timedelta(days=1)
+                    scheduled_at = self._normalize_datetime(GST.localize(datetime.combine(next_day.date(), started_at_dt.time())))
+                    logger.info(f"Grade 12 timeline: 2-day callback for {reason} at {started_at_dt.time()}: {scheduled_at}")
                     
                     buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
                     logger.info(f"Scheduled_at ({reason}): {scheduled_at}, buffer_until: {buffer_until}")
