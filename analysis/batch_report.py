@@ -380,7 +380,8 @@ async def fetch_batch_call_data(batch_id: str) -> List[Dict]:
 
             # Build safe lead_name expression depending on whether metadata JSON column exists
             # Use first_name + last_name from leads table for lead_name (no metadata lookup)
-            lead_name_expr = "COALESCE(l.first_name || ' ' || l.last_name, '')"
+            # Handle NULL values properly: COALESCE each field before concatenation to avoid NULL result
+            lead_name_expr = "TRIM(COALESCE(l.first_name, '') || ' ' || COALESCE(l.last_name, ''))"
 
             sql = f"""
                 SELECT DISTINCT ON (cl.id)
