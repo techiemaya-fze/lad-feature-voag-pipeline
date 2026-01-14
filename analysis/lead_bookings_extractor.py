@@ -1665,6 +1665,44 @@ Respond in JSON:
             booking_type = booking_info.get('booking_type')
             scheduled_at_str = booking_info.get('scheduled_at')
             student_grade = booking_info.get('student_grade')  # Extract student grade
+
+            # --- CUSTOM LOGIC: handle use_default_timing for grade 12 ---
+            if scheduled_at_str == "use_default_timing":
+                # Use first transcription timestamp as base
+                first_transcript_timestamp = self.extract_first_timestamp(transcripts)
+                if first_transcript_timestamp:
+                    # For grade 12, schedule 2 days later at the same time
+                    if student_grade == 12:
+                        scheduled_date = first_transcript_timestamp.date() + timedelta(days=2)
+                        scheduled_time = first_transcript_timestamp.time().replace(second=0, microsecond=0)
+                        scheduled_at = GST.localize(datetime.combine(scheduled_date, scheduled_time))
+                        logger.info(f"[use_default_timing] Grade 12 fallback: scheduled_at set to {scheduled_at} (2 days after first transcript)")
+                        buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
+                        # Overwrite scheduled_at_str so downstream logic doesn't re-handle
+                        scheduled_at_str = None
+                    else:
+                        # For other grades, fallback to today + time (or implement other logic as needed)
+                        scheduled_date = first_transcript_timestamp.date()
+                        scheduled_time = first_transcript_timestamp.time().replace(second=0, microsecond=0)
+                        scheduled_at = GST.localize(datetime.combine(scheduled_date, scheduled_time))
+                        logger.info(f"[use_default_timing] Non-12th grade fallback: scheduled_at set to {scheduled_at} (same day as first transcript)")
+                        buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
+                        scheduled_at_str = None
+                else:
+                    # Fallback: use now + 2 days for grade 12
+                    now_gst = datetime.now(GST)
+                    if student_grade == 12:
+                        scheduled_date = now_gst.date() + timedelta(days=2)
+                        scheduled_time = now_gst.time().replace(second=0, microsecond=0)
+                        scheduled_at = GST.localize(datetime.combine(scheduled_date, scheduled_time))
+                        logger.info(f"[use_default_timing] Grade 12 fallback: scheduled_at set to {scheduled_at} (2 days after now)")
+                        buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
+                        scheduled_at_str = None
+                    else:
+                        scheduled_at = now_gst
+                        buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
+                        logger.info(f"[use_default_timing] Non-12th grade fallback: scheduled_at set to {scheduled_at} (now)")
+                        scheduled_at_str = None
             
             # Ensure booking_type is never null - default to auto_followup
             if not booking_type or booking_type not in ["auto_followup", "auto_consultation"]:
