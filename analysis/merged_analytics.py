@@ -1690,33 +1690,33 @@ CONFIDENCE: [High/Medium/Low]"""
         Calculate lead_score and lead_category based on disposition.
         
         Mapping:
-        - "PROCEED IMMEDIATELY" → lead_score = 10/10, lead_category = "Hot Lead"
-        - "FOLLOW UP IN 3 DAYS" → lead_score = 8/10, lead_category = "Hot Lead"
-        - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "Warm Lead"
-        - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Cold Lead"
+        - "PROCEED IMMEDIATELY" → lead_score = 10/10, lead_category = "Hot"
+        - "FOLLOW UP IN 3 DAYS" → lead_score = 8/10, lead_category = "Warm"
+        - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "Cold"
+        - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Not Qualified"
         """
         disposition_str = disposition.get('disposition', '').upper()
         
         if disposition_str == 'PROCEED IMMEDIATELY':
             lead_score = 10.0
-            lead_category = "Hot Lead"
+            lead_category = "Hot"
             priority = "High"
         elif disposition_str == 'FOLLOW UP IN 3 DAYS':
             lead_score = 8.0
-            lead_category = "Hot Lead"
+            lead_category = "Warm"
             priority = "High"
         elif disposition_str in ['FOLLOW UP IN 7 DAYS', 'NURTURE (7 DAYS)', 'NURTURE']:
             lead_score = 6.0
-            lead_category = "Warm Lead"
+            lead_category = "Cold"
             priority = "Medium"
         elif disposition_str == "DON'T PURSUE" or disposition_str == "DONT PURSUE":
             lead_score = 4.0
-            lead_category = "Cold Lead"
+            lead_category = "Not Qualified"
             priority = "Low"
         else:
             # Default/Unknown disposition
             lead_score = 5.0
-            lead_category = "Warm Lead"
+            lead_category = "Warm"
             priority = "Medium"
         
         return {
