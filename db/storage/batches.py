@@ -843,7 +843,7 @@ class BatchStorage:
                             f"""
                             UPDATE {FULL_BATCH_TABLE}
                             SET status = 'completed', finished_at = NOW(), updated_at = NOW()
-                            WHERE id = %s AND status = 'running'
+                            WHERE id = %s AND status IN ('queued', 'running')
                             RETURNING id
                             """,
                             (batch_id,)
