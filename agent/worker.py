@@ -224,11 +224,6 @@ class SilenceMonitor:
         self._cancel_pending_callbacks()
         self._reset_state()
         self._cancel_timer()
-        # Restart the timer from scratch after user activity
-        # This ensures the 15s warning still fires if user goes silent again
-        self._remaining = self._timeout
-        self._elapsed = 0.0
-        self._start_timer()
         self._logger.info("[SilenceMonitor] Timer reset due to user activity")
 
     def disable(self) -> None:
