@@ -164,10 +164,14 @@ class SilenceMilestone:
 
 class SilenceMonitor:
     """
-    Monitors user silence after agent speech and triggers actions.
+    Monitors call silence and triggers warning/hangup.
     
-    Tracks periods of silence after the agent finishes speaking. Can trigger
-    warnings and automatic hangup after prolonged silence.
+    SIMPLER DESIGN:
+    - Timer always runs once started
+    - Resets on user speech (deepgram transcript)
+    - Resets on agent speech (LLM response) 
+    - Warning prompt does NOT reset timer (uses skip_next_agent_reset flag)
+    - Warning at 15s, hangup at 35s
     """
 
     def __init__(
@@ -181,9 +185,9 @@ class SilenceMonitor:
         self._timeout = max(timeout_seconds, 1.0)
         self._on_timeout = on_timeout
         self._logger = logger
-        self._timer_task: asyncio.Task | None = None
         self._enabled = True
         self._triggered = False
+        self._timer_task: asyncio.Task | None = None
         self._milestones = tuple(
             sorted(
                 (m for m in (milestones or []) if m.seconds > 0.0),
@@ -191,40 +195,62 @@ class SilenceMonitor:
             )
         )
         self._milestones_fired: set[int] = set()
-        self._remaining: float | None = None
         self._elapsed: float = 0.0
         self._last_start: float | None = None
         self._pending_callbacks: set[asyncio.Task] = set()
+        self._skip_next_agent_reset: bool = False  # For warning prompt
 
-    def notify_agent_started(self) -> None:
-        """Pause silence monitoring when agent starts speaking."""
+    def start(self) -> None:
+        """Start the silence timer. Call once when call becomes ongoing."""
+        if not self._enabled or self._timer_task is not None:
+            return
+        self._elapsed = 0.0
+        self._milestones_fired.clear()
+        try:
+            loop = asyncio.get_running_loop()
+            self._last_start = loop.time()
+            self._timer_task = loop.create_task(self._run_timer())
+            self._logger.info("[SilenceMonitor] Timer STARTED (always-on mode)")
+        except RuntimeError:
+            pass
+
+    def reset_timer(self, source: str = "activity") -> None:
+        """Reset the timer to 0. Called on user or agent activity."""
         if not self._enabled:
             return
-        self._pause_timer()
-
-    def notify_agent_completed(self) -> None:
-        """Resume silence monitoring after agent finishes speaking."""
-        if not self._enabled:
-            self._logger.info("[SilenceMonitor] notify_agent_completed skipped - disabled")
-            return
-        self._triggered = False
-        if self._remaining is None or self._remaining <= 0.0:
-            self._remaining = self._timeout
-            self._elapsed = 0.0
-            self._milestones_fired.clear()
-        self._logger.info(f"[SilenceMonitor] Starting timer: remaining={self._remaining:.1f}s, timeout={self._timeout}s")
-        self._start_timer()
+        self._elapsed = 0.0
+        self._milestones_fired.clear()
+        try:
+            loop = asyncio.get_running_loop()
+            self._last_start = loop.time()
+        except RuntimeError:
+            pass
+        self._logger.info(f"[SilenceMonitor] Timer reset ({source})")
 
     def notify_user_activity(self) -> None:
-        """Reset silence monitoring when user speaks."""
+        """Reset timer when user speaks."""
         if not self._enabled:
-            self._logger.info("[SilenceMonitor] notify_user_activity skipped - disabled")
             return
-        self._triggered = False
-        self._cancel_pending_callbacks()
-        self._reset_state()
-        self._cancel_timer()
-        self._logger.info("[SilenceMonitor] Timer reset due to user activity")
+        self.reset_timer("user speech")
+
+    def notify_agent_started(self) -> None:
+        """Called when agent starts speaking. Resets timer unless skipped."""
+        if not self._enabled:
+            return
+        if self._skip_next_agent_reset:
+            self._skip_next_agent_reset = False
+            self._logger.info("[SilenceMonitor] Agent speech - skip reset (warning prompt)")
+            return
+        self.reset_timer("agent speech")
+
+    def notify_agent_completed(self) -> None:
+        """Called when agent finishes speaking. No-op in always-on mode."""
+        pass  # Timer always runs, no need to resume
+
+    def skip_next_agent_reset(self) -> None:
+        """Flag to skip the next agent speech reset (for warning prompt)."""
+        self._skip_next_agent_reset = True
+        self._logger.info("[SilenceMonitor] Next agent speech will NOT reset timer")
 
     def disable(self) -> None:
         """Permanently disable silence monitoring."""
@@ -232,57 +258,20 @@ class SilenceMonitor:
             return
         self._enabled = False
         self._triggered = True
+        self._cancel_timer()
         self._cancel_pending_callbacks()
-        self._reset_state()
-        self._cancel_timer()
+        self._logger.info("[SilenceMonitor] DISABLED")
 
-    def _start_timer(self) -> None:
-        self._cancel_timer()
-        if not self._enabled:
-            return
-        if self._remaining is None:
-            self._remaining = self._timeout
-            self._elapsed = 0.0
-            self._milestones_fired.clear()
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        self._last_start = loop.time()
-        self._timer_task = loop.create_task(self._await_timeout())
-
-    def _pause_timer(self) -> None:
-        if self._timer_task is None:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None and self._last_start is not None:
-            elapsed = max(0.0, loop.time() - self._last_start)
-            self._elapsed += elapsed
-            self._remaining = max(self._timeout - self._elapsed, 0.0)
-        self._last_start = None
-        self._cancel_timer()
-
-    def _reset_state(self) -> None:
-        self._remaining = None
-        self._elapsed = 0.0
-        self._last_start = None
-        self._milestones_fired.clear()
+    def _cancel_timer(self) -> None:
+        if self._timer_task and not self._timer_task.done():
+            self._timer_task.cancel()
+        self._timer_task = None
 
     def _cancel_pending_callbacks(self) -> None:
         for task in tuple(self._pending_callbacks):
             if not task.done():
                 task.cancel()
-
-    def _cancel_timer(self) -> None:
-        if self._timer_task is None:
-            return
-        task = self._timer_task
-        self._timer_task = None
-        if not task.done():
-            task.cancel()
+        self._pending_callbacks.clear()
 
     async def _fire_milestone(self, milestone: SilenceMilestone) -> None:
         """Execute a milestone callback."""
@@ -291,70 +280,58 @@ class SilenceMonitor:
             if asyncio.iscoroutine(result):
                 await result
         except Exception as e:
-            self._logger.error(f"Error executing milestone '{milestone.label}' callback: {e}", exc_info=True)
+            self._logger.error(f"Error executing milestone '{milestone.label}': {e}", exc_info=True)
 
-    async def _await_timeout(self) -> None:
+    async def _run_timer(self) -> None:
+        """Main timer loop - runs continuously until disabled or timeout."""
         try:
             loop = asyncio.get_running_loop()
-            while (
-                self._enabled
-                and not self._triggered
-                and self._remaining is not None
-                and self._remaining > 0.0
-            ):
-                next_wait = self._remaining
+            
+            while self._enabled and not self._triggered:
+                # Calculate elapsed since last reset
+                now = loop.time()
+                if self._last_start is not None:
+                    self._elapsed = now - self._last_start
+                
+                # Check milestones
                 for idx, milestone in enumerate(self._milestones):
                     if idx in self._milestones_fired:
                         continue
-                    remaining_to_milestone = milestone.seconds - self._elapsed
-                    if remaining_to_milestone <= 0.0:
-                        # Fire the milestone callback
+                    if self._elapsed >= milestone.seconds:
                         self._milestones_fired.add(idx)
-                        self._logger.info(f"[SilenceMonitor] Milestone '{milestone.label}' triggered at {self._elapsed:.1f}s")
+                        self._logger.info(f"[SilenceMonitor] Milestone '{milestone.label}' at {self._elapsed:.1f}s")
                         try:
                             task = asyncio.create_task(self._fire_milestone(milestone))
                             self._pending_callbacks.add(task)
                             task.add_done_callback(self._pending_callbacks.discard)
                         except Exception as e:
-                            self._logger.error(f"Failed to fire milestone callback: {e}")
-                        continue
-                    next_wait = min(next_wait, remaining_to_milestone)
-
-                if self._remaining <= 0.0:
-                    break
-
-                if next_wait <= 0.0:
-                    continue
-
-                await asyncio.sleep(next_wait)
-
-                now = loop.time()
-                if self._last_start is None:
-                    self._last_start = now - next_wait
-
-                elapsed = max(0.0, now - self._last_start)
-                self._elapsed += elapsed
-                self._remaining = max(self._timeout - self._elapsed, 0.0)
-                self._last_start = now
-
-            if (
-                self._enabled
-                and not self._triggered
-                and self._remaining is not None
-                and self._remaining <= 0.0
-            ):
-                self._triggered = True
-                self._logger.info("User silence exceeded %.1fs; triggering hangup", self._timeout)
-                result = self._on_timeout()
-                if asyncio.iscoroutine(result):
-                    await result
+                            self._logger.error(f"Failed to fire milestone: {e}")
+                
+                # Check timeout
+                if self._elapsed >= self._timeout:
+                    self._triggered = True
+                    self._logger.info(f"[SilenceMonitor] TIMEOUT at {self._elapsed:.1f}s - triggering hangup")
+                    try:
+                        result = self._on_timeout()
+                        if asyncio.iscoroutine(result):
+                            await result
+                    except Exception as e:
+                        self._logger.error(f"Error in timeout callback: {e}", exc_info=True)
+                    return
+                
+                # Sleep briefly and check again
+                await asyncio.sleep(0.5)
+                
         except asyncio.CancelledError:
-            raise
-        except Exception:
-            self._logger.error("Error during silence timeout handling", exc_info=True)
-        finally:
-            self._timer_task = None
-            self._last_start = None
+            self._logger.info("[SilenceMonitor] Timer cancelled")
+        except Exception as e:
+            self._logger.error(f"[SilenceMonitor] Timer error: {e}", exc_info=True)
+
+    # Compatibility methods (old API)
+    def _reset_state(self) -> None:
+        self._elapsed = 0.0
+        self._milestones_fired.clear()
+
 
 
 # =============================================================================
@@ -850,6 +827,10 @@ async def entrypoint(ctx: agents.JobContext):
         # Log to audit trail
         audit_trail.log_silence_warning(elapsed)
         
+        # IMPORTANT: Skip resetting timer when agent speaks the warning prompt
+        # Otherwise we'd never reach the 35s timeout
+        silence_monitor.skip_next_agent_reset()
+        
         sess = session_holder.get("session")
         if sess:
             try:
@@ -1072,6 +1053,9 @@ async def entrypoint(ctx: agents.JobContext):
                             status="ongoing"
                         )
                         logger.info(f"Call {call_log_id} status updated to ongoing")
+                        
+                        # Start silence monitor now that call is active
+                        silence_monitor.start()
                     
                     await session_start_task
                     
@@ -1114,6 +1098,9 @@ async def entrypoint(ctx: agents.JobContext):
                     status="ongoing"
                 )
                 logger.info(f"Inbound call {call_log_id} status updated to ongoing")
+            
+            # Start silence monitor now that call is active
+            silence_monitor.start()
             
             if call_recorder:
                 attach_transcription_tracker(session, call_recorder)
