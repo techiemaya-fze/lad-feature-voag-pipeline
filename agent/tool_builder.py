@@ -56,6 +56,7 @@ class ToolConfig:
         gmail: bool = False,
         microsoft_bookings_auto: bool = False,  # Auto-book with defaults
         microsoft_bookings_manual: bool = False,  # Agent lists and user selects
+        microsoft_outlook: bool = False,  # Send emails via Outlook
         email_templates: bool = False,
         knowledge_base: bool = False,
         human_support: bool = False,
@@ -66,6 +67,7 @@ class ToolConfig:
         self.gmail = gmail
         self.microsoft_bookings_auto = microsoft_bookings_auto
         self.microsoft_bookings_manual = microsoft_bookings_manual
+        self.microsoft_outlook = microsoft_outlook
         self.email_templates = email_templates
         self.knowledge_base = knowledge_base
         self.human_support = human_support
@@ -83,6 +85,7 @@ class ToolConfig:
             gmail=data.get("gmail", False),
             microsoft_bookings_auto=ms_auto,
             microsoft_bookings_manual=ms_manual,
+            microsoft_outlook=data.get("microsoft_outlook", False),
             email_templates=data.get("email_templates", False),
             knowledge_base=data.get("knowledge_base", False),
             human_support=data.get("human_support", False),
@@ -98,6 +101,7 @@ class ToolConfig:
             gmail=True,
             microsoft_bookings_auto=True,
             microsoft_bookings_manual=False,  # Don't enable both
+            microsoft_outlook=True,
             email_templates=True,
             knowledge_base=True,
             human_support=True,
@@ -113,6 +117,7 @@ class ToolConfig:
             gmail=True,
             microsoft_bookings_auto=True,
             microsoft_bookings_manual=False,
+            microsoft_outlook=True,
             email_templates=True,
             knowledge_base=True,
             human_support=True,
@@ -155,6 +160,15 @@ TOOL_INSTRUCTIONS = {
 - **microsoft_book_appointment**: Book appointment with Teams link
   - Required: start_time (ISO format), customer_name, customer_email
   - Optional: customer_phone, notes
+""",
+
+    "microsoft_outlook": """
+## Microsoft Outlook Email Tools
+- **send_outlook_email**: Send email from connected Microsoft/Outlook account
+  - Required: to_email, subject, body
+  - Optional: cc_email
+  - Use for sending emails when user has connected their Microsoft account
+  - Different from Gmail - uses Microsoft 365 email
 """,
 
     "email_templates": """
@@ -243,6 +257,9 @@ def get_tool_instructions(config: "ToolConfig") -> str:
     
     if config.microsoft_bookings_auto or config.microsoft_bookings_manual:
         sections.append(TOOL_INSTRUCTIONS["microsoft_bookings"])
+    
+    if config.microsoft_outlook:
+        sections.append(TOOL_INSTRUCTIONS["microsoft_outlook"])
     
     if config.email_templates or config.glinks_email:
         sections.append(TOOL_INSTRUCTIONS["email_templates"])
@@ -396,6 +413,7 @@ async def _get_tools_from_tenant_features(tenant_id: str | None) -> tuple["ToolC
         "voice-agent-tool-gmail": "gmail",
         "voice-agent-tool-microsoft-bookings-auto": "microsoft_bookings_auto",
         "voice-agent-tool-microsoft-bookings-manual": "microsoft_bookings_manual",
+        "voice-agent-tool-microsoft-outlook": "microsoft_outlook",
         "voice-agent-tool-email-templates": "email_templates",
         "voice-agent-tool-knowledge-base": "knowledge_base",
         "voice-agent-tool-human-support": "human_support",
@@ -433,6 +451,7 @@ async def _get_tools_from_tenant_features(tenant_id: str | None) -> tuple["ToolC
             gmail=enabled_tools.get("gmail", False),
             microsoft_bookings_auto=enabled_tools.get("microsoft_bookings_auto", False),
             microsoft_bookings_manual=enabled_tools.get("microsoft_bookings_manual", False),
+            microsoft_outlook=enabled_tools.get("microsoft_outlook", False),
             email_templates=enabled_tools.get("email_templates", False),
             knowledge_base=enabled_tools.get("knowledge_base", False),
             human_support=enabled_tools.get("human_support", False),
@@ -721,6 +740,69 @@ def build_microsoft_bookings_tools(
         "Microsoft Bookings tools built: user_id=%s, is_auto=%s, count=%d",
         user_id, is_auto, len(tools)
     )
+    return tools
+
+
+def build_microsoft_outlook_tools(
+    user_id: str | int | None,
+    outlook_client: Any = None,
+) -> list[Callable]:
+    """
+    Build Microsoft Outlook email tools as @function_tool decorated functions.
+    
+    Args:
+        user_id: User ID for OAuth token resolution
+        outlook_client: AgentMicrosoftOutlook instance (optional, created if not provided)
+        
+    Returns:
+        List of @function_tool decorated functions
+    """
+    if outlook_client is None:
+        from tools.microsoft_outlook import AgentMicrosoftOutlook
+        logger.debug("build_microsoft_outlook_tools: user_id=%r", user_id)
+        outlook_client = AgentMicrosoftOutlook(user_id=user_id)
+    
+    @function_tool
+    async def send_outlook_email(
+        to_email: str,
+        subject: str,
+        body: str,
+        cc_email: str = "",
+    ) -> str:
+        """
+        Send an email using Microsoft Outlook.
+        
+        Args:
+            to_email: Recipient email address (comma-separated for multiple)
+            subject: Email subject line
+            body: Email body text
+            cc_email: CC recipient email address (optional, comma-separated for multiple)
+            
+        Returns:
+            Confirmation message or error description
+        """
+        try:
+            # Parse comma-separated emails
+            to_emails = [e.strip() for e in to_email.split(",") if e.strip()]
+            cc_emails = [e.strip() for e in cc_email.split(",") if e.strip()] if cc_email else None
+            
+            result = await outlook_client.send_email(
+                to_emails=to_emails,
+                subject=subject,
+                body=body,
+                cc_emails=cc_emails,
+            )
+            
+            if result.get("success"):
+                return f"Email sent successfully to {', '.join(to_emails)}"
+            else:
+                return f"Failed to send email: {result.get('error', 'Unknown error')}"
+        except Exception as e:
+            logger.error(f"Failed to send Outlook email: {e}")
+            return f"Sorry, I couldn't send the email: {str(e)}"
+    
+    tools = [send_outlook_email]
+    logger.info("Microsoft Outlook tools built: user_id=%s, count=%d", user_id, len(tools))
     return tools
 
 
@@ -1252,6 +1334,15 @@ async def attach_tools(
         except Exception as e:
             logger.error(f"Failed to build Microsoft Bookings Manual tools: {e}")
     
+    # Microsoft Outlook (send emails via Outlook)
+    if config.microsoft_outlook:
+        try:
+            tools = build_microsoft_outlook_tools(user_id)
+            attached_tools.extend(tools)
+            logger.info(f"Attached Microsoft Outlook tools: {len(tools)} functions")
+        except Exception as e:
+            logger.error(f"Failed to build Microsoft Outlook tools: {e}")
+    
     # Knowledge Base tools
     if config.knowledge_base:
         try:
@@ -1348,6 +1439,7 @@ __all__ = [
     "attach_tools",
     "build_google_workspace_tools",
     "build_microsoft_bookings_tools",
+    "build_microsoft_outlook_tools",
     "build_knowledge_base_tools",
     "build_email_template_tools",
 ]

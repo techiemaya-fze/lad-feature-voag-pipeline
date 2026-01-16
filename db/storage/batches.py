@@ -11,7 +11,7 @@ Updated for lad_dev schema (Phase 12):
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Any
 
 import psycopg2
@@ -213,7 +213,7 @@ class BatchStorage:
                             to_phone,
                             lead_id,
                             call_log_id,
-                            "pending",
+                            "queued",
                             None,  # last_error - null initially
                             self._prepare_jsonb(metadata or {}),
                             False,  # is_deleted
@@ -393,6 +393,7 @@ class BatchStorage:
         batch_id: str,
         completed_delta: int = 0,
         failed_delta: int = 0,
+        cancelled_delta: int = 0,
     ) -> bool:
         """
         Atomically increment batch counters.
@@ -401,10 +402,14 @@ class BatchStorage:
             batch_id: UUID of the batch
             completed_delta: Amount to add to completed_calls
             failed_delta: Amount to add to failed_calls
+            cancelled_delta: Amount to add to failed_calls (cancelled counts as failed)
         
         Returns:
             True if successful, False otherwise
         """
+        # Cancelled entries are counted as failed for reporting purposes
+        total_failed_delta = failed_delta + cancelled_delta
+        
         try:
             conn = self._get_connection()
             try:
@@ -418,7 +423,7 @@ class BatchStorage:
                             updated_at = %s
                         WHERE id = %s
                         """,
-                        (completed_delta, failed_delta, datetime.now(timezone.utc), batch_id)
+                        (completed_delta, total_failed_delta, datetime.now(timezone.utc), batch_id)
                     )
                     conn.commit()
                     return True
@@ -623,6 +628,105 @@ class BatchStorage:
             )
             return 0
 
+    async def count_pending_entries(self, batch_id: str, entry_ids: list[str]) -> int:
+        """
+        Count entries from the given list that are still pending/running/dispatched.
+        
+        Used by wave completion logic to check how many entries haven't finished.
+        
+        Args:
+            batch_id: UUID of the batch
+            entry_ids: List of entry UUIDs to check
+            
+        Returns:
+            Count of entries not yet in terminal state
+        """
+        if not entry_ids:
+            return 0
+            
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    # Count entries that haven't reached terminal state
+                    cur.execute(
+                        f"""
+                        SELECT COUNT(*) FROM {FULL_ENTRY_TABLE}
+                        WHERE batch_id = %s 
+                          AND id = ANY(%s)
+                          AND status NOT IN ('completed', 'failed', 'cancelled')
+                        """,
+                        (batch_id, entry_ids)
+                    )
+                    return cur.fetchone()[0]
+            finally:
+                self._return_connection(conn)
+                
+        except Exception as exc:
+            logger.error(
+                "Failed to count pending entries: %s",
+                exc,
+                exc_info=True
+            )
+            # Assume all pending on error (safe fallback - will keep waiting)
+            return len(entry_ids)
+
+    async def mark_pending_entries_failed(
+        self, 
+        batch_id: str, 
+        entry_ids: list[str], 
+        error_reason: str
+    ) -> int:
+        """
+        Mark specific entries as failed with error reason.
+        
+        Used by wave timeout logic to fail entries that didn't complete in time.
+        
+        Args:
+            batch_id: UUID of the batch
+            entry_ids: List of entry UUIDs to mark as failed
+            error_reason: Error message to store
+            
+        Returns:
+            Number of entries marked as failed
+        """
+        if not entry_ids:
+            return 0
+            
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        UPDATE {FULL_ENTRY_TABLE}
+                        SET status = 'failed', 
+                            error_message = %s,
+                            updated_at = %s
+                        WHERE batch_id = %s 
+                          AND id = ANY(%s)
+                          AND status NOT IN ('completed', 'failed', 'cancelled')
+                        """,
+                        (error_reason, datetime.now(timezone.utc), batch_id, entry_ids)
+                    )
+                    failed_count = cur.rowcount
+                    conn.commit()
+                    logger.info(
+                        "Marked %d entries as failed (reason: %s) for batch %s",
+                        failed_count, error_reason, batch_id
+                    )
+                    return failed_count
+            finally:
+                self._return_connection(conn)
+                
+        except Exception as exc:
+            logger.error(
+                "Failed to mark entries failed: %s",
+                exc,
+                exc_info=True
+            )
+            return 0
+
     async def get_running_entries_with_call_logs(self, batch_id: str) -> list[dict]:
         """Get running entries with their call_log details for cleanup."""
         try:
@@ -771,4 +875,450 @@ class BatchStorage:
                 exc_info=True
             )
             return {"completed": False, "should_report": False}
+
+    # =========================================================================
+    # WAVE-BASED BATCH PACING HELPERS
+    # =========================================================================
+
+    async def count_pending_entries(self, batch_id: str, entry_ids: list[str]) -> int:
+        """
+        Count how many of the given entries are still pending (not completed/failed).
+        
+        Used by wave-based dispatch to wait for a wave to complete.
+        
+        Args:
+            batch_id: UUID of the batch
+            entry_ids: List of entry UUIDs to check
+        
+        Returns:
+            Number of entries still in non-terminal state (pending, running, dispatched)
+        """
+        if not entry_ids:
+            return 0
+        
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    # Count entries that are NOT in terminal state (completed, failed, cancelled)
+                    cur.execute(
+                        f"""
+                        SELECT COUNT(*) 
+                        FROM {FULL_ENTRY_TABLE}
+                        WHERE batch_id = %s 
+                        AND id = ANY(%s::uuid[])
+                        AND status NOT IN ('completed', 'failed', 'cancelled')
+                        """,
+                        (batch_id, entry_ids)
+                    )
+                    result = cur.fetchone()
+                    return result[0] if result else 0
+            finally:
+                self._return_connection(conn)
+
+        except Exception as exc:
+            logger.error(
+                "Failed to count pending entries: %s",
+                exc,
+                exc_info=True
+            )
+            return len(entry_ids)  # Assume all pending on error to avoid infinite loop
+
+    async def mark_pending_entries_failed(
+        self, 
+        batch_id: str, 
+        entry_ids: list[str], 
+        reason: str
+    ) -> int:
+        """
+        Mark pending entries as failed due to wave timeout.
+        
+        Used when a wave times out to clean up stuck entries.
+        
+        Args:
+            batch_id: UUID of the batch
+            entry_ids: List of entry UUIDs to check
+            reason: Reason for failure (e.g., "wave_timeout")
+        
+        Returns:
+            Number of entries marked as failed
+        """
+        if not entry_ids:
+            return 0
+        
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    # Update entries that are still pending/running/dispatched
+                    cur.execute(
+                        f"""
+                        UPDATE {FULL_ENTRY_TABLE}
+                        SET status = 'failed', 
+                            last_error = %s,
+                            updated_at = %s
+                        WHERE batch_id = %s 
+                        AND id = ANY(%s::uuid[])
+                        AND status NOT IN ('completed', 'failed', 'cancelled')
+                        """,
+                        (f"timeout: {reason}", datetime.now(timezone.utc), batch_id, entry_ids)
+                    )
+                    failed_count = cur.rowcount
+                    
+                    # Also increment batch failed counter
+                    if failed_count > 0:
+                        cur.execute(
+                            f"""
+                            UPDATE {FULL_BATCH_TABLE}
+                            SET failed_calls = failed_calls + %s, updated_at = %s
+                            WHERE id = %s
+                            """,
+                            (failed_count, datetime.now(timezone.utc), batch_id)
+                        )
+                    
+                    conn.commit()
+                    
+                    if failed_count > 0:
+                        logger.warning(
+                            "Marked %d entries as failed due to %s in batch %s",
+                            failed_count, reason, batch_id
+                        )
+                    
+                    return failed_count
+            finally:
+                self._return_connection(conn)
+
+        except Exception as exc:
+            logger.error(
+                "Failed to mark entries as failed: %s",
+                exc,
+                exc_info=True
+            )
+            return 0
+
+    # =========================================================================
+    # WAVE DISPATCH METHODS
+    # =========================================================================
+
+    async def get_queued_entries_for_wave(self, batch_id: str, wave_size: int = 15) -> list[dict]:
+        """
+        Get next wave of queued entries for dispatch.
+        
+        Args:
+            batch_id: UUID of the batch
+            wave_size: Maximum entries to return (default 15)
+            
+        Returns:
+            List of entry dicts ready for dispatch
+        """
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        f"""
+                        SELECT id, tenant_id, batch_id, lead_id, to_phone, metadata, retry_count
+                        FROM {FULL_ENTRY_TABLE}
+                        WHERE batch_id = %s 
+                          AND status = 'queued'
+                          AND is_deleted = FALSE
+                        ORDER BY created_at
+                        LIMIT %s
+                        """,
+                        (batch_id, wave_size)
+                    )
+                    rows = cur.fetchall()
+                    return [dict(row) for row in rows]
+            finally:
+                self._return_connection(conn)
+
+        except Exception as exc:
+            logger.error("Failed to get queued entries: %s", exc, exc_info=True)
+            return []
+
+    async def mark_entries_dispatched(self, entry_ids: list[str]) -> int:
+        """
+        Mark entries as dispatched (sent to LiveKit, awaiting worker pickup).
+        
+        Args:
+            entry_ids: List of entry UUIDs to mark as dispatched
+            
+        Returns:
+            Number of entries updated
+        """
+        if not entry_ids:
+            return 0
+            
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        UPDATE {FULL_ENTRY_TABLE}
+                        SET status = 'dispatched', updated_at = %s
+                        WHERE id = ANY(%s)
+                          AND status = 'queued'
+                        """,
+                        (datetime.now(timezone.utc), entry_ids)
+                    )
+                    count = cur.rowcount
+                    conn.commit()
+                    return count
+            finally:
+                self._return_connection(conn)
+
+        except Exception as exc:
+            logger.error("Failed to mark entries dispatched: %s", exc, exc_info=True)
+            return 0
+
+    async def reset_expired_to_queued(self, batch_id: str, entry_ids: list[str], max_retries: int = 2) -> dict:
+        """
+        Reset expired dispatched entries back to queued for retry.
+        
+        Entries that exceeded max_retries are marked as failed instead.
+        
+        Args:
+            batch_id: UUID of the batch
+            entry_ids: List of entry UUIDs to check
+            max_retries: Maximum retry count (default 2)
+            
+        Returns:
+            Dict with 'reset_count' and 'failed_count'
+        """
+        if not entry_ids:
+            return {"reset_count": 0, "failed_count": 0}
+            
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    # Reset entries that can still retry
+                    cur.execute(
+                        f"""
+                        UPDATE {FULL_ENTRY_TABLE}
+                        SET status = 'queued', 
+                            retry_count = retry_count + 1,
+                            updated_at = %s
+                        WHERE batch_id = %s 
+                          AND id = ANY(%s)
+                          AND status = 'dispatched'
+                          AND retry_count < %s
+                        """,
+                        (datetime.now(timezone.utc), batch_id, entry_ids, max_retries)
+                    )
+                    reset_count = cur.rowcount
+                    
+                    # Fail entries that exceeded max retries
+                    cur.execute(
+                        f"""
+                        UPDATE {FULL_ENTRY_TABLE}
+                        SET status = 'failed', 
+                            error_message = 'max_retries_exceeded',
+                            updated_at = %s
+                        WHERE batch_id = %s 
+                          AND id = ANY(%s)
+                          AND status = 'dispatched'
+                          AND retry_count >= %s
+                        """,
+                        (datetime.now(timezone.utc), batch_id, entry_ids, max_retries)
+                    )
+                    failed_count = cur.rowcount
+                    
+                    conn.commit()
+                    
+                    logger.info(
+                        "Wave timeout: reset %d entries to queued, failed %d (max retries) for batch %s",
+                        reset_count, failed_count, batch_id
+                    )
+                    return {"reset_count": reset_count, "failed_count": failed_count}
+            finally:
+                self._return_connection(conn)
+
+        except Exception as exc:
+            logger.error("Failed to reset expired entries: %s", exc, exc_info=True)
+            return {"reset_count": 0, "failed_count": 0}
+
+    async def get_wave_entries_by_status(
+        self, 
+        batch_id: str, 
+        entry_ids: list[str], 
+        statuses: list[str]
+    ) -> list[dict]:
+        """
+        Get entries from wave with specific statuses.
+        
+        Args:
+            batch_id: UUID of the batch
+            entry_ids: List of entry UUIDs in the wave
+            statuses: List of statuses to filter by
+            
+        Returns:
+            List of matching entry dicts with updated_at
+        """
+        if not entry_ids or not statuses:
+            return []
+            
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        f"""
+                        SELECT id, status, call_log_id, updated_at, retry_count
+                        FROM {FULL_ENTRY_TABLE}
+                        WHERE batch_id = %s 
+                          AND id = ANY(%s)
+                          AND status = ANY(%s)
+                        """,
+                        (batch_id, entry_ids, statuses)
+                    )
+                    rows = cur.fetchall()
+                    return [dict(row) for row in rows]
+            finally:
+                self._return_connection(conn)
+
+        except Exception as exc:
+            logger.error("Failed to get wave entries by status: %s", exc, exc_info=True)
+            return []
+
+    async def handle_wave_timeout(
+        self, 
+        batch_id: str, 
+        entry_ids: list[str],
+        max_retries: int = 2,
+        ongoing_timeout_minutes: int = 15,
+    ) -> dict:
+        """
+        Handle wave timeout: reset expired, fail stuck, extend for ongoing.
+        
+        Args:
+            batch_id: UUID of the batch
+            entry_ids: List of entry UUIDs in the wave
+            max_retries: Maximum retry count for expired entries
+            ongoing_timeout_minutes: Max minutes for ongoing calls
+            
+        Returns:
+            Dict with counts and list of entries still ongoing
+        """
+        results = {
+            "reset_to_queued": 0,
+            "failed_max_retries": 0,
+            "failed_ringing": 0,
+            "failed_ongoing_stuck": 0,
+            "still_ongoing": [],
+        }
+        
+        if not entry_ids:
+            return results
+            
+        try:
+            conn = self._get_connection()
+            try:
+                now = datetime.now(timezone.utc)
+                ongoing_threshold = now - timedelta(minutes=ongoing_timeout_minutes)
+                
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    # 1. Reset dispatched entries that can retry
+                    cur.execute(
+                        f"""
+                        UPDATE {FULL_ENTRY_TABLE}
+                        SET status = 'queued', 
+                            retry_count = retry_count + 1,
+                            updated_at = %s
+                        WHERE batch_id = %s 
+                          AND id = ANY(%s)
+                          AND status = 'dispatched'
+                          AND retry_count < %s
+                        RETURNING id
+                        """,
+                        (now, batch_id, entry_ids, max_retries)
+                    )
+                    results["reset_to_queued"] = cur.rowcount
+                    
+                    # 2. Fail dispatched entries that exceeded max retries
+                    cur.execute(
+                        f"""
+                        UPDATE {FULL_ENTRY_TABLE}
+                        SET status = 'failed', 
+                            error_message = 'max_retries_exceeded',
+                            updated_at = %s
+                        WHERE batch_id = %s 
+                          AND id = ANY(%s)
+                          AND status = 'dispatched'
+                          AND retry_count >= %s
+                        RETURNING id
+                        """,
+                        (now, batch_id, entry_ids, max_retries)
+                    )
+                    results["failed_max_retries"] = cur.rowcount
+                    
+                    # 3. Fail ringing entries (started but no progress)
+                    cur.execute(
+                        f"""
+                        UPDATE {FULL_ENTRY_TABLE}
+                        SET status = 'failed', 
+                            error_message = 'wave_timeout_ringing',
+                            updated_at = %s
+                        WHERE batch_id = %s 
+                          AND id = ANY(%s)
+                          AND status = 'ringing'
+                        RETURNING id
+                        """,
+                        (now, batch_id, entry_ids)
+                    )
+                    results["failed_ringing"] = cur.rowcount
+                    
+                    # 4. Check ongoing entries
+                    cur.execute(
+                        f"""
+                        SELECT id, call_log_id, updated_at
+                        FROM {FULL_ENTRY_TABLE}
+                        WHERE batch_id = %s 
+                          AND id = ANY(%s)
+                          AND status = 'ongoing'
+                        """,
+                        (batch_id, entry_ids)
+                    )
+                    ongoing_entries = cur.fetchall()
+                    
+                    for entry in ongoing_entries:
+                        entry_updated = entry["updated_at"]
+                        if entry_updated and entry_updated < ongoing_threshold:
+                            # Ongoing too long - mark as failed
+                            cur.execute(
+                                f"""
+                                UPDATE {FULL_ENTRY_TABLE}
+                                SET status = 'failed', 
+                                    error_message = 'ongoing_timeout',
+                                    updated_at = %s
+                                WHERE id = %s
+                                """,
+                                (now, entry["id"])
+                            )
+                            results["failed_ongoing_stuck"] += 1
+                        else:
+                            # Still in progress - need to wait
+                            results["still_ongoing"].append({
+                                "id": entry["id"],
+                                "call_log_id": entry["call_log_id"],
+                            })
+                    
+                    conn.commit()
+                    
+                logger.info(
+                    "Wave timeout handled for batch %s: reset=%d, failed_retries=%d, "
+                    "failed_ringing=%d, failed_stuck=%d, still_ongoing=%d",
+                    batch_id, results["reset_to_queued"], results["failed_max_retries"],
+                    results["failed_ringing"], results["failed_ongoing_stuck"], 
+                    len(results["still_ongoing"])
+                )
+                return results
+                
+            finally:
+                self._return_connection(conn)
+
+        except Exception as exc:
+            logger.error("Failed to handle wave timeout: %s", exc, exc_info=True)
+            return results
 

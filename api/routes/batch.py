@@ -15,6 +15,7 @@ import csv
 import io
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -66,6 +67,16 @@ def _get_voice_storage() -> VoiceStorage:
         _voice_storage = VoiceStorage()
     return _voice_storage
 
+
+# =============================================================================
+# BATCH PACING CONFIGURATION
+# =============================================================================
+# Wave-based dispatch: process BATCH_WAVE_SIZE calls at a time, wait for completion
+BATCH_WAVE_SIZE = int(os.getenv("BATCH_WAVE_SIZE", "15"))
+BATCH_WAVE_POLL_INTERVAL = float(os.getenv("BATCH_WAVE_POLL_INTERVAL", "5.0"))  # seconds
+BATCH_WAVE_TIMEOUT = float(os.getenv("BATCH_WAVE_TIMEOUT", "1200.0"))  # 20 min max per wave
+BATCH_MAX_RETRIES = int(os.getenv("BATCH_MAX_RETRIES", "2"))  # Max retries for expired requests
+BATCH_ONGOING_TIMEOUT = int(os.getenv("BATCH_ONGOING_TIMEOUT", "15"))  # Minutes before ongoing call is considered stuck
 
 async def _resolve_tenant_id_from_user(user_id: str | None) -> str | None:
     """
@@ -165,6 +176,83 @@ def _parse_batch_csv(file_bytes: bytes) -> list[BatchCallEntry]:
         ))
     
     return entries
+
+
+# =============================================================================
+# WAVE COMPLETION HELPER
+# =============================================================================
+
+async def _wait_for_wave_completion(
+    batch_id: str, 
+    entry_ids: list[str], 
+    wave_num: int,
+    job_id: str
+) -> dict:
+    """
+    Wait for all entries in wave to reach terminal state or timeout.
+    
+    Uses the new status-aware timeout handling:
+    - dispatched entries: reset to queued for retry (up to max_retries)
+    - ringing entries: mark as failed (stuck in ringing)
+    - ongoing entries: wait if < 15 min, fail if > 15 min
+    
+    Args:
+        batch_id: Batch UUID
+        entry_ids: List of entry UUIDs in this wave
+        wave_num: Wave number for logging
+        job_id: Job ID for logging
+        
+    Returns:
+        Dict with timeout handling results
+    """
+    batch_storage = _get_batch_storage()
+    start_time = asyncio.get_event_loop().time()
+    
+    while True:
+        # Check if all entries are done (completed, failed, cancelled, declined, ended)
+        pending = await batch_storage.count_pending_entries(batch_id, entry_ids)
+        
+        if pending == 0:
+            logger.info("Batch %s wave %d: All entries completed", job_id, wave_num)
+            return {"completed": True, "timeout_results": None}
+        
+        # Check timeout
+        elapsed = asyncio.get_event_loop().time() - start_time
+        if elapsed > BATCH_WAVE_TIMEOUT:
+            logger.warning(
+                "Batch %s wave %d: Timeout after %.1fs, %d entries still pending", 
+                job_id, wave_num, elapsed, pending
+            )
+            
+            # Use intelligent timeout handling
+            timeout_results = await batch_storage.handle_wave_timeout(
+                batch_id=batch_id,
+                entry_ids=entry_ids,
+                max_retries=BATCH_MAX_RETRIES,
+                ongoing_timeout_minutes=BATCH_ONGOING_TIMEOUT,
+            )
+            
+            # If there are still ongoing entries, extend wait
+            if timeout_results["still_ongoing"]:
+                logger.info(
+                    "Batch %s wave %d: %d entries still ongoing, extending wait",
+                    job_id, wave_num, len(timeout_results["still_ongoing"])
+                )
+                # Reset timer but with shorter timeout for ongoing entries
+                start_time = asyncio.get_event_loop().time()
+                # Continue waiting with reduced timeout (5 min for ongoing)
+                continue
+            
+            return {"completed": False, "timeout_results": timeout_results}
+        
+        # Log progress periodically (every 30 seconds)
+        if int(elapsed) % 30 == 0 and int(elapsed) > 0:
+            logger.info(
+                "Batch %s wave %d: Waiting for %d entries (%.0fs elapsed)",
+                job_id, wave_num, pending, elapsed
+            )
+        
+        await asyncio.sleep(BATCH_WAVE_POLL_INTERVAL)
 
 
 # =============================================================================
@@ -331,54 +419,80 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
             logger.warning("Failed to create batch entry %d", i)
             entry_ids.append("")  # Empty placeholder
 
-    # Fire and forget the batch processing
+    # Fire and forget the batch processing with wave-based pacing
     async def _process_batch():
+        """
+        Process batch in waves of BATCH_WAVE_SIZE calls.
+        
+        This prevents overwhelming the worker by waiting for each wave
+        to complete before starting the next.
+        """
         call_service = get_call_service()
         batch_storage = _get_batch_storage()
         
-        for i, entry in enumerate(entries):
-            entry_id = entry_ids[i] if i < len(entry_ids) else None
-            if not entry_id:
-                logger.warning("Skipping entry %d - no entry_id", i)
-                continue
-            
-            try:
-                # Update entry status to running
-                await batch_storage.update_batch_entry_status(entry_id, "running")
-                
-                # Dispatch call
-                result = await call_service.dispatch_call(
-                    job_id=job_id,
-                    voice_id=resolved_voice_id,
-                    voice_context=voice_context,
-                    from_number=clean_from_number,
-                    to_number=entry.to_number,
-                    context=entry.context or clean_context,
-                    initiated_by=initiator_id,
-                    agent_id=assigned_agent_id,
-                    llm_provider=llm_provider_override,
-                    llm_model=llm_model_override,
-                    knowledge_base_store_ids=entry.knowledge_base_store_ids,
-                    lead_name=entry.lead_name,  # Pass lead_name from batch entry
-                    lead_id_override=entry.lead_id,
-                    batch_id=str(batch_id),  # For worker to track batch completion
-                    entry_id=entry_id,  # For worker to update entry status
-                )
-                
-                # Update entry with call log ID and status
-                await batch_storage.update_batch_entry_call_log(batch_id, entry_id, result.call_log_id)
-                await batch_storage.update_batch_entry_status(entry_id, "dispatched")
-                
-                # Don't increment completed_calls here - worker will do it when call ends
-                
-            except Exception as exc:
-                logger.exception("Batch entry %d failed: %s", i, exc)
-                await batch_storage.update_batch_entry_status(entry_id, "failed", error_message=str(exc)[:500])
-                await batch_storage.increment_batch_counters(batch_id, failed_delta=1)
+        total = len(entries)
+        wave_num = 0
         
-        # Mark batch as running (not completed - worker will complete when all calls end)
+        for wave_start in range(0, total, BATCH_WAVE_SIZE):
+            wave_num += 1
+            wave_end = min(wave_start + BATCH_WAVE_SIZE, total)
+            wave_entries = entries[wave_start:wave_end]
+            wave_entry_ids = entry_ids[wave_start:wave_end]
+            
+            logger.info(
+                "Batch %s: Starting wave %d (%d-%d of %d)", 
+                job_id, wave_num, wave_start + 1, wave_end, total
+            )
+            
+            # Dispatch all calls in this wave
+            dispatched_entry_ids = []
+            for i, (entry, entry_id) in enumerate(zip(wave_entries, wave_entry_ids)):
+                if not entry_id:
+                    logger.warning("Skipping entry %d - no entry_id", wave_start + i)
+                    continue
+                
+                try:
+                    # Update entry status to running
+                    await batch_storage.update_batch_entry_status(entry_id, "running")
+                    
+                    # Dispatch call
+                    result = await call_service.dispatch_call(
+                        job_id=job_id,
+                        voice_id=resolved_voice_id,
+                        voice_context=voice_context,
+                        from_number=clean_from_number,
+                        to_number=entry.to_number,
+                        context=entry.context or clean_context,
+                        initiated_by=initiator_id,
+                        agent_id=assigned_agent_id,
+                        llm_provider=llm_provider_override,
+                        llm_model=llm_model_override,
+                        knowledge_base_store_ids=entry.knowledge_base_store_ids,
+                        lead_name=entry.lead_name,
+                        lead_id_override=entry.lead_id,
+                        batch_id=str(batch_id),
+                        entry_id=entry_id,
+                    )
+                    
+                    # Update entry with call log ID and status
+                    await batch_storage.update_batch_entry_call_log(batch_id, entry_id, result.call_log_id)
+                    await batch_storage.update_batch_entry_status(entry_id, "dispatched")
+                    dispatched_entry_ids.append(entry_id)
+                    
+                except Exception as exc:
+                    logger.exception("Batch entry %d failed: %s", wave_start + i, exc)
+                    await batch_storage.update_batch_entry_status(entry_id, "failed", error_message=str(exc)[:500])
+                    await batch_storage.increment_batch_counters(batch_id, failed_delta=1)
+            
+            # Wait for this wave to complete before starting next
+            if dispatched_entry_ids:
+                await _wait_for_wave_completion(batch_id, dispatched_entry_ids, wave_num, job_id)
+            
+            logger.info("Batch %s: Wave %d complete", job_id, wave_num)
+        
+        # Mark batch as running (worker will mark completed when last call ends)
         await batch_storage.update_batch_status(batch_id, "running")
-        logger.info("Batch %s dispatched all calls, now running", job_id)
+        logger.info("Batch %s dispatched all %d calls in %d waves, now running", job_id, total, wave_num)
         
         # NOTE: Batch report is triggered by cleanup_handler when last call completes
 
