@@ -611,6 +611,135 @@ def create_email_template_tools(
     return [send_template_email, list_templates]
 
 
+def create_microsoft_email_template_tools(tenant_id: str, user_id: str | None = None):
+    """
+    Create Microsoft email template tools for agent attachment.
+    
+    Uses Microsoft OAuth (Outlook) instead of Google to send emails.
+    
+    Args:
+        tenant_id: Tenant UUID for template resolution
+        user_id: User ID for Microsoft OAuth token resolution
+        
+    Returns:
+        List of tool functions [send_template_email_ms, list_templates]
+    """
+    @function_tool
+    async def send_template_email_ms(
+        template_key: str,
+        to: list[str],
+        recipient_name: str,
+        placeholders: dict[str, str] | None = None,
+    ) -> str:
+        """
+        Send an email using a template from the tenant's template library via Microsoft.
+        
+        Args:
+            template_key: Key of the template to use (e.g., "TC01A")
+            to: List of recipient email addresses
+            recipient_name: Name of the recipient (REQUIRED - must be real name)
+            placeholders: Additional placeholder values
+            
+        Returns:
+            Success message or error
+        """
+        # Get template from DB
+        template = await get_template_from_db(tenant_id, template_key)
+        if not template:
+            # Try builtin templates as fallback
+            builtin = get_builtin_template(template_key)
+            if builtin:
+                template = {
+                    "key": builtin.key,
+                    "name": builtin.name,
+                    "subject_template": builtin.subject_template,
+                    "content": builtin.text_body_template,
+                    "html_content": builtin.html_body_template,
+                    "placeholders": list(builtin.placeholders),
+                }
+            else:
+                available = await list_templates_from_db(tenant_id)
+                keys = [t["key"] for t in available[:10]]
+                return f"Template '{template_key}' not found. Available: {', '.join(keys)}"
+        
+        # Validate recipient name
+        if not recipient_name or recipient_name.lower() in ["student_name", "{student_name}", "name"]:
+            return "Error: You must provide the recipient's ACTUAL NAME, not a placeholder."
+        
+        # Build placeholder values
+        placeholder_values = placeholders or {}
+        placeholder_values["STUDENT_NAME"] = recipient_name
+        placeholder_values["recipient_name"] = recipient_name
+        
+        # Render template
+        subject, body = render_template(template, placeholder_values, use_html=True)
+        
+        if not subject or not body:
+            return f"Error: Template '{template_key}' could not be rendered."
+        
+        # Send email via Microsoft OAuth
+        try:
+            from utils.microsoft_credentials import MicrosoftCredentialResolver, MicrosoftCredentialError
+            from tools.microsoft_outlook_tool import MicrosoftOutlookTool, EmailRecipient
+            
+            resolver = MicrosoftCredentialResolver()
+            access_token = await resolver.load_access_token(user_id)
+            
+            outlook_tool = MicrosoftOutlookTool(access_token)
+            recipients = [EmailRecipient(email=addr, name=recipient_name) for addr in to]
+            
+            result = await outlook_tool.send_email(
+                to_recipients=recipients,
+                subject=subject,
+                body_content=body,
+                content_type="HTML" if "<html>" in body.lower() else "Text",
+            )
+            return f"Email sent via Microsoft using template '{template_key}' ({template['name']}) to {recipient_name}."
+        except MicrosoftCredentialError as e:
+            _logger.error(f"Microsoft OAuth error: {e}")
+            return f"Error: Microsoft not authorized for this user. {e}"
+        except Exception as exc:
+            _logger.error(f"Failed to send Microsoft template email: {exc}")
+            return f"Error sending email: {exc}"
+    
+    @function_tool
+    async def list_templates(category: str | None = None) -> str:
+        """
+        List available email templates for this tenant.
+        
+        Args:
+            category: Optional category filter (e.g., "non_responsive", "follow_up")
+            
+        Returns:
+            Formatted list of available templates
+        """
+        templates = await list_templates_from_db(tenant_id, category)
+        
+        if not templates:
+            return "No templates available for this tenant."
+        
+        lines = ["## Available Email Templates\n"]
+        
+        # Group by category
+        categories: dict[str, list] = {}
+        for t in templates:
+            cat = t.get("category", "general")
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append(t)
+        
+        for cat, tmpl_list in categories.items():
+            lines.append(f"### {cat.upper().replace('_', ' ')}")
+            for t in tmpl_list:
+                placeholders_str = ", ".join(t.get("placeholders", ["recipient_name"]))
+                lines.append(f"- **{t['key']}**: {t.get('description', t['name'])} (placeholders: {placeholders_str})")
+            lines.append("")
+        
+        return "\n".join(lines)
+    
+    return [send_template_email_ms, list_templates]
+
+
 __all__ = [
     # Builtin templates
     "BuiltinTemplate",
@@ -627,6 +756,7 @@ __all__ = [
     "SEND_INFORMATION",
     # Phase 18: DB-based template tools
     "create_email_template_tools",
+    "create_microsoft_email_template_tools",
     "get_template_from_db",
     "list_templates_from_db",
     "render_template",

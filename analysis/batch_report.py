@@ -1140,17 +1140,51 @@ def export_to_excel(
     return str(output_path)
 
 
-def _get_email_method() -> str:
+def _get_email_method(tenant_id: Optional[str] = None) -> str:
     """
-    Get the configured email method.
+    Get the configured email method from tenant features or env var.
+    
+    Priority:
+    1. Tenant features (lad_dev.tenant_features with feature_key='voice-agent-batch-report-email-provider')
+    2. BATCH_EMAIL_METHOD env var
+    3. Default 'oauth' (Google)
+    
+    Args:
+        tenant_id: Optional tenant UUID to query features
     
     Returns:
-        "smtp" (default), "oauth" (Google), or "microsoft"
+        "smtp", "oauth" (Google), or "microsoft"
     """
-    method = os.getenv("BATCH_EMAIL_METHOD", "smtp").lower().strip()
+    # Try tenant features first
+    if tenant_id:
+        try:
+            conn = _get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT config
+                        FROM lad_dev.tenant_features
+                        WHERE tenant_id = %s
+                          AND feature_key = 'voice-agent-batch-report-email-provider'
+                          AND enabled = true
+                    """, (tenant_id,))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        config = row[0] if isinstance(row[0], dict) else {}
+                        provider = config.get("provider", "").lower().strip()
+                        if provider in ("smtp", "oauth", "microsoft"):
+                            logger.info(f"Email provider from tenant features: {provider}")
+                            return provider
+            finally:
+                _return_conn(conn)
+        except Exception as e:
+            logger.warning(f"Failed to query tenant email provider: {e}")
+    
+    # Fall back to env var
+    method = os.getenv("BATCH_EMAIL_METHOD", "oauth").lower().strip()
     if method not in ("smtp", "oauth", "microsoft"):
-        logger.warning(f"Invalid BATCH_EMAIL_METHOD '{method}', defaulting to 'smtp'")
-        return "smtp"
+        logger.warning(f"Invalid BATCH_EMAIL_METHOD '{method}', defaulting to 'oauth'")
+        return "oauth"
     return method
 
 
@@ -1301,16 +1335,17 @@ async def _send_email_via_microsoft(
         outlook_tool = MicrosoftOutlookTool(access_token)
         recipients = [EmailRecipient(email=addr) for addr in to_emails]
         
-        # Note: Microsoft Graph API doesn't support attachments in the simple sendMail endpoint
-        # For attachments, we'd need to use the /messages endpoint with attachment upload
-        if attachment_path:
-            logger.warning("Microsoft email: attachment not yet supported, sending without attachment")
+        # Build attachments list for Graph API
+        attachments = []
+        if attachment_path and os.path.exists(attachment_path):
+            attachments.append({"path": attachment_path})
         
         result = await outlook_tool.send_email(
             to_recipients=recipients,
             subject=subject,
             body_content=html_body,
             content_type="HTML",
+            attachments=attachments if attachments else None,
         )
         
         logger.info(f"Microsoft email sent successfully to {len(to_emails)} recipient(s)")
@@ -1415,13 +1450,15 @@ async def send_report_email(
     calls_without_analysis: int = 0,
     excel_path: Optional[str] = None,
     oauth_user_id: Optional[int] = None,
+    tenant_id: Optional[str] = None,  # For email provider lookup
 ) -> bool:
     """
-    Send email with optional attachment using configured method (SMTP or OAuth).
+    Send email with optional attachment using configured method (SMTP, OAuth, or Microsoft).
     
-    The email method is determined by BATCH_EMAIL_METHOD environment variable:
-    - "smtp" (default): Use traditional SMTP
-    - "oauth": Use Google Gmail API with OAuth tokens
+    The email method is determined by:
+    1. Tenant features (voice-agent-batch-report-email-provider)
+    2. BATCH_EMAIL_METHOD env var
+    3. Default 'oauth' (Google)
     
     Args:
         to_emails: List of recipient email addresses
@@ -1432,7 +1469,8 @@ async def send_report_email(
         calls_with_analysis: Number of calls with analysis
         calls_without_analysis: Number of calls without analysis
         excel_path: Path to Excel file for HTML email
-        oauth_user_id: User ID for OAuth tokens (used when BATCH_EMAIL_METHOD=oauth)
+        oauth_user_id: User ID for OAuth tokens
+        tenant_id: Tenant UUID for email provider lookup
     
     Returns:
         True if email sent successfully
@@ -1449,7 +1487,7 @@ async def send_report_email(
         has_excel=excel_path is not None,
     )
     
-    email_method = _get_email_method()
+    email_method = _get_email_method(tenant_id)
     logger.info(f"Sending batch report email via {email_method.upper()} to {len(to_emails)} recipient(s)")
     
     if email_method == "oauth":

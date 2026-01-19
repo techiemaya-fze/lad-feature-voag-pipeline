@@ -67,6 +67,7 @@ class MicrosoftOutlookTool:
         cc_recipients: list[EmailRecipient] | None = None,
         bcc_recipients: list[EmailRecipient] | None = None,
         save_to_sent_items: bool = True,
+        attachments: list[dict] | None = None,  # List of {"path": str, "name": str} or {"content": bytes, "name": str}
     ) -> dict[str, Any]:
         """
         Send an email via Microsoft Graph API.
@@ -79,6 +80,10 @@ class MicrosoftOutlookTool:
             cc_recipients: Optional CC list
             bcc_recipients: Optional BCC list
             save_to_sent_items: Whether to save copy in Sent folder
+            attachments: Optional list of attachments. Each dict should have:
+                - path: File path to attach (OR)
+                - content: Raw bytes to attach
+                - name: Filename for the attachment
             
         Returns:
             Dict with success status
@@ -86,6 +91,8 @@ class MicrosoftOutlookTool:
         Raises:
             MicrosoftOutlookToolError: If email sending fails
         """
+        import base64
+        import os
         
         # Helper to format recipients for Graph API
         def format_recipients(recipients: list[EmailRecipient]) -> list[dict]:
@@ -116,6 +123,37 @@ class MicrosoftOutlookTool:
         
         if bcc_recipients:
             payload["message"]["bccRecipients"] = format_recipients(bcc_recipients)
+        
+        # Add attachments if provided
+        if attachments:
+            attachment_list = []
+            for att in attachments:
+                try:
+                    if "path" in att and os.path.exists(att["path"]):
+                        with open(att["path"], "rb") as f:
+                            content_bytes = f.read()
+                        filename = att.get("name") or os.path.basename(att["path"])
+                    elif "content" in att:
+                        content_bytes = att["content"]
+                        filename = att.get("name", "attachment")
+                    else:
+                        logger.warning(f"Skipping invalid attachment: {att}")
+                        continue
+                    
+                    # Base64 encode for Graph API
+                    content_b64 = base64.b64encode(content_bytes).decode("utf-8")
+                    
+                    attachment_list.append({
+                        "@odata.type": "#microsoft.graph.fileAttachment",
+                        "name": filename,
+                        "contentBytes": content_b64,
+                    })
+                    logger.info(f"Added attachment: {filename} ({len(content_bytes)} bytes)")
+                except Exception as e:
+                    logger.error(f"Failed to process attachment: {e}")
+            
+            if attachment_list:
+                payload["message"]["attachments"] = attachment_list
 
         logger.info(f"Sending email to {len(to_recipients)} recipients, subject: {subject[:50]}...")
         

@@ -58,6 +58,7 @@ class ToolConfig:
         microsoft_bookings_manual: bool = False,  # Agent lists and user selects
         microsoft_outlook: bool = False,  # Send emails via Outlook
         email_templates: bool = False,
+        email_templates_microsoft: bool = False,  # MS version of email templates
         knowledge_base: bool = False,
         human_support: bool = False,
         glinks_email: bool = False,
@@ -69,6 +70,7 @@ class ToolConfig:
         self.microsoft_bookings_manual = microsoft_bookings_manual
         self.microsoft_outlook = microsoft_outlook
         self.email_templates = email_templates
+        self.email_templates_microsoft = email_templates_microsoft
         self.knowledge_base = knowledge_base
         self.human_support = human_support
         self.glinks_email = glinks_email
@@ -87,6 +89,7 @@ class ToolConfig:
             microsoft_bookings_manual=ms_manual,
             microsoft_outlook=data.get("microsoft_outlook", False),
             email_templates=data.get("email_templates", False),
+            email_templates_microsoft=data.get("email_templates_microsoft", False),
             knowledge_base=data.get("knowledge_base", False),
             human_support=data.get("human_support", False),
             glinks_email=data.get("glinks_email", False),
@@ -103,6 +106,7 @@ class ToolConfig:
             microsoft_bookings_manual=False,  # Don't enable both
             microsoft_outlook=True,
             email_templates=True,
+            email_templates_microsoft=True,
             knowledge_base=True,
             human_support=True,
             glinks_email=True,
@@ -119,6 +123,7 @@ class ToolConfig:
             microsoft_bookings_manual=False,
             microsoft_outlook=True,
             email_templates=True,
+            email_templates_microsoft=True,
             knowledge_base=True,
             human_support=True,
             glinks_email=True,
@@ -415,6 +420,7 @@ async def _get_tools_from_tenant_features(tenant_id: str | None) -> tuple["ToolC
         "voice-agent-tool-microsoft-bookings-manual": "microsoft_bookings_manual",
         "voice-agent-tool-microsoft-outlook": "microsoft_outlook",
         "voice-agent-tool-email-templates": "email_templates",
+        "voice-agent-tool-email-templates-microsoft": "email_templates_microsoft",
         "voice-agent-tool-knowledge-base": "knowledge_base",
         "voice-agent-tool-human-support": "human_support",
     }
@@ -453,6 +459,7 @@ async def _get_tools_from_tenant_features(tenant_id: str | None) -> tuple["ToolC
             microsoft_bookings_manual=enabled_tools.get("microsoft_bookings_manual", False),
             microsoft_outlook=enabled_tools.get("microsoft_outlook", False),
             email_templates=enabled_tools.get("email_templates", False),
+            email_templates_microsoft=enabled_tools.get("email_templates_microsoft", False),
             knowledge_base=enabled_tools.get("knowledge_base", False),
             human_support=enabled_tools.get("human_support", False),
         )
@@ -891,6 +898,37 @@ def build_email_template_tools(
         return tools
     except Exception as exc:
         logger.error(f"Failed to create email template tools: {exc}")
+        return []
+
+
+def build_microsoft_email_template_tools(
+    tenant_id: str | None = None,
+    user_id: str | None = None,
+) -> list[Callable]:
+    """
+    Build Microsoft email template tools based on tenant.
+    
+    Uses Microsoft OAuth to send template emails instead of Google.
+    
+    Args:
+        tenant_id: Tenant UUID for template lookup
+        user_id: User ID for Microsoft OAuth token resolution
+        
+    Returns:
+        List of tool functions [send_template_email_ms, list_templates]
+    """
+    if not tenant_id:
+        logger.warning("No tenant_id for MS email templates - templates will not be available")
+        return []
+    
+    try:
+        from tools.email_templates import create_microsoft_email_template_tools
+        
+        tools = create_microsoft_email_template_tools(tenant_id, user_id)
+        logger.info(f"Microsoft email template tools created for tenant {tenant_id}")
+        return tools
+    except Exception as exc:
+        logger.error(f"Failed to create Microsoft email template tools: {exc}")
         return []
 
 
@@ -1354,7 +1392,7 @@ async def attach_tools(
         except Exception as e:
             logger.error(f"Failed to build Knowledge Base tools: {e}")
     
-    # Email Templates
+    # Email Templates (Google)
     if config.email_templates:
         try:
             tools = build_email_template_tools(tenant_id, user_id) if tenant_id else []
@@ -1362,6 +1400,15 @@ async def attach_tools(
             logger.info(f"Attached Email Template tools: {len(tools) if tools else 0} functions (user_id={'set' if user_id else 'None'})")
         except Exception as e:
             logger.error(f"Failed to build Email Template tools: {e}")
+    
+    # Email Templates (Microsoft)
+    if config.email_templates_microsoft:
+        try:
+            tools = build_microsoft_email_template_tools(tenant_id, user_id) if tenant_id else []
+            attached_tools.extend(tools)
+            logger.info(f"Attached Microsoft Email Template tools: {len(tools) if tools else 0} functions")
+        except Exception as e:
+            logger.error(f"Failed to build Microsoft Email Template tools: {e}")
     
     # Human Support (phone from config with env fallback)
     logger.info(f"[HumanSupport] config.human_support={config.human_support}")
