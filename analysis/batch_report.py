@@ -1145,10 +1145,10 @@ def _get_email_method() -> str:
     Get the configured email method.
     
     Returns:
-        "smtp" (default) or "oauth"
+        "smtp" (default), "oauth" (Google), or "microsoft"
     """
     method = os.getenv("BATCH_EMAIL_METHOD", "smtp").lower().strip()
-    if method not in ("smtp", "oauth"):
+    if method not in ("smtp", "oauth", "microsoft"):
         logger.warning(f"Invalid BATCH_EMAIL_METHOD '{method}', defaulting to 'smtp'")
         return "smtp"
     return method
@@ -1245,6 +1245,82 @@ async def _send_email_via_oauth(
         return False
     except Exception as e:
         logger.error(f"Failed to send OAuth email: {e}", exc_info=True)
+        return False
+
+
+async def _send_email_via_microsoft(
+    to_emails: List[str],
+    subject: str,
+    html_body: str,
+    text_body: str,
+    attachment_path: Optional[str] = None,
+    oauth_user_id: Optional[int] = None,
+) -> bool:
+    """
+    Send email using Microsoft Graph API via stored OAuth tokens.
+    
+    Args:
+        to_emails: List of recipient email addresses
+        subject: Email subject
+        html_body: HTML email body
+        text_body: Plain text email body (fallback)
+        attachment_path: Optional path to file attachment (not yet supported)
+        oauth_user_id: User ID for Microsoft OAuth tokens
+    
+    Returns:
+        True if email sent successfully
+    """
+    try:
+        from utils.microsoft_credentials import MicrosoftCredentialResolver, MicrosoftCredentialError
+        from tools.microsoft_outlook_tool import MicrosoftOutlookTool, EmailRecipient
+    except ImportError:
+        logger.error("Microsoft email dependencies not available")
+        return False
+    
+    # Get user ID for OAuth tokens
+    if oauth_user_id is not None:
+        oauth_user_id_int = oauth_user_id
+        logger.info(f"Using provided oauth_user_id={oauth_user_id_int} for Microsoft email")
+    else:
+        oauth_user_id_str = os.getenv("BATCH_EMAIL_OAUTH_USER_ID", "")
+        if not oauth_user_id_str:
+            logger.error("No oauth_user_id provided and BATCH_EMAIL_OAUTH_USER_ID not set")
+            return False
+        try:
+            oauth_user_id_int = int(oauth_user_id_str)
+        except ValueError:
+            logger.error(f"Invalid BATCH_EMAIL_OAUTH_USER_ID: {oauth_user_id_str}")
+            return False
+    
+    logger.info(f"Sending email via Microsoft Graph API using user_id={oauth_user_id_int}")
+    
+    try:
+        resolver = MicrosoftCredentialResolver()
+        access_token = await resolver.load_access_token(oauth_user_id_int)
+        
+        outlook_tool = MicrosoftOutlookTool(access_token)
+        recipients = [EmailRecipient(email=addr) for addr in to_emails]
+        
+        # Note: Microsoft Graph API doesn't support attachments in the simple sendMail endpoint
+        # For attachments, we'd need to use the /messages endpoint with attachment upload
+        if attachment_path:
+            logger.warning("Microsoft email: attachment not yet supported, sending without attachment")
+        
+        result = await outlook_tool.send_email(
+            to_recipients=recipients,
+            subject=subject,
+            body_content=html_body,
+            content_type="HTML",
+        )
+        
+        logger.info(f"Microsoft email sent successfully to {len(to_emails)} recipient(s)")
+        return True
+        
+    except MicrosoftCredentialError as e:
+        logger.error(f"Failed to load Microsoft OAuth credentials: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to send Microsoft email: {e}", exc_info=True)
         return False
 
 
@@ -1378,6 +1454,15 @@ async def send_report_email(
     
     if email_method == "oauth":
         return await _send_email_via_oauth(
+            to_emails=to_emails,
+            subject=subject,
+            html_body=html_body,
+            text_body=body,
+            attachment_path=attachment_path,
+            oauth_user_id=oauth_user_id,
+        )
+    elif email_method == "microsoft":
+        return await _send_email_via_microsoft(
             to_emails=to_emails,
             subject=subject,
             html_body=html_body,

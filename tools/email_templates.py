@@ -464,7 +464,11 @@ def render_template(template: dict, placeholders: dict[str, str], use_html: bool
     return subject, body
 
 
-def create_email_template_tools(tenant_id: str, user_id: str | None = None):  # user_id is UUID
+def create_email_template_tools(
+    tenant_id: str,
+    user_id: str | None = None,
+    email_provider: str = "google",  # "google" or "microsoft"
+):
     """
     Create email template tools for agent attachment.
     
@@ -531,18 +535,40 @@ def create_email_template_tools(tenant_id: str, user_id: str | None = None):  # 
         if not subject or not body:
             return f"Error: Template '{template_key}' could not be rendered."
         
-        # Send email via user's Gmail OAuth
+        # Send email via user's OAuth (Google or Microsoft)
         try:
-            from tools.gmail_email_tool import send_email_oauth
-            
-            result = await send_email_oauth(
-                user_id=user_id,
-                to=to,
-                subject=subject,
-                html_body=body,
-            )
-            
-            return f"Email sent using template '{template_key}' ({template['name']}) to {recipient_name}. {result}"
+            if email_provider == "microsoft":
+                from utils.microsoft_credentials import MicrosoftCredentialResolver, MicrosoftCredentialError
+                from tools.microsoft_outlook_tool import MicrosoftOutlookTool, EmailRecipient
+                
+                try:
+                    resolver = MicrosoftCredentialResolver()
+                    access_token = await resolver.load_access_token(user_id)
+                    
+                    outlook_tool = MicrosoftOutlookTool(access_token)
+                    recipients = [EmailRecipient(email=addr, name=recipient_name) for addr in to]
+                    
+                    result = await outlook_tool.send_email(
+                        to_recipients=recipients,
+                        subject=subject,
+                        body_content=body,
+                        content_type="HTML" if "<html>" in body.lower() else "Text",
+                    )
+                    return f"Email sent via Microsoft using template '{template_key}' ({template['name']}) to {recipient_name}."
+                except MicrosoftCredentialError as e:
+                    _logger.error(f"Microsoft OAuth error: {e}")
+                    return f"Error: Microsoft not authorized for this user. {e}"
+            else:
+                # Default: Google OAuth
+                from tools.gmail_email_tool import send_email_oauth
+                
+                result = await send_email_oauth(
+                    user_id=user_id,
+                    to=to,
+                    subject=subject,
+                    html_body=body,
+                )
+                return f"Email sent using template '{template_key}' ({template['name']}) to {recipient_name}. {result}"
         except Exception as exc:
             _logger.error(f"Failed to send template email: {exc}")
             return f"Error sending email: {exc}"
