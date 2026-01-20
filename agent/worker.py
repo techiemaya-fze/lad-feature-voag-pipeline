@@ -856,10 +856,11 @@ async def entrypoint(ctx: agents.JobContext):
             except Exception as e:
                 logger.error(f"Error ending call on timeout: {e}")
 
-    # Warning at 15s, hangup at full timeout (typically 30s)
+    # Warning and hangup from config
+    silence_warning = pipeline_config.silence.silence_warning_seconds
     silence_milestones = [
         SilenceMilestone(
-            seconds=15.0,
+            seconds=silence_warning,
             callback=on_silence_warning,
             label="first_warning"
         ),
