@@ -321,13 +321,16 @@ async def get_batch_info(batch_id: str) -> Optional[Dict]:
     try:
         with conn.cursor() as cur:
             # v2 schema: lad_dev.voice_call_batches uses finished_at, no cancelled_calls
+            # Join with voice_agents to get tenant_id for email provider lookup
             cur.execute(f"""
                 SELECT 
-                    id, metadata->>'job_id' as job_id, status, total_calls, completed_calls,
-                    failed_calls, created_at, finished_at,
-                    agent_id, initiated_by_user_id
-                FROM {BATCHES_FULL}
-                WHERE id = %s::uuid
+                    b.id, b.metadata->>'job_id' as job_id, b.status, b.total_calls, b.completed_calls,
+                    b.failed_calls, b.created_at, b.finished_at,
+                    b.agent_id, b.initiated_by_user_id,
+                    a.tenant_id
+                FROM {BATCHES_FULL} b
+                LEFT JOIN lad_dev.voice_agents a ON a.id = b.agent_id
+                WHERE b.id = %s::uuid
             """, (str(batch_id),))
             
             row = cur.fetchone()
@@ -346,6 +349,7 @@ async def get_batch_info(batch_id: str) -> Optional[Dict]:
                 "completed_at": row[7],  # Using finished_at column
                 "agent_id": row[8],
                 "initiated_by": row[9],
+                "tenant_id": str(row[10]) if row[10] else None,  # For email provider lookup
             }
     finally:
         _return_conn(conn)
@@ -1901,6 +1905,7 @@ For questions or technical support, please contact your system administrator.
                 calls_without_analysis=calls_without_analysis,
                 excel_path=excel_path,
                 oauth_user_id=batch_info.get('initiated_by'),  # Use batch initiator for OAuth email
+                tenant_id=batch_info.get('tenant_id'),  # For email provider lookup
             )
         else:
             logger.info("No email recipients configured - skipping email")

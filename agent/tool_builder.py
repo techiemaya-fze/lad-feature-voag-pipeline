@@ -269,6 +269,9 @@ def get_tool_instructions(config: "ToolConfig") -> str:
     if config.email_templates or config.glinks_email:
         sections.append(TOOL_INSTRUCTIONS["email_templates"])
     
+    if config.email_templates_microsoft:
+        sections.append(TOOL_INSTRUCTIONS.get("email_templates_microsoft", TOOL_INSTRUCTIONS["email_templates"]))
+    
     if config.knowledge_base:
         sections.append(TOOL_INSTRUCTIONS["knowledge_base"])
     
@@ -1260,8 +1263,10 @@ class ToolBuilder:
             "google_calendar": self.config.google_calendar,
             "google_workspace": self.config.google_workspace,
             "gmail": self.config.gmail,
-            "microsoft_bookings": self.config.microsoft_bookings,
+            "microsoft_bookings": self.config.microsoft_bookings_auto or self.config.microsoft_bookings_manual,
+            "microsoft_outlook": self.config.microsoft_outlook,
             "email_templates": self.config.email_templates,
+            "email_templates_microsoft": self.config.email_templates_microsoft,
             "knowledge_base": self.config.knowledge_base,
             "human_support": self.config.human_support,
             "glinks_email": self.config.glinks_email,
