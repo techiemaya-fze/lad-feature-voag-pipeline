@@ -321,15 +321,15 @@ async def get_batch_info(batch_id: str) -> Optional[Dict]:
     try:
         with conn.cursor() as cur:
             # v2 schema: lad_dev.voice_call_batches uses finished_at, no cancelled_calls
-            # Join with voice_agents to get tenant_id for email provider lookup
+            # Join with users to get tenant_id from initiated_by_user_id's primary_tenant_id
             cur.execute(f"""
                 SELECT 
                     b.id, b.metadata->>'job_id' as job_id, b.status, b.total_calls, b.completed_calls,
                     b.failed_calls, b.created_at, b.finished_at,
                     b.agent_id, b.initiated_by_user_id,
-                    a.tenant_id
+                    u.primary_tenant_id
                 FROM {BATCHES_FULL} b
-                LEFT JOIN lad_dev.voice_agents a ON a.id = b.agent_id
+                LEFT JOIN lad_dev.users u ON u.id = b.initiated_by_user_id
                 WHERE b.id = %s::uuid
             """, (str(batch_id),))
             
@@ -349,7 +349,7 @@ async def get_batch_info(batch_id: str) -> Optional[Dict]:
                 "completed_at": row[7],  # Using finished_at column
                 "agent_id": row[8],
                 "initiated_by": row[9],
-                "tenant_id": str(row[10]) if row[10] else None,  # For email provider lookup
+                "tenant_id": str(row[10]) if row[10] else None,  # From user's primary_tenant_id
             }
     finally:
         _return_conn(conn)
