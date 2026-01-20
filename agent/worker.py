@@ -199,6 +199,8 @@ class SilenceMonitor:
         self._last_start: float | None = None
         self._pending_callbacks: set[asyncio.Task] = set()
         self._skip_next_agent_reset: bool = False  # For warning prompt
+        self._paused: bool = False  # True when agent is speaking
+        self._accumulated: float = 0.0  # Accumulated time before pause
 
     def start(self) -> None:
         """Start the silence timer. Call once when call becomes ongoing."""
@@ -219,6 +221,7 @@ class SilenceMonitor:
         if not self._enabled:
             return
         self._elapsed = 0.0
+        self._accumulated = 0.0  # Reset accumulated time too
         self._milestones_fired.clear()
         try:
             loop = asyncio.get_running_loop()
@@ -234,18 +237,39 @@ class SilenceMonitor:
         self.reset_timer("user speech")
 
     def notify_agent_started(self) -> None:
-        """Called when agent starts speaking. Resets timer unless skipped."""
+        """Called when agent starts speaking. Pauses timer."""
         if not self._enabled:
             return
+        # Pause timer while agent speaks
+        if not self._paused and self._last_start is not None:
+            try:
+                now = asyncio.get_running_loop().time()
+                self._accumulated += (now - self._last_start)
+            except RuntimeError:
+                pass
+            self._paused = True
+            self._logger.info(f"[SilenceMonitor] PAUSED at {self._accumulated:.1f}s")
+        
+        # Reset unless skip flag set (for warning prompt)
         if self._skip_next_agent_reset:
             self._skip_next_agent_reset = False
             self._logger.info("[SilenceMonitor] Agent speech - skip reset (warning prompt)")
-            return
-        self.reset_timer("agent speech")
+        else:
+            self._accumulated = 0.0
+            self._milestones_fired.clear()
+            self._logger.info("[SilenceMonitor] Timer reset (agent speech)")
 
     def notify_agent_completed(self) -> None:
-        """Called when agent finishes speaking. No-op in always-on mode."""
-        pass  # Timer always runs, no need to resume
+        """Called when agent finishes speaking. Resumes timer."""
+        if not self._enabled:
+            return
+        if self._paused:
+            self._paused = False
+            try:
+                self._last_start = asyncio.get_running_loop().time()
+            except RuntimeError:
+                pass
+            self._logger.info(f"[SilenceMonitor] RESUMED from {self._accumulated:.1f}s")
 
     def skip_next_agent_reset(self) -> None:
         """Flag to skip the next agent speech reset (for warning prompt)."""
@@ -288,10 +312,17 @@ class SilenceMonitor:
             loop = asyncio.get_running_loop()
             
             while self._enabled and not self._triggered:
-                # Calculate elapsed since last reset
+                # Skip all checks if paused (agent is speaking)
+                if self._paused:
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                # Calculate elapsed = accumulated + current segment
                 now = loop.time()
                 if self._last_start is not None:
-                    self._elapsed = now - self._last_start
+                    self._elapsed = self._accumulated + (now - self._last_start)
+                else:
+                    self._elapsed = self._accumulated
                 
                 # Check milestones
                 for idx, milestone in enumerate(self._milestones):
@@ -854,10 +885,11 @@ async def entrypoint(ctx: agents.JobContext):
             except Exception as e:
                 logger.error(f"Error ending call on timeout: {e}")
 
-    # Warning at 15s, hangup at full timeout (typically 30s)
+    # Warning and timeout from config
+    silence_warning = pipeline_config.silence.silence_warning_seconds
     silence_milestones = [
         SilenceMilestone(
-            seconds=15.0,
+            seconds=silence_warning,
             callback=on_silence_warning,
             label="first_warning"
         ),
