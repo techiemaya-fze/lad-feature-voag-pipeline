@@ -198,7 +198,8 @@ class SilenceMonitor:
         self._elapsed: float = 0.0
         self._last_start: float | None = None
         self._pending_callbacks: set[asyncio.Task] = set()
-        self._skip_next_agent_reset: bool = False  # For warning prompt
+        self._skip_next_agent_reset: bool = False  # Request flag
+        self._skipping_current_turn: bool = False  # Active state flag
 
     def start(self) -> None:
         """Start the silence timer. Call once when call becomes ongoing."""
@@ -239,14 +240,23 @@ class SilenceMonitor:
             return
         if self._skip_next_agent_reset:
             self._skip_next_agent_reset = False
-            self._logger.info("[SilenceMonitor] Agent speech - skip reset (warning prompt)")
+            self._skipping_current_turn = True
+            self._logger.info("[SilenceMonitor] Agent speech STARTED - skipping reset (warning prompt)")
             return
+        
+        self._skipping_current_turn = False
         self.reset_timer("agent speech")
 
     def notify_agent_completed(self) -> None:
         """Called when agent finishes speaking. Reset timer to start fresh silence countdown."""
         if not self._enabled:
             return
+        
+        if self._skipping_current_turn:
+            self._skipping_current_turn = False
+            self._logger.info("[SilenceMonitor] Agent speech COMPLETED - skipping reset (warning prompt)")
+            return
+
         self.reset_timer("agent completed")
 
     def skip_next_agent_reset(self) -> None:
