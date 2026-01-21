@@ -96,6 +96,9 @@ class MicrosoftBookingsTool:
                 headers=self._headers,
             )
             
+            if resp.status_code == 404:
+                raise MicrosoftBookingsToolError(f"Booking Business '{business_id}' not found or not accessible.")
+            
             if resp.status_code != 200:
                 logger.error("Failed to fetch services: %s", resp.text[:500])
                 raise MicrosoftBookingsToolError(f"Failed to fetch services: {resp.status_code}")
@@ -119,6 +122,9 @@ class MicrosoftBookingsTool:
                 headers=self._headers,
             )
             
+            if resp.status_code == 404:
+                raise MicrosoftBookingsToolError(f"Booking Business '{business_id}' not found or not accessible.")
+
             if resp.status_code != 200:
                 logger.error("Failed to fetch staff members: %s", resp.text[:500])
                 raise MicrosoftBookingsToolError(f"Failed to fetch staff: {resp.status_code}")
@@ -199,6 +205,9 @@ class MicrosoftBookingsTool:
                 params={"start": start_str, "end": end_str},
             )
             
+            if resp.status_code == 404:
+                raise MicrosoftBookingsToolError(f"Booking Business '{business_id}' not found or not accessible.")
+
             if resp.status_code != 200:
                 logger.error("Failed to fetch calendar view: %s", resp.text[:500])
                 raise MicrosoftBookingsToolError(f"Failed to fetch calendar view: {resp.status_code}")
@@ -439,6 +448,9 @@ class MicrosoftBookingsTool:
                 headers=self._headers,
             )
             
+            if resp.status_code == 404:
+                raise MicrosoftBookingsToolError(f"Appointment '{appointment_id}' in business '{business_id}' not found.")
+
             if resp.status_code != 200:
                 logger.error("Failed to fetch appointment: %s", resp.text[:500])
                 raise MicrosoftBookingsToolError(f"Failed to fetch appointment: {resp.status_code}")
