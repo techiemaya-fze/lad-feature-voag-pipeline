@@ -653,7 +653,7 @@ class BatchStorage:
                         f"""
                         SELECT COUNT(*) FROM {FULL_ENTRY_TABLE}
                         WHERE batch_id = %s 
-                          AND id = ANY(%s)
+                          AND id = ANY(%s::uuid[])
                           AND status NOT IN ('completed', 'failed', 'cancelled', 'declined', 'ended')
                         """,
                         (batch_id, entry_ids)
@@ -670,6 +670,50 @@ class BatchStorage:
             )
             # Assume all pending on error (safe fallback - will keep waiting)
             return len(entry_ids)
+
+    async def get_pending_entry_details(
+        self, batch_id: str, entry_ids: list[str]
+    ) -> list[dict]:
+        """
+        Get details of pending entries (those NOT in terminal state).
+        
+        Used for enhanced logging when waiting for small number of entries.
+        
+        Args:
+            batch_id: UUID of the batch
+            entry_ids: List of entry UUIDs to check
+            
+        Returns:
+            List of dicts with id, call_log_id, to_number, status for pending entries
+        """
+        if not entry_ids:
+            return []
+            
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        f"""
+                        SELECT id, call_log_id, to_number, lead_name, status
+                        FROM {FULL_ENTRY_TABLE}
+                        WHERE batch_id = %s 
+                          AND id = ANY(%s::uuid[])
+                          AND status NOT IN ('completed', 'failed', 'cancelled', 'declined', 'ended')
+                        """,
+                        (batch_id, entry_ids)
+                    )
+                    return [dict(row) for row in cur.fetchall()]
+            finally:
+                self._return_connection(conn)
+                
+        except Exception as exc:
+            logger.error(
+                "Failed to get pending entry details: %s",
+                exc,
+                exc_info=True
+            )
+            return []
 
     async def mark_pending_entries_failed(
         self, 
@@ -1227,7 +1271,7 @@ class BatchStorage:
                             retry_count = retry_count + 1,
                             updated_at = %s
                         WHERE batch_id = %s 
-                          AND id = ANY(%s)
+                          AND id = ANY(%s::uuid[])
                           AND status = 'dispatched'
                           AND retry_count < %s
                         RETURNING id
@@ -1244,7 +1288,7 @@ class BatchStorage:
                             error_message = 'max_retries_exceeded',
                             updated_at = %s
                         WHERE batch_id = %s 
-                          AND id = ANY(%s)
+                          AND id = ANY(%s::uuid[])
                           AND status = 'dispatched'
                           AND retry_count >= %s
                         RETURNING id
@@ -1261,7 +1305,7 @@ class BatchStorage:
                             error_message = 'wave_timeout_ringing',
                             updated_at = %s
                         WHERE batch_id = %s 
-                          AND id = ANY(%s)
+                          AND id = ANY(%s::uuid[])
                           AND status = 'ringing'
                         RETURNING id
                         """,
@@ -1275,7 +1319,7 @@ class BatchStorage:
                         SELECT id, call_log_id, updated_at
                         FROM {FULL_ENTRY_TABLE}
                         WHERE batch_id = %s 
-                          AND id = ANY(%s)
+                          AND id = ANY(%s::uuid[])
                           AND status = 'ongoing'
                         """,
                         (batch_id, entry_ids)

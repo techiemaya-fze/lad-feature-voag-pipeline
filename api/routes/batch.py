@@ -247,10 +247,28 @@ async def _wait_for_wave_completion(
         
         # Log progress periodically (every 30 seconds)
         if int(elapsed) % 30 == 0 and int(elapsed) > 0:
-            logger.info(
-                "Batch %s wave %d: Waiting for %d entries (%.0fs elapsed)",
-                job_id, wave_num, pending, elapsed
-            )
+            if pending < 5:
+                # Get details of pending entries for debugging
+                pending_details = await batch_storage.get_pending_entry_details(batch_id, entry_ids)
+                if pending_details:
+                    detail_strs = [
+                        f"{d.get('to_number', '?')} (call:{d.get('call_log_id', '?')[:8] if d.get('call_log_id') else '?'}, status:{d.get('status', '?')})"
+                        for d in pending_details
+                    ]
+                    logger.info(
+                        "Batch %s wave %d: Waiting for %d entries (%.0fs elapsed): %s",
+                        job_id, wave_num, pending, elapsed, ", ".join(detail_strs)
+                    )
+                else:
+                    logger.info(
+                        "Batch %s wave %d: Waiting for %d entries (%.0fs elapsed)",
+                        job_id, wave_num, pending, elapsed
+                    )
+            else:
+                logger.info(
+                    "Batch %s wave %d: Waiting for %d entries (%.0fs elapsed)",
+                    job_id, wave_num, pending, elapsed
+                )
         
         await asyncio.sleep(BATCH_WAVE_POLL_INTERVAL)
 
