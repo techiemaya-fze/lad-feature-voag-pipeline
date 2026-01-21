@@ -654,7 +654,7 @@ class BatchStorage:
                         SELECT COUNT(*) FROM {FULL_ENTRY_TABLE}
                         WHERE batch_id = %s 
                           AND id = ANY(%s)
-                          AND status NOT IN ('completed', 'failed', 'cancelled')
+                          AND status NOT IN ('completed', 'failed', 'cancelled', 'declined', 'ended')
                         """,
                         (batch_id, entry_ids)
                     )
@@ -907,7 +907,7 @@ class BatchStorage:
                         FROM {FULL_ENTRY_TABLE}
                         WHERE batch_id = %s 
                         AND id = ANY(%s::uuid[])
-                        AND status NOT IN ('completed', 'failed', 'cancelled')
+                        AND status NOT IN ('completed', 'failed', 'cancelled', 'declined', 'ended')
                         """,
                         (batch_id, entry_ids)
                     )
