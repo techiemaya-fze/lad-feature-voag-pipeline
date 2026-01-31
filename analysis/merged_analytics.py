@@ -506,32 +506,48 @@ class CallAnalytics:
             return 0
         return len(text) // 4
     
-    def _call_gemini_api(self, prompt: str, temperature: float = 0.3, max_output_tokens: int = 800) -> str:
-        """Helper function to call Gemini 2.0 Flash API with cost tracking"""
+    def _call_gemini_api(self, prompt: str, temperature: float = 0.3, max_output_tokens: int = 800, use_structured_output: bool = False, response_schema: Dict = None) -> str:
+        """Helper function to call Gemini 2.0 Flash API with cost tracking
+        
+        Args:
+            prompt: The prompt to send
+            temperature: Temperature for generation
+            max_output_tokens: Maximum output tokens
+            use_structured_output: If True, use structured JSON output with schema
+            response_schema: Schema definition for structured output (required if use_structured_output=True)
+        """
         if not self.gemini_api_key:
             logger.warning("Gemini API key not available, skipping API call")
             return None
         
         input_tokens = self._estimate_tokens(prompt)
-        logger.debug(f"Calling Gemini API - Input tokens: ~{input_tokens}, Max output: {max_output_tokens}, Temp: {temperature}")
+        logger.debug(f"Calling Gemini API - Input tokens: ~{input_tokens}, Max output: {max_output_tokens}, Temp: {temperature}, Structured: {use_structured_output}")
         
         try:
             import requests
             
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={self.gemini_api_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key={self.gemini_api_key}"
             
             headers = {
                 "Content-Type": "application/json"
             }
             
+            generation_config = {
+                "temperature": temperature,
+                "maxOutputTokens": max_output_tokens
+            }
+            
+            # Add structured output if requested
+            if use_structured_output and response_schema:
+                generation_config["responseMimeType"] = "application/json"
+                generation_config["responseSchema"] = response_schema
+                logger.debug("Using structured JSON output with schema")
+            
             data = {
                 "contents": [{
                     "parts": [{"text": prompt}]
                 }],
-                "generationConfig": {
-                    "temperature": temperature,
-                    "maxOutputTokens": max_output_tokens
-                }
+                "generationConfig": generation_config
             }
             
             response = requests.post(url, headers=headers, json=data, timeout=10)
@@ -1765,8 +1781,8 @@ CONFIDENCE: [High/Medium/Low]"""
         Mapping:
         - "PROCEED IMMEDIATELY" → lead_score = 10/10, lead_category = "Hot Lead"
         - "FOLLOW UP IN 3 DAYS" → lead_score = 8/10, lead_category = "warm Lead"
-        - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "Warm Lead"
-        - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Cold Lead"
+        - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "cold Lead"
+        - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Not Qualified"
         """
         disposition_str = disposition.get('disposition', '').upper()
         
@@ -1780,11 +1796,11 @@ CONFIDENCE: [High/Medium/Low]"""
             priority = "High"
         elif disposition_str in ['FOLLOW UP IN 7 DAYS', 'NURTURE (7 DAYS)', 'NURTURE']:
             lead_score = 6.0
-            lead_category = "Warm Lead"
+            lead_category = "Cold Lead"
             priority = "Medium"
         elif disposition_str == "DON'T PURSUE" or disposition_str == "DONT PURSUE":
             lead_score = 4.0
-            lead_category = "Cold Lead"
+            lead_category = "Not Qualified"
             priority = "Low"
         else:
             # Default/Unknown disposition
@@ -1860,25 +1876,71 @@ CONFIDENCE: [High/Medium/Low]"""
             - Call Duration: {duration} seconds
             """
             
+            # Define response schema for structured output
+            response_schema = {
+                "type": "object",
+                "properties": {
+                    "call_summary": {
+                        "type": "string",
+                        "description": "Complete detailed summary from prospect's perspective (3-5 sentences)"
+                    },
+                    "key_discussion_points": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "List of key discussion points"
+                    },
+                    "prospect_questions": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Questions asked by the prospect"
+                    },
+                    "prospect_concerns": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Concerns raised by the prospect"
+                    },
+                    "next_steps": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Agreed next steps"
+                    },
+                    "business_name": {
+                        "type": "string",
+                        "nullable": True,
+                        "description": "Prospect's business name (NOT Pluto Travels)"
+                    },
+                    "contact_person": {
+                        "type": "string",
+                        "nullable": True,
+                        "description": "Prospect's contact name (NOT the agent/caller from Pluto Travels)"
+                    },
+                    "phone_number": {
+                        "type": "string",
+                        "nullable": True,
+                        "description": "Prospect's phone number"
+                    },
+                    "recommendations": {
+                        "type": "string",
+                        "description": "Detailed, actionable recommendation based on sentiment, emotion, duration, and conversation quality. Include specific next steps, timing, and priority level."
+                    }
+                },
+                "required": ["call_summary", "key_discussion_points", "prospect_questions", "prospect_concerns", "next_steps", "recommendations"]
+            }
+            
             prompt = f"""
             Analyze this sales conversation and provide a structured summary:
 
             CONVERSATION:
             {conversation_text}
             {analytics_context}
-
-            Please provide a JSON response with the following structure:
-            {{
-                "call_summary": "Complete detailed summary from prospect's perspective (3-5 sentences)",
-                "key_discussion_points": ["point1", "point2", "point3"],
-                "prospect_questions": ["question1", "question2"],
-                "prospect_concerns": ["concern1", "concern2"],
-                "next_steps": ["step1", "step2"],
-                "business_name": "extracted PROSPECT's business name (NOT Pluto Travels) or null",
-                "contact_person": "extracted PROSPECT's contact name (NOT the agent/caller from Pluto Travels) or null",
-                "phone_number": "extracted PROSPECT's phone number or null",
-                "recommendations": "Detailed, actionable recommendation based on sentiment, emotion, duration, and conversation quality. Include specific next steps, timing, and priority level."
-            }}
 
             CRITICAL INSTRUCTIONS FOR "call_summary":
             - Write a COMPLETE, DETAILED summary (3-5 sentences minimum)
@@ -1908,7 +1970,14 @@ CONFIDENCE: [High/Medium/Low]"""
             """
             
             logger.debug(f"Generating summary - Conversation length: {len(conversation_text)} chars, Duration: {duration}s")
-            summary_text = self._call_gemini_api(prompt, temperature=0.3, max_output_tokens=800)
+            # Use structured output to guarantee valid JSON
+            summary_text = self._call_gemini_api(
+                prompt, 
+                temperature=0.3, 
+                max_output_tokens=800,
+                use_structured_output=True,
+                response_schema=response_schema
+            )
             
             if not summary_text:
                 logger.error("Gemini API error - unable to generate summary")
@@ -2305,7 +2374,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 # Convert to text for analytics
                 conversation_text = "\n".join([f"{entry['role'].title()}: {entry['message']}" for entry in conversation_log])
         else:
-            # Legacy format: String with "User:" and "Bot:" lines
+            # Legacy format: string with "User:" and "Bot:" lines
             if isinstance(conversation_log, list):
                 conversation_text = "\n".join(conversation_log)
             else:
@@ -2570,7 +2639,7 @@ CONFIDENCE: [High/Medium/Low]"""
         Extract call_log_id from call_id string
         
         Args:
-            call_id: String like "DB_1_20251029_123045" or "MANUAL_20251029_123045"
+            call_id: string like "DB_1_20251029_123045" or "MANUAL_20251029_123045"
             
         Returns:
             Extracted ID as integer, or None if cannot extract
@@ -2652,7 +2721,7 @@ CONFIDENCE: [High/Medium/Low]"""
                     logger.error(f"Cannot find call with position {call_log_id}")
                     return False
             elif isinstance(call_log_id, str):
-                # String - check if it's a valid UUID format
+                # string - check if it's a valid UUID format
                 import uuid as uuid_lib
                 try:
                     # Validate UUID format and convert to UUID type
@@ -2879,14 +2948,38 @@ CONFIDENCE: [High/Medium/Low]"""
             
             # Build lead_extraction dict
             lead_extraction = {}
+            
+            # First, add lead_info if available (from lead_info_extractor)
             if lead_info:
-                lead_extraction = lead_info
-            elif lead_score:
-                lead_extraction = {
-                    "lead_category": lead_score.get("lead_category"),
-                    "lead_score": lead_score.get("lead_score"),
-                    "priority": lead_score.get("priority"),
-                }
+                lead_extraction.update(lead_info)
+            
+            # Add fields from summary JSON response (business_name, contact_person, phone_number)
+            # These are extracted by the LLM in the summary generation
+            if summary.get("business_name"):
+                lead_extraction["business_name"] = summary.get("business_name")
+            if summary.get("contact_person"):
+                lead_extraction["contact_person"] = summary.get("contact_person")
+            if summary.get("phone_number"):
+                lead_extraction["phone_number"] = summary.get("phone_number")
+            
+            # Add prospect questions and concerns from summary
+            if summary.get("prospect_questions"):
+                lead_extraction["prospect_questions"] = summary.get("prospect_questions")
+            if summary.get("prospect_concerns"):
+                lead_extraction["prospect_concerns"] = summary.get("prospect_concerns")
+            
+            # Add recommendations from summary
+            if summary.get("recommendations"):
+                lead_extraction["recommendations"] = summary.get("recommendations")
+            
+            # Add lead_score data (always add, even if lead_info exists)
+            # lead_category, lead_score, and priority should always be included
+            if lead_score:
+                lead_extraction["lead_category"] = lead_score.get("lead_category")
+                lead_extraction["lead_score"] = lead_score.get("lead_score")
+                lead_extraction["priority"] = lead_score.get("priority")
+            
+            # Add disposition data
             if disposition:
                 lead_extraction["disposition"] = disposition.get("disposition")
                 lead_extraction["recommended_action"] = disposition.get("recommended_action")
@@ -3151,7 +3244,7 @@ class StandaloneAnalytics:
                     ended_at,
                     CASE 
                         WHEN transcripts IS NULL OR transcripts::text = '' THEN 'No transcript'
-                        ELSE SUBSTRING(transcripts::text, 1, 50) || '...'
+                        ELSE SUBstring(transcripts::text, 1, 50) || '...'
                     END as transcript_preview
                 FROM lad_dev.voice_call_logs
                 ORDER BY ctid
