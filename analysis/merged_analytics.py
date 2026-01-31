@@ -1885,28 +1885,28 @@ CONFIDENCE: [High/Medium/Low]"""
                         "description": "Complete detailed summary from prospect's perspective (3-5 sentences)"
                     },
                     "key_discussion_points": {
-                        "type": "ARRAY",
+                        "type": "array",
                         "items": {
                             "type": "string"
                         },
                         "description": "List of key discussion points"
                     },
                     "prospect_questions": {
-                        "type": "ARRAY",
+                        "type": "array",
                         "items": {
                             "type": "string"
                         },
                         "description": "Questions asked by the prospect"
                     },
                     "prospect_concerns": {
-                        "type": "ARRAY",
+                        "type": "array",
                         "items": {
                             "type": "string"
                         },
                         "description": "Concerns raised by the prospect"
                     },
                     "next_steps": {
-                        "type": "ARRAY",
+                        "type": "array",
                         "items": {
                             "type": "string"
                         },
