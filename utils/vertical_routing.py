@@ -408,7 +408,7 @@ CRITICAL: Only extract information PROVIDED BY THE LEAD/USER, NOT the agent/bot.
 """
         
         # Call Gemini API
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={gemini_api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key={gemini_api_key}"
         response = requests.post(
             url,
             headers={"Content-Type": "application/json"},
