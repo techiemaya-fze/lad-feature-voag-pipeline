@@ -747,22 +747,20 @@ class CallAnalytics:
         INPUT_COST_PER_1M_TOKENS = 0.50  # USD
         OUTPUT_COST_PER_1M_TOKENS = 3.00  # USD
         
-        # Calculate costs
+        # Calculate costs and round to a reasonable precision
         input_cost_usd = (self.cost_tracker['total_input_tokens'] / 1_000_000) * INPUT_COST_PER_1M_TOKENS
         output_cost_usd = (self.cost_tracker['total_output_tokens'] / 1_000_000) * OUTPUT_COST_PER_1M_TOKENS
-        total_cost_usd = input_cost_usd + output_cost_usd
+        total_cost_usd = round(input_cost_usd + output_cost_usd, 7)
         
-        # No INR conversion or rounding as requested by user
-        
-        # Format cost with up to 6 decimal places, trimmed (e.g., 0.004092 instead of 0.004092000000)
-        cost_usd_formatted = f"{total_cost_usd:.6f}".rstrip('0').rstrip('.')
+        # Format cost with up to 7 decimal places, trimmed (e.g., 0.0029585 instead of 0.0029585000000)
+        cost_usd_formatted = f"{total_cost_usd:.7f}".rstrip('0').rstrip('.')
         
         return {
             "total_api_calls": self.cost_tracker['api_calls'],
             "input_tokens": self.cost_tracker['total_input_tokens'],
             "output_tokens": self.cost_tracker['total_output_tokens'],
             "total_tokens": self.cost_tracker['total_input_tokens'] + self.cost_tracker['total_output_tokens'],
-            "cost_usd": total_cost_usd,  # Full-precision float
+            "cost_usd": total_cost_usd,
             "cost_usd_formatted": f"${cost_usd_formatted}",
             "pricing_model": "Gemini 3 Flash Preview",
             "input_rate": "$0.50 per 1M tokens",
