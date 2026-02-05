@@ -655,10 +655,7 @@ class CallAnalytics:
         try:
             # Track API call
             self.cost_tracker['api_calls'] += 1
-            # Roughly estimate input tokens from prompt
-            estimated_input_tokens = self._estimate_tokens(prompt)
-            self.cost_tracker['total_input_tokens'] += estimated_input_tokens
-
+            
             # Use structured output for guaranteed JSON response
             result = generate_with_schema_retry(
                 prompt=prompt,
@@ -668,20 +665,12 @@ class CallAnalytics:
             )
             
             if result:
-                # Estimate output tokens from JSON size
-                try:
-                    import json as _json
-                    result_text = _json.dumps(result)
-                    estimated_output_tokens = self._estimate_tokens(result_text)
-                    self.cost_tracker['total_output_tokens'] += estimated_output_tokens
-                    logger.debug(
-                        "Estimated LLM usage (structured): input_tokens=%d, output_tokens=%d",
-                        estimated_input_tokens,
-                        estimated_output_tokens,
-                    )
-                except Exception:
-                    # If estimation fails, we still keep the input token count
-                    logger.debug("Could not estimate output tokens for structured response")
+                # Extract and track usage metadata
+                if '_usage_metadata' in result:
+                    usage = result.pop('_usage_metadata')
+                    self.cost_tracker['total_input_tokens'] += usage.get('prompt_token_count', 0)
+                    self.cost_tracker['total_output_tokens'] += usage.get('candidates_token_count', 0)
+                    logger.debug(f"Gemini usage: {usage}")
                 
                 logger.debug(f"Gemini structured response received (Total calls: {self.cost_tracker['api_calls']})")
                 return result
@@ -692,7 +681,7 @@ class CallAnalytics:
         except Exception as e:
             logger.error(f"Gemini structured API exception: {str(e)}", exc_info=True)
             return None
-
+    
     def _call_gemini_text(self, prompt: str, temperature: float = 0.3, max_output_tokens: int = 8192) -> Optional[str]:
         """Helper function to call Gemini for plain text generation (summaries, etc.)"""
         if not self.gemini_api_key:
@@ -704,27 +693,22 @@ class CallAnalytics:
         try:
             # Track API call
             self.cost_tracker['api_calls'] += 1
-            # Roughly estimate input tokens from prompt
-            estimated_input_tokens = self._estimate_tokens(prompt)
-            self.cost_tracker['total_input_tokens'] += estimated_input_tokens
-
-            # Plain text generation (no usage info available from generate_text)
-            result = generate_text(
+            
+            # Use plain text generation with usage tracking
+            result, usage = generate_text(
                 prompt=prompt,
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
+                include_usage=True
             )
             
             if result:
-                # Estimate output tokens from returned text
-                estimated_output_tokens = self._estimate_tokens(result)
-                self.cost_tracker['total_output_tokens'] += estimated_output_tokens
-                logger.debug(
-                    "Estimated LLM usage (text): input_tokens=%d, output_tokens=%d",
-                    estimated_input_tokens,
-                    estimated_output_tokens,
-                )
-
+                # Track usage
+                if usage:
+                    self.cost_tracker['total_input_tokens'] += usage.get('prompt_token_count', 0)
+                    self.cost_tracker['total_output_tokens'] += usage.get('candidates_token_count', 0)
+                    logger.debug(f"Gemini usage: {usage}")
+                
                 logger.debug(f"Gemini text response received (Total calls: {self.cost_tracker['api_calls']})")
                 return result
             else:
@@ -734,8 +718,6 @@ class CallAnalytics:
         except Exception as e:
             logger.error(f"Gemini text API exception: {str(e)}", exc_info=True)
             return None
-    
-
     
     def _calculate_llm_cost(self) -> Dict:
         """Calculate total LLM cost (USD) and provide formatted values
@@ -747,29 +729,27 @@ class CallAnalytics:
         INPUT_COST_PER_1M_TOKENS = 0.50  # USD
         OUTPUT_COST_PER_1M_TOKENS = 3.00  # USD
         
-        # Calculate costs and round to a reasonable precision
+        # Calculate costs
         input_cost_usd = (self.cost_tracker['total_input_tokens'] / 1_000_000) * INPUT_COST_PER_1M_TOKENS
         output_cost_usd = (self.cost_tracker['total_output_tokens'] / 1_000_000) * OUTPUT_COST_PER_1M_TOKENS
-        total_cost_usd = round(input_cost_usd + output_cost_usd, 7)
+        total_cost_usd = input_cost_usd + output_cost_usd
         
-        # Format cost with up to 7 decimal places, trimmed (e.g., 0.0029585 instead of 0.0029585000000)
-        cost_usd_formatted = f"{total_cost_usd:.7f}".rstrip('0').rstrip('.')
+        # No INR conversion or rounding as requested by user
         
         return {
             "total_api_calls": self.cost_tracker['api_calls'],
             "input_tokens": self.cost_tracker['total_input_tokens'],
             "output_tokens": self.cost_tracker['total_output_tokens'],
             "total_tokens": self.cost_tracker['total_input_tokens'] + self.cost_tracker['total_output_tokens'],
-            "cost_usd": total_cost_usd,
-            "cost_usd_formatted": f"${cost_usd_formatted}",
+            "cost_usd": total_cost_usd, # No rounding
+            "cost_usd_formatted": f"${total_cost_usd:.10f}".rstrip('0').rstrip('.'), # Precise formatting
             "pricing_model": "Gemini 3 Flash Preview",
             "input_rate": "$0.50 per 1M tokens",
             "output_rate": "$3.00 per 1M tokens"
         }
     
    
-    
-    async def _calculate_sentiment_with_llm(self, user_text: str, conversation_text: str) -> Dict:
+     async def _calculate_sentiment_with_llm(self, user_text: str, conversation_text: str) -> Dict:
         """Calculate sentiment score and category using LLM (replaces TextBlob+VADER)"""
         
         logger.debug("Calling LLM for sentiment calculation with structured output...")
