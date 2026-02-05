@@ -523,68 +523,7 @@ class CallAnalytics:
         return conversation_text
     
 
-    def _detect_voicemail(self, conversation_log, conversation_text: Optional[str] = None) -> bool:
-        """
-        Basic voicemail detector placeholder.
-        
-        Currently, detailed detection of iPhone-style user-side voicemail is
-        handled by `_is_user_voicemail`. This method is kept for backwards
-        compatibility and can be extended with additional heuristics later.
-        """
-        return False
 
-    def _is_user_voicemail(self, conversation_log, conversation_text: Optional[str] = None) -> bool:
-        """
-        Detect if the "user" side is actually phone voicemail/system audio.
-        
-        Heuristics:
-        - User segments exist but contain voicemail keywords (iPhone voicemail often appears as user text)
-        - Plain text contains voicemail keywords without meaningful user speech
-        """
-        voicemail_keywords = [
-            "voice mail",
-            "voicemail",
-            "at the tone",
-            "record your message",
-            "leave a message",
-            "leave your message",
-            "not available",
-            "inbox",
-            "beep",
-            "please record",
-            "after the tone",
-            "mailbox is full",
-            "cannot take your call",
-        ]
-
-        # Check structured segments
-        if isinstance(conversation_log, dict) and "segments" in conversation_log:
-            segments = conversation_log["segments"] or []
-        elif isinstance(conversation_log, list) and conversation_log and isinstance(conversation_log[0], dict):
-            segments = conversation_log
-        else:
-            segments = []
-
-        if segments:
-            user_messages = [
-                (seg.get("text") or "").lower()
-                for seg in segments
-                if (seg.get("speaker") or "").lower() == "user" and (seg.get("text") or "").strip()
-            ]
-            # If there are user messages, but all look like voicemail prompts, treat as voicemail
-            if user_messages:
-                if all(any(k in msg for k in voicemail_keywords) for msg in user_messages):
-                    return True
-                for msg in user_messages:
-                    if any(k in msg for k in voicemail_keywords):
-                        return True
-
-        # Fallback: check plain text
-        text = (conversation_text or "").lower()
-        if text and any(k in text for k in voicemail_keywords):
-            return True
-
-        return False
     
     def _extract_user_messages(self, conversation_text: str) -> str:
         """Extract only user messages from conversation (exclude bot/agent messages)"""
