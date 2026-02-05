@@ -1922,6 +1922,7 @@ CONFIDENCE: [High/Medium/Low]"""
                             if isinstance(parsed_candidate, dict):
                                 parsed_summary = parsed_candidate
                         except json.JSONDecodeError:
+                            # JSON parsing failed, will fall back to manual text extraction below
                             pass
 
             if parsed_summary is None:
