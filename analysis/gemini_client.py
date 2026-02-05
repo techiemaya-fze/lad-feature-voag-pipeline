@@ -9,7 +9,7 @@ import os
 import json
 import logging
 import asyncio
-from typing import Optional, Dict, Any, Type
+from typing import Optional, Dict, Any, Type, Tuple, Union
 from google import genai
 from google.genai import types
 
