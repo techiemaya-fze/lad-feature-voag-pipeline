@@ -14,15 +14,14 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from dotenv import load_dotenv
-import sys
+
 
 # Structured output client for guaranteed JSON responses
 from .gemini_client import (
     generate_with_schema_retry, 
     generate_text,
     SENTIMENT_SCHEMA, 
-    DISPOSITION_SCHEMA, 
-    LLM_VALIDATION_SCHEMA
+    DISPOSITION_SCHEMA
 )
 
 load_dotenv()
@@ -52,7 +51,7 @@ except ImportError:
     DB_AVAILABLE = False
     logger.warning("psycopg2 not installed. Install with: pip install psycopg2-binary")
 
-import openai
+
 
 # Lead information extractor
 try:
@@ -656,171 +655,47 @@ class CallAnalytics:
     
    
     async def _calculate_sentiment_with_llm(self, user_text: str, conversation_text: str) -> Dict:
-        """Calculate sentiment score and category using LLM (replaces TextBlob+VADER)"""
+        """Calculate sentiment category using LLM"""
         
         logger.debug("Calling LLM for sentiment calculation with structured output...")
         if not self.gemini_api_key:
-            # Fallback to neutral if no API key
-            return {
-                "sentiment_score": 0.0,
-                "category": "Neutral",
-                "confidence": 0.5,
-                "textblob_polarity": 0.0,
-                "vader_compound": 0.0,
-                "combined_score": 0.0,
-                "llm_reasoning": "LLM API key not available"
-            }
+            return {"category": "Neutral"}
         
         try:
-            prompt = f"""Analyze the sentiment of this sales conversation and provide a sentiment score.
-
+            prompt = f"""Analyze the sentiment of this sales conversation.
+            
 CONVERSATION:
 {conversation_text[:1000]}
 
-TASK: Analyze the prospect's sentiment and provide:
-1. Sentiment category: Positive, Neutral, Negative, or Very Interested
-2. Sentiment score: -1.0 (very negative) to +1.0 (very positive)
-3. Confidence: 0.0 to 1.0
-4. Brief reasoning for the sentiment"""
+TASK: Classify the prospect's sentiment as one of:
+- Very Interested
+- Positive
+- Neutral
+- Negative"""
             
-            # Using structured output - result is already a parsed dict
-            sentiment_data = self._call_gemini_structured(prompt, SENTIMENT_SCHEMA, temperature=0.1, max_output_tokens=2000)
+            # Simple schema for category only
+            schema = {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "enum": ["Very Interested", "Positive", "Neutral", "Negative"]}
+                },
+                "required": ["category"]
+            }
+            
+            sentiment_data = self._call_gemini_structured(prompt, schema, temperature=0.1, max_output_tokens=500)
             
             if sentiment_data:
-                category = sentiment_data.get("category", "Neutral")
-                sentiment_score = float(sentiment_data.get("sentiment_score", 0.0))
-                confidence = float(sentiment_data.get("confidence", 0.5))
-                reasoning = sentiment_data.get("reasoning", "")
-                
-                # Ensure sentiment_score is in valid range (-1.0 to 1.0)
-                sentiment_score = max(-1.0, min(1.0, sentiment_score))
-                
-                # Map category to ensure proper score range for consistency
-                if category == "Very Interested":
-                    sentiment_score = max(sentiment_score, 0.6)
-                elif category == "Positive":
-                    sentiment_score = max(sentiment_score, 0.1)
-                elif category == "Negative":
-                    sentiment_score = min(sentiment_score, -0.1)
-                else:
-                    sentiment_score = max(-0.1, min(0.1, sentiment_score))
-                
-                # For backward compatibility, set textblob_polarity and vader_compound to sentiment_score
-                return {
-                    "sentiment_score": sentiment_score,
-                    "category": category,
-                    "confidence": confidence,
-                    "textblob_polarity": sentiment_score,  # Backward compatibility (LLM-generated)
-                    "vader_compound": sentiment_score,  # Backward compatibility (LLM-generated)
-                    "combined_score": sentiment_score,  # Float value (-1.0 to 1.0)
-                    "llm_reasoning": reasoning
-                }
+                return {"category": sentiment_data.get("category", "Neutral")}
             
         except Exception as e:
             logger.error(f"LLM sentiment calculation error: {e}", exc_info=True)
         
-        # Fallback to neutral
-        return {
-            "sentiment_score": 0.0,
-            "category": "Neutral",
-            "confidence": 0.5,
-            "textblob_polarity": 0.0,
-            "vader_compound": 0.0,
-            "combined_score": 0.0,
-            "llm_reasoning": "LLM sentiment analysis failed"
-        }
+        # Fallback
+        return {"category": "Neutral"}
     
-    async def _validate_sentiment_with_llm(self, conversation_text: str, initial_sentiment: str, confidence: float) -> Dict:
-        """Use LLM to validate sentiment for low-confidence or ambiguous cases"""
-        
-        if not self.gemini_api_key or confidence > 0.75:
-            logger.debug(f"Skipping LLM validation - Confidence {confidence:.2f} is high enough")
-            return {"validated": False, "llm_sentiment": None}
-        
-        logger.debug(f"Validating sentiment with LLM structured output - Initial: {initial_sentiment}, Confidence: {confidence:.2f}")
-        try:
-            prompt = f"""
-            Analyze the sentiment of this sales conversation. Consider:
-            - Sarcasm and irony
-            - Mixed emotions (e.g., interested but busy)
-            - Context beyond individual words
-            
-            CONVERSATION:
-            {conversation_text[:500]}
-            
-            Is the prospect's overall sentiment Positive, Neutral, or Negative?
-            Provide a brief reason (max 20 words)."""
-            
-            # Using structured output - result is already a parsed dict
-            result = self._call_gemini_structured(prompt, LLM_VALIDATION_SCHEMA, temperature=0.1, max_output_tokens=2000)
-            
-            if result:
-                llm_sentiment = result.get("sentiment")
-                reason = result.get("reason", "")
-                
-                return {
-                    "validated": True,
-                    "llm_sentiment": llm_sentiment,
-                    "llm_reasoning": reason
-                }
-            
-        except Exception as e:
-            # Fail gracefully - sentiment validation is optional
-            pass
-        
-        return {"validated": False, "llm_sentiment": None}
+
     
-    def _adjust_sentiment_with_context(self, base_sentiment: str, conversation_text: str, duration: int, word_count: int) -> Dict:
-        """Adjust sentiment based on conversation context (duration, engagement)"""
-        
-        adjusted_sentiment = base_sentiment
-        adjustments = []
-        confidence_boost = 0
-        
-        # Rule 1: Very short calls with neutral sentiment = likely negative
-        if duration < 30 and word_count < 20 and base_sentiment == "Neutral":
-            adjusted_sentiment = "Negative"
-            adjustments.append("Short call duration suggests disinterest")
-            confidence_boost += 0.1
-        
-        # Rule 2: Long engagement with neutral = likely positive
-        if duration > 120 and word_count > 100 and base_sentiment == "Neutral":
-            adjusted_sentiment = "Positive"
-            adjustments.append("Extended engagement suggests interest")
-            confidence_boost += 0.15
-        
-        # Rule 3: Detect sarcasm patterns
-        sarcasm_indicators = ["oh great", "oh wonderful", "just what i needed", "perfect timing"]
-        text_lower = conversation_text.lower()
-        
-        if any(indicator in text_lower for indicator in sarcasm_indicators):
-            if base_sentiment == "Positive":
-                adjusted_sentiment = "Negative"
-                adjustments.append("Sarcasm detected - flipping positive to negative")
-                confidence_boost += 0.2
-        
-        # Rule 4: "Busy" is not necessarily negative
-        if "busy" in text_lower and base_sentiment == "Negative":
-            # Check if there are other negative signals
-            negative_words = ["not interested", "don't call", "remove", "annoyed"]
-            if not any(word in text_lower for word in negative_words):
-                adjusted_sentiment = "Neutral"
-                adjustments.append("'Busy' is a timing issue, not rejection")
-                confidence_boost += 0.1
-        
-        # Rule 5: Questions about pricing/features = positive signal
-        interest_indicators = ["how much", "pricing", "tell me more", "send information", "whatsapp"]
-        if any(indicator in text_lower for indicator in interest_indicators):
-            if base_sentiment == "Neutral":
-                adjusted_sentiment = "Positive"
-                adjustments.append("Prospect asked for information - positive signal")
-                confidence_boost += 0.15
-        
-        return {
-            "adjusted_sentiment": adjusted_sentiment,
-            "adjustments": adjustments,
-            "confidence_boost": min(confidence_boost, 0.25)  # Cap at 25% boost
-        }
+
     
     async def analyze_sentiment(self, conversation_text: str, duration: int = 0, word_count: int = 0) -> Dict:
         """Analyze sentiment using LLM (TextBlob + VADER removed) - only on user messages"""
@@ -832,12 +707,9 @@ TASK: Analyze the prospect's sentiment and provide:
         logger.debug(f"Analyzing sentiment - User text length: {len(user_text)} chars, Word count: {word_count}")
         llm_sentiment_data = await self._calculate_sentiment_with_llm(user_text, conversation_text)
         
-        logger.debug(f"Sentiment analysis complete - Category: {llm_sentiment_data.get('category', 'Unknown')}, Score: {llm_sentiment_data.get('combined_score', 0.0)}")
-        combined_score = llm_sentiment_data.get("combined_score", 0.0)
-        textblob_polarity = llm_sentiment_data.get("textblob_polarity", 0.0)  # Backward compatibility
-        vader_compound = llm_sentiment_data.get("vader_compound", 0.0)  # Backward compatibility
+        logger.debug(f"Sentiment analysis complete - Category: {llm_sentiment_data.get('category', 'Unknown')}")
+        
         llm_category = llm_sentiment_data.get("category", "Neutral")
-        llm_confidence = llm_sentiment_data.get("confidence", 0.5)
         
         # Map LLM category to SentimentCategory enum
         if llm_category == "Very Interested":
@@ -849,97 +721,17 @@ TASK: Analyze the prospect's sentiment and provide:
         else:
             category = SentimentCategory.NEUTRAL
         
-        # Use LLM confidence, but ensure it's in valid range
-        initial_confidence = max(0.3, min(0.95, llm_confidence))
-        
-        # ENHANCEMENT 1: Adjust sentiment based on context (duration, engagement)
-        context_adjustment = self._adjust_sentiment_with_context(
-            category.value,
-            conversation_text,
-            duration,
-            word_count if word_count > 0 else len(conversation_text.split())
-        )
-        
-        # Apply context adjustments
-        if context_adjustment['adjustments']:
-            # Update category based on adjusted sentiment
-            adjusted_category_str = context_adjustment['adjusted_sentiment']
-            if adjusted_category_str == "Positive":
-                category = SentimentCategory.POSITIVE
-            elif adjusted_category_str == "Negative":
-                category = SentimentCategory.NEGATIVE
-            else:
-                category = SentimentCategory.NEUTRAL
-            
-            # Boost confidence if we made adjustments
-            confidence = min(0.95, initial_confidence + context_adjustment['confidence_boost'])
-        else:
-            confidence = initial_confidence
-        
         # Extract key phrases from user messages only
         key_phrases = self._extract_natural_phrases(user_text)
         
-        # Advanced emotion analysis on user messages only
-        advanced_emotions = self.analyze_advanced_emotions(user_text)
-        
-        # ENHANCEMENT 2: LLM validation for low-confidence or ambiguous cases
-        confidence_numeric = confidence
-        llm_validation = await self._validate_sentiment_with_llm(
-            conversation_text,
-            category.value,
-            confidence_numeric
-        )
-        
-        # Apply LLM validation if available
-        llm_validated = False
-        llm_sentiment = None
-        llm_reasoning = None
-        
-        if llm_validation['validated'] and llm_validation['llm_sentiment']:
-            llm_validated = True
-            llm_sentiment = llm_validation['llm_sentiment']
-            llm_reasoning = llm_validation.get('llm_reasoning', '')
-            
-            # Update category if LLM has different opinion
-            if llm_sentiment == "Positive" and category != SentimentCategory.POSITIVE:
-                category = SentimentCategory.POSITIVE
-            elif llm_sentiment == "Negative" and category != SentimentCategory.NEGATIVE:
-                category = SentimentCategory.NEGATIVE
-            
-            # Boost confidence significantly when LLM validates
-            confidence = min(0.95, confidence_numeric + 0.15)
-        
-        # Generate natural sentiment description using LLM (now with validated sentiment)
-        sentiment_description = self.generate_sentiment_description(category.value, advanced_emotions, combined_score, user_text)
-        
-        # Build reasoning with context adjustments and LLM validation
-        base_reasoning = f"LLM sentiment score: {round(combined_score * 100, 1)}% (Category: {category.value})"
-        if llm_sentiment_data.get("llm_reasoning"):
-            base_reasoning += f" | {llm_sentiment_data.get('llm_reasoning', '')}"
-        if context_adjustment['adjustments']:
-            base_reasoning += f" | Context: {'; '.join(context_adjustment['adjustments'])}"
-        if llm_validated:
-            base_reasoning += f" | LLM Validation: {llm_sentiment} ({llm_reasoning})"
+        # Generate natural sentiment description using LLM
+        sentiment_description = self.generate_sentiment_description(category.value, user_text)
         
         result = {
+            "category": category.value,
             "sentiment_description": sentiment_description,
-            "confidence_score": f"{round(confidence * 100, 1)}%",
-            "textblob_polarity": round(textblob_polarity, 2),  # Backward compatibility (LLM-generated)
-            "vader_compound": round(vader_compound, 2),  # Backward compatibility (LLM-generated)
-            "combined_score": f"{round(combined_score * 100, 1)}%",
-            "key_phrases": key_phrases[:5],  # Top 5 phrases
-            "reasoning": base_reasoning,
-            "advanced_emotions": advanced_emotions,
-            "context_adjustments": context_adjustment['adjustments'] if context_adjustment['adjustments'] else None,
-            "confidence_boost": f"+{round(context_adjustment['confidence_boost'] * 100, 1)}%" if context_adjustment['confidence_boost'] > 0 else None,
-            "llm_validated": llm_validated,
-            "llm_powered": True  # Indicate LLM was used for sentiment calculation
+            "key_phrases": key_phrases[:5]
         }
-        
-        # Add LLM validation details if available
-        if llm_validated:
-            result['llm_sentiment'] = llm_sentiment  # This is the validated sentiment category
-            result['llm_reasoning'] = llm_reasoning
         
         return result
     
@@ -1003,143 +795,25 @@ TASK: Analyze the prospect's sentiment and provide:
         else:
             return "Very Low"
     
-    def _generate_emotion_description(self, emotion: str, confidence: float, user_text: str) -> str:
-        """Generate detailed psychological analysis of prospect's emotional state using LLM"""
-        
-        # If no Gemini API key, fall back to simple template
-        if not self.gemini_api_key:
-            return self._generate_emotion_description_fallback(emotion, confidence, user_text)
-        
-        try:
-            # Count engagement indicators
-            word_count = len(user_text.split())
-            question_count = user_text.count('?')
-            exclamation_count = user_text.count('!')
-            
-            # Create optimized prompt for psychological emotion analysis
-            # Note: Emotion is inferred from context (Hugging Face models removed)
-            prompt = f"""Analyze this sales prospect's emotional state from their conversation:
 
-WORDS SPOKEN: {word_count} | QUESTIONS: {question_count}
-
-PROSPECT'S WORDS:
-"{user_text}"
-
-Write 2 sentences analyzing:
-1. Their true emotional state and any shifts during conversation
-2. What their language reveals about openness, trust, skepticism, or decision-making style
-
-Be specific and psychological, not generic."""
-            
-            description = self._call_gemini_text(prompt, temperature=0.3, max_output_tokens=2000)
-            
-            if description:
-                # Remove quotes if LLM added them
-                description = description.strip('"\'')
-                return description
-            else:
-                # Fallback to template on error
-                return self._generate_emotion_description_fallback(emotion, confidence, user_text)
-                
-        except Exception as e:
-            # Fallback to template on error
-            return self._generate_emotion_description_fallback(emotion, confidence, user_text)
     
-    def _generate_emotion_description_fallback(self, emotion: str, confidence: float, user_text: str) -> str:
-        """Fallback template-based emotion description (used when LLM unavailable)"""
-        
-        # Count engagement indicators
-        word_count = len(user_text.split())
-        question_count = user_text.count('?')
-        
-        # Determine intensity modifier
-        if confidence >= 0.85:
-            intensity = "very"
-        elif confidence >= 0.70:
-            intensity = "clearly"
-        elif confidence >= 0.55:
-            intensity = "somewhat"
-        else:
-            intensity = "slightly"
-        
-        # Build descriptions based on emotion type with engagement context
-        descriptions = {
-            "joy": {
-                "high_engagement": f"The prospect is {intensity} enthusiastic and excited about the services, showing genuine interest with {word_count} words and {question_count} questions asked.",
-                "medium_engagement": f"The prospect seems {intensity} positive and interested, engaging moderately with {word_count} words in the conversation.",
-                "low_engagement": f"The prospect appears {intensity} upbeat but reserved, with limited engagement of only {word_count} words."
-            },
-            "neutral": {
-                "high_engagement": f"The prospect remains {intensity} calm and cooperative, listening attentively with {word_count} words but not showing strong emotional reactions.",
-                "medium_engagement": f"The prospect is {intensity} neutral and polite, maintaining a balanced tone throughout the {word_count}-word conversation.",
-                "low_engagement": f"The prospect sounds {intensity} indifferent and detached, providing only {word_count} words with minimal emotional investment."
-            },
-            "sadness": {
-                "high_engagement": f"The prospect seems {intensity} disappointed or pessimistic, expressing concerns despite engaging with {word_count} words.",
-                "medium_engagement": f"The prospect appears {intensity} down or lacking enthusiasm, with moderate engagement of {word_count} words.",
-                "low_engagement": f"The prospect sounds {intensity} disheartened and disengaged, offering only {word_count} words with low energy."
-            },
-            "anger": {
-                "high_engagement": f"The prospect is {intensity} frustrated and irritated, expressing annoyance actively with {word_count} words.",
-                "medium_engagement": f"The prospect seems {intensity} agitated or impatient, showing frustration in the {word_count}-word conversation.",
-                "low_engagement": f"The prospect appears {intensity} annoyed and dismissive, responding curtly with only {word_count} words."
-            },
-            "fear": {
-                "high_engagement": f"The prospect shows {intensity} strong concerns and hesitation, expressing worries throughout {word_count} words.",
-                "medium_engagement": f"The prospect appears {intensity} cautious and uncertain, showing some apprehension in {word_count} words.",
-                "low_engagement": f"The prospect seems {intensity} anxious and reluctant, providing only {word_count} words with noticeable hesitation."
-            },
-            "surprise": {
-                "high_engagement": f"The prospect is {intensity} caught off-guard and intrigued, responding with unexpected reactions across {word_count} words.",
-                "medium_engagement": f"The prospect seems {intensity} surprised and uncertain, showing unexpected responses in {word_count} words.",
-                "low_engagement": f"The prospect appears {intensity} startled but reserved, offering only {word_count} words with some confusion."
-            },
-            "disgust": {
-                "high_engagement": f"The prospect is {intensity} dismissive and negative, showing clear rejection despite {word_count} words of engagement.",
-                "medium_engagement": f"The prospect seems {intensity} unimpressed and resistant, expressing distaste in {word_count} words.",
-                "low_engagement": f"The prospect appears {intensity} repulsed and disinterested, responding with only {word_count} words of clear negativity."
-            }
-        }
-        
-        # Determine engagement level
-        if word_count > 300:
-            engagement_level = "high_engagement"
-        elif word_count > 100:
-            engagement_level = "medium_engagement"
-        else:
-            engagement_level = "low_engagement"
-        
-        # Get description for this emotion and engagement level
-        emotion_lower = emotion.lower()
-        if emotion_lower in descriptions:
-            return descriptions[emotion_lower][engagement_level]
-        else:
-            # Fallback for unknown emotions
-            return f"The prospect shows {intensity} {emotion} emotion with {word_count} words of engagement in the conversation."
-    
-    def generate_sentiment_description(self, category: str, advanced_emotions: Dict, combined_score: float, user_text: str) -> str:
+    def generate_sentiment_description(self, category: str, user_text: str) -> str:
         """Generate comprehensive behavioral and emotional analysis of the prospect"""
         
         if not self.gemini_api_key:
             return f"Prospect shows {category.lower()} sentiment"
         
         try:
-            # Get the main emotion from advanced analysis
-            main_emotion = self.get_main_emotion(advanced_emotions)
-            emotion_confidence = advanced_emotions.get('confidence', 0)
-            
             # Analyze conversation patterns
             word_count = len(user_text.split())
             question_count = user_text.count('?')
-            exclamation_count = user_text.count('!')
-            sentence_count = len([s for s in user_text.split('.') if s.strip()])
             
             # Create comprehensive prompt for detailed behavioral analysis
             prompt = f"""Analyze this B2B sales prospect's behavior and buying signals:
 
 PROSPECT'S WORDS: "{user_text}"
 
-METRICS: {word_count} words | {question_count} questions | Emotion: {main_emotion} ({emotion_confidence:.0%}) | Sentiment: {category} ({combined_score:.0%})
+METRICS: {word_count} words | {question_count} questions | Sentiment: {category}
 
 Write 3 sentences covering:
 1. Emotional state and engagement level
@@ -1156,29 +830,13 @@ Be specific about their mindset, not generic."""
                 return description
             else:
                 # Fallback to simple description
-                return f"Prospect shows {category.lower()} sentiment with {main_emotion} emotion. Engagement level: {word_count} words spoken with {question_count} questions asked."
+                return f"Prospect shows {category.lower()} sentiment. Engagement level: {word_count} words spoken with {question_count} questions asked."
             
         except Exception as e:
             # Fallback to simple description
             return f"Prospect shows {category.lower()} sentiment with limited behavioral data available."
     
-    def get_main_emotion(self, advanced_emotions: Dict) -> str:
-        """Get the main emotion from advanced analysis"""
-        
-        try:
-            # New structure has emotion directly at root level
-            if 'emotion' in advanced_emotions:
-                return advanced_emotions['emotion']
-            
-            # Fallback to old structure for backwards compatibility
-            if 'basic' in advanced_emotions and isinstance(advanced_emotions['basic'], dict):
-                return advanced_emotions['basic'].get('emotion', 'neutral')
-            
-            return 'neutral'
-            
-        except Exception:
-            return 'neutral'
-    
+
     async def generate_call_summary(self, call_id: str, sentiment: Dict, summary: Dict, duration_seconds: int, conversation_text: str) -> str:
         """Generate a comprehensive call summary"""
         
@@ -1190,13 +848,6 @@ Be specific about their mindset, not generic."""
             
             # Sentiment info
             sentiment_description = sentiment.get('sentiment_description', 'No description available')
-            confidence = sentiment.get('confidence_score', 0)
-            combined_score_str = sentiment.get('combined_score', '0%')
-            # Extract numeric value from percentage string (e.g., "85.0%" -> 85.0)
-            try:
-                combined_score_numeric = float(combined_score_str.rstrip('%'))
-            except:
-                combined_score_numeric = 0
             
             # Summary info
             business_name = summary.get('business_name', 'Not provided')
@@ -1216,8 +867,6 @@ Be specific about their mindset, not generic."""
             # Sentiment analysis
             summary_parts.append(f"PROSPECT SENTIMENT")
             summary_parts.append(f"Description: {sentiment_description}")
-            summary_parts.append(f"Confidence: {sentiment.get('confidence_score', 'N/A')}")
-            summary_parts.append(f"Combined Score: {sentiment.get('combined_score', 'N/A')}")
             summary_parts.append("")
             
             # Business information
@@ -1272,24 +921,6 @@ Be specific about their mindset, not generic."""
                     summary_parts.append(f"{i}. {step}")
                 summary_parts.append("")
             
-            # Recommendations
-            if 'recommendations' in summary and summary['recommendations']:
-                summary_parts.append(f"RECOMMENDATIONS")
-                summary_parts.append(summary['recommendations'])
-                summary_parts.append("")
-            
-            # Follow-up priority based on combined score
-            if combined_score_numeric >= 60:
-                priority = "HIGH PRIORITY - Immediate follow-up recommended"
-            elif combined_score_numeric >= 10:
-                priority = "MEDIUM PRIORITY - Schedule follow-up within 24-48 hours"
-            elif combined_score_numeric >= -10:
-                priority = "LOW PRIORITY - Nurture relationship, follow up in 1-2 weeks"
-            else:
-                priority = "LOW PRIORITY - Address concerns before re-engaging"
-            
-            summary_parts.append(f"FOLLOW-UP PRIORITY")
-            summary_parts.append(priority)
             
             return "\n".join(summary_parts)
             
@@ -1438,12 +1069,12 @@ Be specific about their mindset, not generic."""
             call_summary = str(summary.get('call_summary', ''))
             concerns = summary.get('prospect_concerns', [])
             next_steps = summary.get('next_steps', [])
-            sentiment_score = sentiment.get('combined_score', '0%')
+            sentiment_category = sentiment.get('category', 'Neutral')
             
             prompt = f"""Analyze this sales call and determine the lead disposition.
 
 CALL DATA:
-- Sentiment: {sentiment_score}
+- Sentiment: {sentiment_category}
 - Call Summary: {call_summary}
 - Prospect Concerns: {', '.join(concerns) if concerns else 'None'}
 - Next Steps: {', '.join(next_steps) if next_steps else 'None'}
@@ -2344,6 +1975,110 @@ CONFIDENCE: [High/Medium/Low]"""
         
         word_count = len(conversation_text.split())
         logger.info(f"Processing call - Word count: {word_count}, Duration: {duration_seconds}s, Text length: {len(conversation_text)} chars")
+
+        
+        # Check if conversation has any meaningful user speech
+        has_user_speech = False
+        
+        # Check source log structure first (more reliable)
+        if isinstance(conversation_log, list) and len(conversation_log) > 0 and isinstance(conversation_log[0], dict):
+            # Check for any user message with actual text
+            for msg in conversation_log:
+                role = msg.get('role', '') or msg.get('speaker', '')
+                text = msg.get('message', '') or msg.get('text', '')
+                if role.lower() == 'user' and text and len(text.strip()) > 0:
+                    has_user_speech = True
+                    break
+        elif isinstance(conversation_log, dict):
+            # Dict format - check segments or messages
+            if 'segments' in conversation_log:
+                for seg in conversation_log['segments']:
+                    if seg.get('speaker', '').lower() == 'user' and seg.get('text', ''):
+                        has_user_speech = True
+                        break
+            elif 'messages' in conversation_log:
+                for msg in conversation_log['messages']:
+                    role = msg.get('role', '') or msg.get('speaker', '')
+                    if role.lower() == 'user' and (msg.get('message') or msg.get('text')):
+                        has_user_speech = True
+                        break
+        else:
+            # Fallback to checking parsed text
+            if "User:" in conversation_text:
+                has_user_speech = True
+
+        # If no user speech detected, return default values (SKIP LLM)
+        if not has_user_speech:
+            logger.info("No user speech detected - bypassing LLM analysis with default values")
+            
+            # Default values as requested
+            default_summary = {
+                "call_summary": "Prospect did not provide enough conversation to make the summary",
+                "key_discussion_points": [],
+                "prospect_questions": [],
+                "prospect_concerns": [],
+                "next_steps": [],
+                "recommendations": "prospect does not provide enough conversation to make recommendation\n\nAnalytics Context:\n- Lead Score: 6.0/10 (Cold Lead)\n- Engagement: Low\n- Emotion: Neutral",
+                "business_name": None,
+                "contact_person": None,
+                "phone_number": None
+            }
+            
+            default_sentiment = {
+                "category": "Neutral",
+                "sentiment_description": "Prospect did not provide enough conversation to make the sentiment",
+                "key_phrases": []
+            }
+            
+            default_disposition = {
+                "disposition": "NURTURE (7 DAYS)",
+                "recommended_action": "Check if valid number/retry later",
+                "reasoning": "No user response recorded",
+                "decision_confidence": "High"
+            }
+            
+            default_lead_score = {
+                "lead_score": 6.0, 
+                "lead_category": "Cold Lead",
+                "priority": "Low",
+                "scoring_breakdown": {"reason": "No user speech detected"}
+            }
+
+            zero_cost = {
+                "total_api_calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cost_usd": 0.0,
+                "cost_usd_formatted": "$0",
+                "pricing_model": "Skipped (No User Speech)"
+            }
+
+            return {
+                "call_id": call_id,
+                "timestamp": datetime.now().isoformat(),
+                "duration_seconds": duration_seconds,
+                "lead_disposition": default_disposition,
+                "sentiment": default_sentiment,
+                "summary": default_summary,
+                "lead_score": default_lead_score,
+                "quality_metrics": {
+                    "overall_score": 0,
+                    "engagement_level": "Low",
+                    "clarity": "N/A",
+                    "objection_handling": "N/A"
+                }, 
+                "stage_info": {
+                    "stage": "Connection",
+                    "is_qualified": False,
+                    "next_action": "Retry"
+                },
+                "lead_info": None,
+                "lead_info_path": None,
+                "conversation_length": len(conversation_text),
+                "word_count": word_count,
+                "cost": zero_cost
+            }
 
         
         # ===== PARALLEL PHASE 1: Sentiment + Lead Info Extraction =====
@@ -3362,7 +3097,7 @@ class StandaloneAnalytics:
             if tenant_id:
                 result['tenant_id'] = str(tenant_id)
             
-                # Save to database - use new method if tenant_id is available
+                # Save to database
                 if tenant_id and STORAGE_CLASSES_AVAILABLE:
                     logger.info("Saving analytics to lad_dev.voice_call_analysis table...")
                     success = await self.analytics.save_to_lad_dev(result, str(db_call_id), str(tenant_id))
@@ -3464,7 +3199,7 @@ Examples:
             print(f"Disposition: {result['lead_disposition']['disposition']}")
             print(f"Action: {result['lead_disposition']['recommended_action']}")
             print(f"Lead Score: {result['lead_score']['lead_score']}/10 ({result['lead_score']['lead_category']})")
-            print(f"Sentiment: {result['sentiment']['combined_score']} (confidence: {result['sentiment']['confidence_score']})")
+            print(f"Sentiment: {result['sentiment']['category']}")
             print(f"Engagement: {result['quality_metrics']['engagement_level']}")
             print(f"Duration: {result['duration_seconds']}s")
             print("="*60)
