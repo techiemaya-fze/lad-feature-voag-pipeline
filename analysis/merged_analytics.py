@@ -16,41 +16,14 @@ from pathlib import Path
 from dotenv import load_dotenv
 import sys
 
-# Add parent directory to path to allow imports when running as script
-_SCRIPT_DIR = Path(__file__).parent
-_PROJECT_ROOT = _SCRIPT_DIR.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
-# Structured output client for guaranteed JSON responses - handle both module and script execution
-try:
-    # Try direct import first (when run as script from analysis directory or project root)
-    from gemini_client import (
-        generate_with_schema_retry, 
-        generate_text,
-        SENTIMENT_SCHEMA, 
-        DISPOSITION_SCHEMA, 
-        LLM_VALIDATION_SCHEMA
-    )
-except ImportError:
-    try:
-        # Try relative import (when run as module)
-        from .gemini_client import (
-            generate_with_schema_retry, 
-            generate_text,
-            SENTIMENT_SCHEMA, 
-            DISPOSITION_SCHEMA, 
-            LLM_VALIDATION_SCHEMA
-        )
-    except ImportError:
-        # Try absolute import (when run from project root)
-        from analysis.gemini_client import (
-            generate_with_schema_retry, 
-            generate_text,
-            SENTIMENT_SCHEMA, 
-            DISPOSITION_SCHEMA, 
-            LLM_VALIDATION_SCHEMA
-        )
+# Structured output client for guaranteed JSON responses
+from .gemini_client import (
+    generate_with_schema_retry, 
+    generate_text,
+    SENTIMENT_SCHEMA, 
+    DISPOSITION_SCHEMA, 
+    LLM_VALIDATION_SCHEMA
+)
 
 load_dotenv()
 
@@ -550,12 +523,6 @@ class CallAnalytics:
         return conversation_text
     
 
-    def get_duration_from_column(self, duration_seconds):
-        """
-        Return the call duration in seconds from the duration_seconds column.
-        """
-        return duration_seconds
-
     def _detect_voicemail(self, conversation_log, conversation_text: Optional[str] = None) -> bool:
         """
         Basic voicemail detector placeholder.
@@ -749,7 +716,7 @@ class CallAnalytics:
         }
     
    
-     async def _calculate_sentiment_with_llm(self, user_text: str, conversation_text: str) -> Dict:
+    async def _calculate_sentiment_with_llm(self, user_text: str, conversation_text: str) -> Dict:
         """Calculate sentiment score and category using LLM (replaces TextBlob+VADER)"""
         
         logger.debug("Calling LLM for sentiment calculation with structured output...")
@@ -922,19 +889,7 @@ TASK: Analyze the prospect's sentiment and provide:
         logger.debug("Starting sentiment analysis...")
         user_text = self._extract_user_messages(conversation_text)
 
-        # Guard: skip expensive LLM call when there is no meaningful user input
-        if not user_text or len(user_text.strip()) < 10:
-            logger.warning("Insufficient user text for sentiment analysis - returning neutral sentiment without LLM call")
-            return {
-                "sentiment_score": 0.0,
-                "category": "Neutral",
-                "confidence": 0.5,
-                "textblob_polarity": 0.0,
-                "vader_compound": 0.0,
-                "combined_score": 0.0,
-                "llm_reasoning": "Insufficient user input for sentiment analysis",
-            }
-        
+            
         logger.debug(f"Analyzing sentiment - User text length: {len(user_text)} chars, Word count: {word_count}")
         llm_sentiment_data = await self._calculate_sentiment_with_llm(user_text, conversation_text)
         
@@ -1855,7 +1810,7 @@ CONFIDENCE: [High/Medium/Low]"""
         
         Mapping:
         - "PROCEED IMMEDIATELY" → lead_score = 10/10, lead_category = "Hot Lead"
-        - "FOLLOW UP IN 3 DAYS" → lead_score = 8/10, lead_category = "warm Lead"
+        - "FOLLOW UP IN 3 DAYS" → lead_score = 8/10, lead_category = "Warm Lead"
         - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "Cold Lead"
         - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Not qualified"
         """
@@ -1867,7 +1822,7 @@ CONFIDENCE: [High/Medium/Low]"""
             priority = "High"
         elif disposition_str == 'FOLLOW UP IN 3 DAYS':
             lead_score = 8.0
-            lead_category = "warm Lead"
+            lead_category = "Warm Lead"
             priority = "High"
         elif disposition_str in ['FOLLOW UP IN 7 DAYS', 'NURTURE (7 DAYS)', 'NURTURE']:
             lead_score = 6.0
@@ -2451,44 +2406,56 @@ CONFIDENCE: [High/Medium/Low]"""
         logger.info(f"Processing call - Word count: {word_count}, Duration: {duration_seconds}s, Text length: {len(conversation_text)} chars")
 
         
-        logger.info("Step 1/7: Analyzing sentiment...")
-        sentiment = await self.analyze_sentiment(conversation_text, duration=duration_seconds, word_count=word_count)
-
-        # ===== SEQUENTIAL PHASE: Summary → Disposition (dependencies) =====
-        logger.info("Step 2/7: Generating summary...")
-        summary = await self.generate_summary(conversation_text, sentiment_data=sentiment, duration=duration_seconds)
-
-        logger.info("Step 3/7: Determining lead disposition...")
-        lead_disposition = await self._determine_lead_disposition_llm(sentiment, summary)
-        logger.info(f"Lead disposition: {lead_disposition.get('disposition', 'Unknown')} - Action: {lead_disposition.get('recommended_action', 'N/A')}")
-
-        # ===== NON-LLM STEPS (fast, no API calls) =====
-        logger.info("Step 4/7: Calculating lead score from disposition...")
-        lead_score = self._calculate_lead_score_from_disposition(lead_disposition)
-        logger.info(f"Lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
-
-        logger.info("Step 5/7: Calculating quality metrics...")
-        quality_metrics = self.calculate_conversation_quality(conversation_text, sentiment, duration_seconds)
-
-        logger.info("Step 6/7: Extracting call stages...")
-        stage_info = self.extract_call_stages(conversation_text, summary)
-
-        # Step 7/7: Extract lead information and save to JSON
-        lead_info = None
-        lead_info_path = None
-        if self.lead_extractor:
-            logger.info("Step 7/7: Extracting lead information...")
+        # ===== PARALLEL PHASE 1: Sentiment + Lead Info Extraction =====
+        # These two are independent and can run in parallel
+        logger.info("Step 1/7: Analyzing sentiment + Step 7/7: Extracting lead info (PARALLEL)...")
+        
+        async def extract_lead_info_safe():
+            """Wrapper for lead info extraction with error handling"""
+            if not self.lead_extractor:
+                logger.debug("Lead extractor not available - skipping lead info extraction")
+                return None, None
             try:
-                lead_info = await self.lead_extractor.extract_lead_information(conversation_text, summary)
+                # Pass None for summary since we don't have it yet - lead extraction doesn't strictly need it
+                lead_info = await self.lead_extractor.extract_lead_information(conversation_text, None)
+                lead_info_path = None
                 if lead_info:
                     lead_info_path = self.lead_extractor.save_to_json(lead_info, call_id)
                     logger.info(f"Lead info extracted: {len(lead_info)} fields, saved to: {lead_info_path}")
                 else:
                     logger.debug("No lead information found in this call")
+                return lead_info, lead_info_path
             except Exception as e:
                 logger.error(f"Lead info extraction failed: {e}", exc_info=True)
-        else:
-            logger.debug("Lead extractor not available - skipping lead info extraction")
+                return None, None
+        
+        # Run sentiment analysis and lead info extraction in parallel
+        sentiment, (lead_info, lead_info_path) = await asyncio.gather(
+            self.analyze_sentiment(conversation_text, duration=duration_seconds, word_count=word_count),
+            extract_lead_info_safe()
+        )
+        
+        # ===== SEQUENTIAL PHASE: Summary → Disposition (dependencies) =====
+        logger.info("Step 2/7: Generating summary...")
+        summary = await self.generate_summary(conversation_text, sentiment_data=sentiment, duration=duration_seconds)
+        
+        logger.info("Step 3/7: Determining lead disposition...")
+        lead_disposition = await self._determine_lead_disposition_llm(sentiment, summary)
+        logger.info(f"Lead disposition: {lead_disposition.get('disposition', 'Unknown')} - Action: {lead_disposition.get('recommended_action', 'N/A')}")
+        
+        # ===== NON-LLM STEPS (fast, no API calls) =====
+        logger.info("Step 4/7: Calculating lead score from disposition...")
+        lead_score = self._calculate_lead_score_from_disposition(lead_disposition)
+        logger.info(f"Lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
+        
+        logger.info("Step 5/7: Calculating quality metrics...")
+        quality_metrics = self.calculate_conversation_quality(conversation_text, sentiment, duration_seconds)
+        
+        logger.info("Step 6/7: Extracting call stages...")
+        stage_info = self.extract_call_stages(conversation_text, summary)
+        
+        # Lead info already extracted in parallel phase above
+
 
         # Enhance recommendations with complete analytics data
         if summary and 'recommendations' in summary and lead_score:
