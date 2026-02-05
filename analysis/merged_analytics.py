@@ -941,6 +941,19 @@ TASK: Analyze the prospect's sentiment and provide:
         
         logger.debug("Starting sentiment analysis...")
         user_text = self._extract_user_messages(conversation_text)
+
+        # Guard: skip expensive LLM call when there is no meaningful user input
+        if not user_text or len(user_text.strip()) < 10:
+            logger.warning("Insufficient user text for sentiment analysis - returning neutral sentiment without LLM call")
+            return {
+                "sentiment_score": 0.0,
+                "category": "Neutral",
+                "confidence": 0.5,
+                "textblob_polarity": 0.0,
+                "vader_compound": 0.0,
+                "combined_score": 0.0,
+                "llm_reasoning": "Insufficient user input for sentiment analysis",
+            }
         
         logger.debug(f"Analyzing sentiment - User text length: {len(user_text)} chars, Word count: {word_count}")
         llm_sentiment_data = await self._calculate_sentiment_with_llm(user_text, conversation_text)
