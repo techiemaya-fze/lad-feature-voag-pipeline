@@ -1,0 +1,13 @@
+{
+  "call_id": "e870756d-5961-4c8a-82b3-e9630e7b9344",
+  "extracted_at": "2026-01-14T10:05:40.511884",
+  "lead_info": {
+    "first_name": "Sahil",
+    "full_name": "Sahil",
+    "education_level": "tenth standard",
+    "curriculum": "CBSE",
+    "program_interested": "Economics",
+    "country_interested": "Canada",
+    "additional_notes": "Financial situation may prevent him from going to Canada."
+  }
+}

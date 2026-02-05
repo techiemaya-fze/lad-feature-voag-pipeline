@@ -17,13 +17,14 @@ Usage:
 
 import os
 import json
-import re
 import logging
-import requests
 from datetime import datetime
 from typing import Dict, Optional
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Structured output client for guaranteed JSON responses
+from .gemini_client import generate_with_schema_retry, LEAD_INFO_SCHEMA
 
 load_dotenv()
 
@@ -54,15 +55,9 @@ class LeadInfoExtractor:
         self.exports_dir = Path(__file__).parent / "json_exports"
         self.exports_dir.mkdir(exist_ok=True)
     
-    def _estimate_tokens(self, text: str) -> int:
-        """Estimate token count (approximately 1 token = 4 characters)"""
-        if not text:
-            return 0
-        return len(text) // 4
-    
-    def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 500) -> Optional[str]:
+    def _call_gemini_structured(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 8192) -> Optional[Dict]:
         """
-        Call Gemini 2.0 Flash API - matches merged_analytics.py pattern
+        Call Gemini API with structured output schema - guarantees proper JSON response
         
         Args:
             prompt: The prompt to send to Gemini
@@ -70,149 +65,47 @@ class LeadInfoExtractor:
             max_output_tokens: Maximum output tokens
             
         Returns:
-            API response text or None if failed
+            Parsed JSON dict or None if failed
         """
         if not self.gemini_api_key:
             logger.warning("Gemini API key not available, skipping API call")
             return None
         
-        input_tokens = self._estimate_tokens(prompt)
-        logger.debug(f"Lead extraction API call - Input tokens: ~{input_tokens}, Max output: {max_output_tokens}")
+        logger.debug(f"Lead extraction API call with structured output")
         
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={self.gemini_api_key}"
+            # Track API call if cost_tracker is available
+            if self.cost_tracker is not None:
+                self.cost_tracker['api_calls'] += 1
             
-            headers = {
-                "Content-Type": "application/json"
-            }
+            # Use structured output for guaranteed JSON response
+            result = generate_with_schema_retry(
+                prompt=prompt,
+                schema=LEAD_INFO_SCHEMA,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
             
-            data = {
-                "contents": [{
-                    "parts": [{"text": prompt}]
-                }],
-                "generationConfig": {
-                    "temperature": temperature,
-                    "maxOutputTokens": max_output_tokens
-                }
-            }
-            
-            # 10 second timeout - matches merged_analytics.py
-            response = requests.post(url, headers=headers, json=data, timeout=10)
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                logger.debug("Lead extraction API call successful")
-                
-                # Track costs if cost_tracker is provided (from parent CallAnalytics)
-                if self.cost_tracker is not None:
-                    self.cost_tracker['api_calls'] += 1
-                    
-                    # Get actual token counts from response if available
-                    if "usageMetadata" in response_data:
-                        usage = response_data["usageMetadata"]
-                        if "promptTokenCount" in usage:
-                            self.cost_tracker['total_input_tokens'] += usage["promptTokenCount"]
-                        else:
-                            self.cost_tracker['total_input_tokens'] += input_tokens
-                        if "candidatesTokenCount" in usage:
-                            self.cost_tracker['total_output_tokens'] += usage["candidatesTokenCount"]
-                    else:
-                        self.cost_tracker['total_input_tokens'] += input_tokens
-                
-                if "candidates" in response_data and len(response_data["candidates"]) > 0:
-                    if "content" in response_data["candidates"][0]:
-                        if "parts" in response_data["candidates"][0]["content"]:
-                            output_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                            logger.debug(f"API response length: {len(output_text)} chars")
-                            
-                            # Track output tokens if no usageMetadata
-                            if self.cost_tracker is not None and "usageMetadata" not in response_data:
-                                output_tokens = self._estimate_tokens(output_text)
-                                self.cost_tracker['total_output_tokens'] += output_tokens
-                            
-                            return output_text
-                
-                if "promptFeedback" in response_data:
-                    logger.warning(f"Gemini API warning: {response_data.get('promptFeedback', {})}")
+            if result:
+                # Extract and track usage metadata
+                if self.cost_tracker is not None and '_usage_metadata' in result:
+                    usage = result.pop('_usage_metadata')
+                    self.cost_tracker['total_input_tokens'] += usage.get('prompt_token_count', 0)
+                    self.cost_tracker['total_output_tokens'] += usage.get('candidates_token_count', 0)
+                    logger.debug(f"Lead extraction Gemini usage: {usage}")
+
+                logger.debug(f"Lead extraction structured response received")
+                return result
             else:
-                logger.error(f"Gemini API error: {response.status_code} - {response.text[:200]}")
-            return None
+                logger.warning("No result from structured generation")
+                return None
             
-        except requests.exceptions.Timeout:
-            logger.error("Gemini API timeout after 10 seconds")
-            return None
         except Exception as e:
-            logger.error(f"Gemini API exception: {str(e)}", exc_info=True)
+            logger.error(f"Gemini structured API exception: {str(e)}", exc_info=True)
             return None
     
-    def _parse_json_response(self, raw_text: Optional[str]) -> Optional[Dict]:
-        """
-        Parse JSON from LLM response - handles code fences and trailing text
-        
-        Args:
-            raw_text: Raw text from LLM response
-            
-        Returns:
-            Parsed dictionary or None if parsing failed
-        """
-        if not raw_text:
-            return None
-
-        text = raw_text.strip()
-        if not text:
-            return None
-
-        candidates = [text]
-
-        # Extract fenced blocks (handles both ```json and ```)
-        fence_pattern = re.compile(r"```(?:json)?\s*([\s\S]+?)```", re.IGNORECASE)
-        for match in fence_pattern.finditer(text):
-            snippet = match.group(1).strip()
-            if snippet:
-                candidates.append(snippet)
-
-        # Handle unterminated fences by slicing after the marker
-        for marker in ("```json", "```"):
-            marker_index = text.lower().find(marker)
-            if marker_index != -1:
-                snippet = text[marker_index + len(marker):].strip()
-                if snippet:
-                    candidates.append(snippet)
-
-        # Always try substring starting from first brace
-        brace_index = text.find("{")
-        if brace_index != -1:
-            json_candidate = text[brace_index:]
-            if json_candidate:
-                candidates.append(json_candidate)
-
-        decoder = json.JSONDecoder()
-        for candidate in candidates:
-            candidate = candidate.strip()
-            if not candidate:
-                continue
-
-            try:
-                return decoder.decode(candidate)
-            except json.JSONDecodeError:
-                pass
-
-            try:
-                obj, _ = decoder.raw_decode(candidate)
-                return obj
-            except json.JSONDecodeError:
-                pass
-
-            if "{" in candidate:
-                start = candidate.find("{")
-                try_candidate = candidate[start:]
-                try:
-                    obj, _ = decoder.raw_decode(try_candidate)
-                    return obj
-                except json.JSONDecodeError:
-                    continue
-
-        return None
+    # NOTE: _parse_json_response removed - no longer needed with structured output
+    # The generate_with_schema_retry function guarantees valid JSON responses
     
     def _extract_user_messages(self, conversation_text: str) -> str:
         """Extract only user messages from conversation (exclude bot/agent messages)"""
@@ -341,18 +234,12 @@ CRITICAL RULES:
 5. If a field is not mentioned, set it to null
 """
         
-        logger.debug("Calling Gemini API for lead info extraction...")
-        result = self._call_gemini_api(prompt, temperature=0.2, max_output_tokens=500)
-        
-        if not result:
-            logger.warning("LLM did not return lead information")
-            return None
-        
-        # Parse JSON response
-        parsed_data = self._parse_json_response(result)
+        logger.debug("Calling Gemini API for lead info extraction with structured output...")
+        # Using structured output - result is already a parsed dict
+        parsed_data = self._call_gemini_structured(prompt, temperature=0.2, max_output_tokens=8192)
         
         if not parsed_data:
-            logger.warning("Failed to parse lead info JSON from LLM response")
+            logger.warning("LLM did not return lead information")
             return None
         
         # Clean the data - remove null/None string values

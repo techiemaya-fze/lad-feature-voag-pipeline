@@ -1,0 +1,66 @@
+================================================================================
+AGENT 4: Nithya
+Tenant ID: None
+----------------------------------------
+
+agent_instructions:
+  Length: 4663 chars
+  Contains 'hangup': True
+  Contains 'end call': True
+  Contains 'goodbye': False
+  --- RELEVANT EXCERPTS ---
+    Line 44: - If silence exceeds approximately three seconds, check in once. End the call courteously after two unanswered check-ins and trigger hangup_call with 
+
+system_instructions:
+  Length: 2116 chars
+  Contains 'hangup': True
+  Contains 'end call': False
+  Contains 'goodbye': True
+  --- RELEVANT EXCERPTS ---
+    Line 18: - When the caller wants to end the conversation or the objective is complete, speak the goodbye line "I completely understand. Thank you for your time
+    Line 19: - The spoken goodbye must come before the hangup_call tool invocation, and no additional content should follow the tool call.
+
+outbound_starter_prompt:
+  Length: 640 chars
+  Contains 'hangup': False
+  Contains 'end call': False
+  Contains 'goodbye': False
+
+================================================================================
+AGENT 14: Mira Singh(G Links)(short)Cartesia Arushi
+Tenant ID: 926070b5-189b-4682-9279-ea10ca090b84
+----------------------------------------
+
+agent_instructions:
+  Length: 17204 chars
+  Contains 'hangup': False
+  Contains 'end call': True
+  Contains 'goodbye': True
+  --- RELEVANT EXCERPTS ---
+    Line 53:    - End the call with a confirmation email detailing session info, company profile, website, reviews, and counselor contact.  
+    Line 58: - Use: "Thank you for your time. I'll update our system accordingly. Wishing you all the best!"
+
+system_instructions:
+  Length: 3437 chars
+  Contains 'hangup': True
+  Contains 'end call': True
+  Contains 'goodbye': True
+  --- RELEVANT EXCERPTS ---
+    Line 15: ## Hangup behavior — exact required sequence (non-negotiable)
+    Line 19: 1. Speak the goodbye line **aloud** as the last spoken content in the call:
+    Line 20:    **“I completely understand. Thank you for your time, and have a great day!”**
+    Line 22: 2. **In the same turn** (immediately after the spoken goodbye) invoke the hangup tool with a clear reason value. The tool invocation should include a 
+    Line 25:    hangup_call("follow-up scheduled - WhatsApp sent")
+    Line 31:    hangup_call("call complete - no interest")
+    Line 34: 3. After the tool call is invoked, **do not say anything further**. The spoken goodbye must come *before* the hangup_call invocation, and nothing may 
+    Line 39: > * This exact order is mandatory: spoken goodbye → tool call → silence.
+    Line 43: * If the caller interrupts while you’re about to end the call, pause and acknowledge them; resume the goodbye sequence only once they confirm the call
+    Line 44: * If a caller explicitly asks to call back, confirm one or two specific windows, then end with the goodbye line and hangup in the same turn after conf
+    Line 45: * If network issues or call failures occur, do not attempt multiple spoken restarts — follow the same hangup sequence once you decide to close.
+    Line 51: # ending the call should be proper , and when the speaker is completely satisfied , dont rush to end the call .  
+
+outbound_starter_prompt:
+  Length: 418 chars
+  Contains 'hangup': False
+  Contains 'end call': False
+  Contains 'goodbye': False

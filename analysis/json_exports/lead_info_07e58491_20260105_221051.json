@@ -1,0 +1,9 @@
+{
+  "call_id": "07e58491-8362-429f-bc91-cd13ebb075dd",
+  "extracted_at": "2026-01-05T22:10:51.562164",
+  "lead_info": {
+    "first_name": "Sahil",
+    "available_time": "next hour",
+    "additional_notes": "Was still hungry, so requested the call be brief. Missed his father and was not available to talk. Provided feedback that the tool call was coming as text and that the goodbye speech must be spoken before the tool call, and the tool call must be separate."
+  }
+}

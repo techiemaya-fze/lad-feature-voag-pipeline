@@ -1,0 +1,13 @@
+{
+  "call_id": "f42d392f-0aff-434d-9aa4-a4a41aebd437",
+  "extracted_at": "2026-01-05T16:34:56.888537",
+  "lead_info": {
+    "first_name": "Sahil",
+    "full_name": "Sahil",
+    "email": "suhas@gmail.com",
+    "available_time": "Monday at 4:00 PM",
+    "education_level": "ten standard",
+    "country_interested": "Canada",
+    "additional_notes": "Looking for some guidance. This is a test call."
+  }
+}

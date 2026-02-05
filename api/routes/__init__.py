@@ -9,6 +9,8 @@ Contains route handlers with kebab-case naming:
 - oauth: Google OAuth (/auth/google/*)
 - oauth_microsoft: Microsoft OAuth (/auth/microsoft/*)
 - recordings: Recording signed URLs (/recordings/*)
+- rag_manager: RAG Management UI (/rag/manage)
+- analysis: Background analysis (/analysis/run-background-analysis)
 """
 
 from .calls import router as calls_router
@@ -17,6 +19,8 @@ from .agents import router as agents_router
 from .knowledge_base import router as knowledge_base_router
 from .oauth import router as oauth_router
 from .recordings import router as recordings_router
+from .rag_manager import router as rag_manager_router
+from .analysis import router as analysis_router
 
 # Microsoft OAuth is fully implemented
 from .oauth_microsoft import microsoft_router as oauth_microsoft_router
@@ -29,5 +33,8 @@ __all__ = [
     "oauth_router",
     "oauth_microsoft_router",
     "recordings_router",
+    "rag_manager_router",
+    "analysis_router",
 ]
+
 

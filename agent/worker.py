@@ -124,6 +124,7 @@ load_dotenv()
 
 _log_listener = configure_non_blocking_logging()
 logger = logging.getLogger(__name__)
+ambient_logger = logging.getLogger(f"{__name__}.ambient")
 
 # Agent version
 AGENT_VERSION = os.getenv("AGENT_VERSION", "2.0.0")
@@ -907,6 +908,13 @@ async def entrypoint(ctx: agents.JobContext):
         vad=vad,
         min_endpointing_delay=pipeline_config.endpointing.min_endpointing_delay,
         max_endpointing_delay=pipeline_config.endpointing.max_endpointing_delay,
+        # Interruption settings
+        allow_interruptions=pipeline_config.interruption.allow_interruptions,
+        min_interruption_duration=pipeline_config.interruption.min_interruption_duration,
+        min_interruption_words=pipeline_config.interruption.min_interruption_words,
+        # False interruption handling (resume if backchannel)
+        false_interruption_timeout=pipeline_config.interruption.false_interruption_timeout,
+        resume_false_interruption=pipeline_config.interruption.resume_false_interruption,
     )
     
     # Populate session reference for silence warning callback
@@ -926,6 +934,9 @@ async def entrypoint(ctx: agents.JobContext):
     last_agent_state = None
     
     # Hook up session events to silence monitor (using correct event names from old agent.py)
+    # Event to track when agent first speaks (for background audio timing)
+    agent_spoke_event_holder: dict = {"event": None}
+    
     @session.on("agent_state_changed")
     def _on_agent_state_changed(ev):
         nonlocal last_agent_state
@@ -935,6 +946,10 @@ async def entrypoint(ctx: agents.JobContext):
             logger.info("[SilenceMonitor] Event: agent_state_changed → speaking, pausing timer")
             if voice_assistant.silence_monitor:
                 voice_assistant.silence_monitor.notify_agent_started()
+            # Signal that agent has spoken (for background audio timing)
+            spoke_event = agent_spoke_event_holder.get("event")
+            if spoke_event and not spoke_event.is_set():
+                spoke_event.set()
         elif last_agent_state == "speaking":
             # Agent just stopped speaking
             logger.info("[SilenceMonitor] Event: agent_state_changed → stopped speaking, starting timer")
@@ -1017,10 +1032,40 @@ async def entrypoint(ctx: agents.JobContext):
         audit_trail=audit_trail,  # Tool usage audit trail
     )
     
+    # Background audio cleanup holders (populated later)
+    background_audio_cleanup: dict = {
+        "latency_mask_player": None,
+        "ambience_player": None,
+        "background_audio_task": None,
+    }
+    
     async def shutdown_callback():
         logger.info("=" * 60)
         logger.info("CALL ENDED - Running cleanup_and_save")
         logger.info("=" * 60)
+        
+        # Stop background audio task
+        bg_task = background_audio_cleanup.get("background_audio_task")
+        if bg_task and not bg_task.done():
+            bg_task.cancel()
+            try:
+                await bg_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Stop both audio players
+        for key in ["latency_mask_player", "ambience_player"]:
+            player = background_audio_cleanup.get(key)
+            if player:
+                stop_callable = getattr(player, "stop", None)
+                if callable(stop_callable):
+                    try:
+                        maybe_coro = stop_callable()
+                        if asyncio.iscoroutine(maybe_coro):
+                            await maybe_coro
+                    except Exception:
+                        ambient_logger.warning(f"Failed to stop {key} cleanly", exc_info=True)
+        
         await cleanup_and_save(cleanup_ctx)
     
     ctx.add_shutdown_callback(shutdown_callback)
@@ -1029,11 +1074,140 @@ async def entrypoint(ctx: agents.JobContext):
     if call_recorder:
         await call_recorder.start_recording()
     
+    # ==========================================================================
+    # BACKGROUND AUDIO CONFIGURATION
+    # ==========================================================================
+    # Background audio adds realism (office sounds, typing) during calls.
+    # We use TWO separate players:
+    # 1. latency_mask_player - typing sounds ONLY, started IMMEDIATELY for latency masking
+    # 2. ambience_player - office/call center sounds, started AFTER first speech
+    latency_mask_player: BackgroundAudioPlayer | None = None
+    ambience_player: BackgroundAudioPlayer | None = None
+    background_audio_task: asyncio.Task | None = None
+    agent_spoke_event = asyncio.Event()  # Tracks when agent first speaks
+    
+    # Connect to the holder so event handler (defined earlier) can signal this event
+    agent_spoke_event_holder["event"] = agent_spoke_event
+    
+    # Configuration from pipeline config (with env override support)
+    def _flag_enabled(env_key: str, config_default: bool) -> bool:
+        env_val = os.getenv(env_key)
+        if env_val is not None:
+            return env_val.lower() in ("true", "1", "yes")
+        return config_default
+    
+    typing_audio_enabled = _flag_enabled("ENABLE_TYPING_NOISE", pipeline_config.ambience.enable_typing_noise)
+    ambient_audio_enabled = _flag_enabled("ENABLE_OFFICE_AMBIENCE", pipeline_config.ambience.enable_office_ambience)
+    people_talking_enabled = _flag_enabled("ENABLE_PEOPLE_TALKING", pipeline_config.ambience.enable_people_talking)
+    
+    typing_noise_volume = pipeline_config.ambience.typing_volume
+    office_ambience_volume = pipeline_config.ambience.ambience_volume
+    people_talking_volume = pipeline_config.ambience.people_talking_volume
+    
+    # Use custom audio path for people talking (relative to v2 directory)
+    people_talking_audio_path = pipeline_config.ambience.people_talking_audio_path
+    if not people_talking_audio_path:
+        # Default to our copied audio file
+        people_talking_audio_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "data", "audio", "office-ambience-6322.mp3"
+        )
+    
+    async def _start_latency_masking() -> None:
+        """Start latency mask player IMMEDIATELY with typing sounds."""
+        nonlocal latency_mask_player
+        
+        if not typing_audio_enabled:
+            ambient_logger.info("Typing audio (latency masking) disabled via configuration")
+            return
+        
+        try:
+            latency_mask_player = BackgroundAudioPlayer(
+                thinking_sound=[
+                    AudioConfig(
+                        source=BuiltinAudioClip.KEYBOARD_TYPING,
+                        volume=typing_noise_volume,
+                        probability=1.0,
+                    ),
+                    AudioConfig(
+                        source=BuiltinAudioClip.KEYBOARD_TYPING2,
+                        volume=typing_noise_volume,
+                        probability=1.0,
+                    ),
+                ]
+            )
+            await latency_mask_player.start(
+                room=ctx.room,
+                agent_session=session,
+            )
+            ambient_logger.info("Latency masking (typing sounds) started IMMEDIATELY")
+        except Exception as e:
+            ambient_logger.warning(f"Failed to start latency masking: {e}")
+    
+    async def _start_ambience_after_first_speech() -> None:
+        """Start office/call center ambience AFTER first agent speech."""
+        nonlocal ambience_player
+        
+        if not ambient_audio_enabled and not people_talking_enabled:
+            ambient_logger.info("All ambience audio disabled via configuration")
+            return
+        
+        # Wait for agent to speak first (set by agent_state_changed event)
+        if not agent_spoke_event.is_set():
+            await agent_spoke_event.wait()
+        
+        # Additional delay after first speech for clean audio
+        await asyncio.sleep(pipeline_config.ambience.delay_after_first_speech)
+        
+        try:
+            # Determine ambience source - use people talking path if enabled, else built-in
+            if people_talking_enabled and people_talking_audio_path and os.path.exists(people_talking_audio_path):
+                ambience_source = people_talking_audio_path
+                ambience_vol = people_talking_volume
+                ambient_logger.info(f"Using custom ambience: {people_talking_audio_path}")
+            elif ambient_audio_enabled:
+                ambience_source = BuiltinAudioClip.OFFICE_AMBIENCE
+                ambience_vol = office_ambience_volume
+                ambient_logger.info("Using built-in office ambience")
+            else:
+                ambient_logger.info("No ambience source configured")
+                return
+            
+            ambience_player = BackgroundAudioPlayer(
+                ambient_sound=AudioConfig(
+                    source=ambience_source,
+                    volume=ambience_vol,
+                )
+            )
+            await ambience_player.start(
+                room=ctx.room,
+                agent_session=session,
+            )
+            ambient_logger.info(f"Ambience audio started after first agent speech")
+        except Exception as e:
+            ambient_logger.warning(f"Failed to start ambience audio: {e}")
+    
     # Start session
     room_input_options = RoomInputOptions()
     session_start_task = asyncio.create_task(
         session.start(room=ctx.room, agent=voice_assistant, room_input_options=room_input_options)
     )
+    
+    # Start latency masking immediately
+    await _start_latency_masking()
+    
+    # Start ambience task (will wait for first TTS before playing)
+    background_audio_task = asyncio.create_task(_start_ambience_after_first_speech())
+    
+    # Connect to cleanup holders for proper shutdown
+    background_audio_cleanup["latency_mask_player"] = latency_mask_player
+    background_audio_cleanup["background_audio_task"] = background_audio_task
+    # Note: ambience_player is set inside _start_ambience_after_first_speech via nonlocal
+    
+    # Update holder periodically since ambience_player is set asynchronously
+    async def _update_ambience_cleanup():
+        await asyncio.sleep(5)  # Wait for ambience to potentially start
+        background_audio_cleanup["ambience_player"] = ambience_player
+    asyncio.create_task(_update_ambience_cleanup())
     
     try:
         if call_mode == "outbound" and phone_number:
@@ -1076,18 +1250,21 @@ async def entrypoint(ctx: agents.JobContext):
                         attach_transcription_tracker(session, call_recorder)
                     
                     # Outbound greeting - try agent starter prompt, then added_context, then default
+                    # Make initial greeting uninterruptible to prevent "hello collision"
+                    # This allows AEC calibration and prevents 2-3 turn sync issues
+                    greeting_uninterruptible = pipeline_config.greeting.greeting_uninterruptible
                     greeting = agent_record.get("outbound_starter_prompt", "") if agent_record else ""
                     if greeting:
-                        logger.info(f"Sending outbound greeting: {greeting[:50]}...")
-                        await session.generate_reply(instructions=greeting)
+                        logger.info(f"Sending outbound greeting (uninterruptible={greeting_uninterruptible}): {greeting[:50]}...")
+                        await session.generate_reply(instructions=greeting, allow_interruptions=not greeting_uninterruptible)
                     elif added_context:
                         # Use added_context as greeting instruction
-                        logger.info(f"Using added_context as greeting: {added_context[:50]}...")
-                        await session.generate_reply(instructions=f"Greet the user. Context: {added_context}")
+                        logger.info(f"Using added_context as greeting (uninterruptible={greeting_uninterruptible}): {added_context[:50]}...")
+                        await session.generate_reply(instructions=f"Greet the user. Context: {added_context}", allow_interruptions=not greeting_uninterruptible)
                     else:
                         # Default: just start the conversation
-                        logger.info("No greeting set, starting conversation with default")
-                        await session.generate_reply(instructions="Greet the user warmly and ask how you can help them today.")
+                        logger.info(f"No greeting set, starting conversation with default (uninterruptible={greeting_uninterruptible})")
+                        await session.generate_reply(instructions="Greet the user warmly and ask how you can help them today.", allow_interruptions=not greeting_uninterruptible)
                         
                 except api.TwirpError as e:
                     logger.error(f"SIP dial error: {e.message}")
@@ -1118,10 +1295,13 @@ async def entrypoint(ctx: agents.JobContext):
             if call_recorder:
                 attach_transcription_tracker(session, call_recorder)
             
+            # Make initial greeting uninterruptible to prevent "hello collision"
+            # This allows AEC calibration and prevents 2-3 turn sync issues
+            greeting_uninterruptible = pipeline_config.greeting.greeting_uninterruptible
             greeting = agent_record.get("inbound_starter_prompt", "") if agent_record else ""
             if greeting:
-                logger.info(f"Sending inbound greeting: {greeting[:50]}...")
-                await session.generate_reply(instructions=greeting)
+                logger.info(f"Sending inbound greeting (uninterruptible={greeting_uninterruptible}): {greeting[:50]}...")
+                await session.generate_reply(instructions=greeting, allow_interruptions=not greeting_uninterruptible)
                 
     finally:
         if acquired_call_slot:

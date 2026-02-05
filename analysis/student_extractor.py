@@ -19,13 +19,15 @@ import os
 import json
 import asyncio
 import re
-import requests
 import logging
 import argparse
 from datetime import datetime
 from typing import Dict, Optional
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Structured output client for guaranteed JSON responses
+from .gemini_client import generate_with_schema_retry, STUDENT_EXTRACTOR_SCHEMA
 
 load_dotenv()
 
@@ -73,121 +75,41 @@ class StudentExtractor:
         if not self.gemini_api_key:
             logger.warning("GEMINI_API_KEY not found in .env file")
     
-    def _estimate_tokens(self, text: str) -> int:
-        """Estimate token count (approximately 1 token = 4 characters)"""
-        if not text:
-            return 0
-        return len(text) // 4
-    
-    def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 500) -> str:
-        """Helper function to call Gemini 2.0 Flash API"""
+    def _call_gemini_structured(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 8192) -> Optional[Dict]:
+        """Call Gemini API with structured output schema - guarantees proper JSON response"""
         if not self.gemini_api_key:
             logger.warning("Gemini API key not available, skipping API call")
             return None
         
-        input_tokens = self._estimate_tokens(prompt)
-        logger.debug(f"Calling Gemini API - Input tokens: ~{input_tokens}, Max output: {max_output_tokens}, Temp: {temperature}")
+        logger.debug(f"Calling Gemini API with structured output - Max output: {max_output_tokens}, Temp: {temperature}")
         
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={self.gemini_api_key}"
+            # Use structured output for guaranteed JSON response
+            result = generate_with_schema_retry(
+                prompt=prompt,
+                schema=STUDENT_EXTRACTOR_SCHEMA,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
             
-            headers = {
-                "Content-Type": "application/json"
-            }
-            
-            data = {
-                "contents": [{
-                    "parts": [{"text": prompt}]
-                }],
-                "generationConfig": {
-                    "temperature": temperature,
-                    "maxOutputTokens": max_output_tokens
-                }
-            }
-            
-            response = requests.post(url, headers=headers, json=data, timeout=10)
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                logger.debug("Gemini API call successful")
+            if result:
+                # Extract and log usage metadata if present
+                if '_usage_metadata' in result:
+                    usage = result.pop('_usage_metadata')
+                    logger.info(f"Gemini usage for student extraction: {usage}")
                 
-                if "candidates" in response_data and len(response_data["candidates"]) > 0:
-                    if "content" in response_data["candidates"][0]:
-                        if "parts" in response_data["candidates"][0]["content"]:
-                            output_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                            logger.debug(f"Gemini API response received - Output length: {len(output_text)} chars")
-                            return output_text
-                
-                if "promptFeedback" in response_data:
-                    logger.warning(f"Gemini API warning: {response_data.get('promptFeedback', {})}")
+                logger.debug(f"Student info structured response received")
+                return result
             else:
-                logger.error(f"Gemini API error: {response.status_code} - {response.text[:200]}")
-            return None
+                logger.warning("No result from structured generation")
+                return None
             
         except Exception as e:
-            logger.error(f"Gemini API exception: {str(e)}", exc_info=True)
+            logger.error(f"Gemini structured API exception: {str(e)}", exc_info=True)
             return None
     
-    def _parse_summary_json(self, raw_text: str | None) -> Optional[Dict]:
-        """Attempt to extract a JSON object from Gemini output with code fences or trailing text."""
-        if not raw_text:
-            return None
-
-        text = raw_text.strip()
-        if not text:
-            return None
-
-        candidates = [text]
-
-        # Extract fenced blocks (handles both ```json and ```)
-        fence_pattern = re.compile(r"```(?:json)?\s*([\s\S]+?)```", re.IGNORECASE)
-        for match in fence_pattern.finditer(text):
-            snippet = match.group(1).strip()
-            if snippet:
-                candidates.append(snippet)
-
-        # Handle unterminated fences by slicing after the marker
-        for marker in ("```json", "```"):
-            marker_index = text.lower().find(marker)
-            if marker_index != -1:
-                snippet = text[marker_index + len(marker):].strip()
-                if snippet:
-                    candidates.append(snippet)
-
-        # Always try substring starting from first brace
-        brace_index = text.find("{")
-        if brace_index != -1:
-            json_candidate = text[brace_index:]
-            if json_candidate:
-                candidates.append(json_candidate)
-
-        decoder = json.JSONDecoder()
-        for candidate in candidates:
-            candidate = candidate.strip()
-            if not candidate:
-                continue
-
-            try:
-                return decoder.decode(candidate)
-            except json.JSONDecodeError:
-                pass
-
-            try:
-                obj, _ = decoder.raw_decode(candidate)
-                return obj
-            except json.JSONDecodeError:
-                pass
-
-            if "{" in candidate:
-                start = candidate.find("{")
-                try_candidate = candidate[start:]
-                try:
-                    obj, _ = decoder.raw_decode(try_candidate)
-                    return obj
-                except json.JSONDecodeError:
-                    continue
-
-        return None
+    # NOTE: _parse_summary_json removed - no longer needed with structured output
+    # The generate_with_schema_retry function guarantees valid JSON responses
     
     def _extract_user_messages(self, conversation_text: str) -> str:
         """Extract only user messages from conversation (exclude bot/agent messages)"""
@@ -320,21 +242,13 @@ CRITICAL RULES:
 """
 
             logger.debug("Extracting student information using LLM...")
-            result = self._call_gemini_api(prompt, temperature=0.2, max_output_tokens=800)
+            parsed_data = self._call_gemini_structured(prompt, temperature=0.2, max_output_tokens=8192)
             
-            if not result:
+            if not parsed_data:
                 logger.warning("LLM did not return student information")
                 return None
             
-            # Parse JSON response
-            parsed_data = self._parse_summary_json(result)
-            
-            if not parsed_data:
-                logger.warning("Failed to parse student information JSON from LLM response")
-                logger.debug(f"LLM raw response: {result[:500] if result else 'No response'}")
-                return None
-            
-            logger.info(f"Parsed JSON from LLM: {json.dumps(parsed_data, indent=2)}")
+            logger.info(f"Parsed student info from structured output: {list(parsed_data.keys())}")
             logger.info(f"Parent name from LLM: {parsed_data.get('parent_name')}")
             logger.info(f"Parent profession from LLM: {parsed_data.get('parents_profession')}")
             

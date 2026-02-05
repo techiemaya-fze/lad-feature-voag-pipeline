@@ -46,6 +46,8 @@ from api.routes import (
     oauth_router,
     oauth_microsoft_router,
     recordings_router,
+    rag_manager_router,
+    analysis_router,
 )
 
 # Import middleware setup
@@ -106,6 +108,12 @@ app.include_router(oauth_microsoft_router, tags=["OAuth - Microsoft"])
 
 # Recordings (router has /recordings prefix)
 app.include_router(recordings_router, tags=["Recordings"])
+
+# RAG Management UI (router has /rag prefix)
+app.include_router(rag_manager_router, tags=["RAG Management"])
+
+# Analysis (router has /analysis prefix)
+app.include_router(analysis_router, tags=["Analysis"])
 
 
 

@@ -155,12 +155,19 @@ class SingleCallPayload(BaseModel):
     @field_validator("from_number", "to_number", mode="before")
     @classmethod
     def _validate_phone_number(cls, value: Optional[str], info: Any) -> Optional[str]:
+        """
+        Validate and normalize phone numbers to E.164 format.
+        Uses shared logic from utils.call_routing.
+        """
         if value is None:
             return None
-        value = value.strip()
-        if not E164_PATTERN.match(value):
-            raise ValueError(f"{info.field_name} must be an E.164 formatted number")
-        return value
+        
+        try:
+            from utils.call_routing import normalize_phone_to_e164
+            return normalize_phone_to_e164(value)
+        except ValueError as e:
+            raise ValueError(str(e))
+
 
     @field_validator("agent_id")
     @classmethod

@@ -7,7 +7,6 @@ import os
 import json
 import asyncio
 import re
-import requests
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -15,6 +14,15 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Structured output client for guaranteed JSON responses
+from .gemini_client import (
+    generate_with_schema_retry, 
+    generate_text,
+    SENTIMENT_SCHEMA, 
+    DISPOSITION_SCHEMA, 
+    LLM_VALIDATION_SCHEMA
+)
 
 load_dotenv()
 
@@ -506,121 +514,114 @@ class CallAnalytics:
             return 0
         return len(text) // 4
     
-    def _call_gemini_api(self, prompt: str, temperature: float = 0.3, max_output_tokens: int = 800) -> str:
-        """Helper function to call Gemini 2.0 Flash API with cost tracking"""
+    def _call_gemini_structured(self, prompt: str, schema, temperature: float = 0.3, max_output_tokens: int = 8192) -> Optional[Dict]:
+        """Helper function to call Gemini with structured output for guaranteed JSON response"""
         if not self.gemini_api_key:
             logger.warning("Gemini API key not available, skipping API call")
             return None
         
-        input_tokens = self._estimate_tokens(prompt)
-        logger.debug(f"Calling Gemini API - Input tokens: ~{input_tokens}, Max output: {max_output_tokens}, Temp: {temperature}")
+        logger.debug(f"Calling Gemini API with structured output - Max output: {max_output_tokens}, Temp: {temperature}")
         
         try:
-            import requests
+            # Track API call
+            self.cost_tracker['api_calls'] += 1
             
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={self.gemini_api_key}"
+            # Use structured output for guaranteed JSON response
+            result = generate_with_schema_retry(
+                prompt=prompt,
+                schema=schema,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
             
-            headers = {
-                "Content-Type": "application/json"
-            }
-            
-            data = {
-                "contents": [{
-                    "parts": [{"text": prompt}]
-                }],
-                "generationConfig": {
-                    "temperature": temperature,
-                    "maxOutputTokens": max_output_tokens
-                }
-            }
-            
-            response = requests.post(url, headers=headers, json=data, timeout=10)
-            
-            if response.status_code == 200:
-                response_data = response.json()
+            if result:
+                # Extract and track usage metadata
+                if '_usage_metadata' in result:
+                    usage = result.pop('_usage_metadata')
+                    self.cost_tracker['total_input_tokens'] += usage.get('prompt_token_count', 0)
+                    self.cost_tracker['total_output_tokens'] += usage.get('candidates_token_count', 0)
+                    logger.debug(f"Gemini usage: {usage}")
                 
-                self.cost_tracker['api_calls'] += 1
-                logger.debug(f"Gemini API call successful (Total calls: {self.cost_tracker['api_calls']})")
-                
-                # Check for usage info in response first (if available, use exact counts)
-                if "usageMetadata" in response_data:
-                    usage = response_data["usageMetadata"]
-                    if "promptTokenCount" in usage:
-                        self.cost_tracker['total_input_tokens'] += usage["promptTokenCount"]
-                    else:
-                        self.cost_tracker['total_input_tokens'] += input_tokens
-                    
-                    if "candidatesTokenCount" in usage:
-                        self.cost_tracker['total_output_tokens'] += usage["candidatesTokenCount"]
-                else:
-                    # Fallback to estimated tokens
-                    self.cost_tracker['total_input_tokens'] += input_tokens
-                
-                if "candidates" in response_data and len(response_data["candidates"]) > 0:
-                    if "content" in response_data["candidates"][0]:
-                        if "parts" in response_data["candidates"][0]["content"]:
-                            output_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                            if "usageMetadata" not in response_data:
-                                output_tokens = self._estimate_tokens(output_text)
-                                self.cost_tracker['total_output_tokens'] += output_tokens
-                            logger.debug(f"Gemini API response received - Output length: {len(output_text)} chars")
-                            return output_text
-                
-                if "promptFeedback" in response_data:
-                    logger.warning(f"Gemini API warning: {response_data.get('promptFeedback', {})}")
+                logger.debug(f"Gemini structured response received (Total calls: {self.cost_tracker['api_calls']})")
+                return result
             else:
-                logger.error(f"Gemini API error: {response.status_code} - {response.text[:200]}")
-            return None
+                logger.warning("No result from structured generation")
+                return None
             
         except Exception as e:
-            logger.error(f"Gemini API exception: {str(e)}", exc_info=True)
+            logger.error(f"Gemini structured API exception: {str(e)}", exc_info=True)
+            return None
+    
+    def _call_gemini_text(self, prompt: str, temperature: float = 0.3, max_output_tokens: int = 8192) -> Optional[str]:
+        """Helper function to call Gemini for plain text generation (summaries, etc.)"""
+        if not self.gemini_api_key:
+            logger.warning("Gemini API key not available, skipping API call")
+            return None
+        
+        logger.debug(f"Calling Gemini API for text - Max output: {max_output_tokens}, Temp: {temperature}")
+        
+        try:
+            # Track API call
+            self.cost_tracker['api_calls'] += 1
+            
+            # Use plain text generation with usage tracking
+            result, usage = generate_text(
+                prompt=prompt,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                include_usage=True
+            )
+            
+            if result:
+                # Track usage
+                if usage:
+                    self.cost_tracker['total_input_tokens'] += usage.get('prompt_token_count', 0)
+                    self.cost_tracker['total_output_tokens'] += usage.get('candidates_token_count', 0)
+                    logger.debug(f"Gemini usage: {usage}")
+                
+                logger.debug(f"Gemini text response received (Total calls: {self.cost_tracker['api_calls']})")
+                return result
+            else:
+                logger.warning("No result from text generation")
+                return None
+            
+        except Exception as e:
+            logger.error(f"Gemini text API exception: {str(e)}", exc_info=True)
             return None
     
     def _calculate_llm_cost(self) -> Dict:
         """Calculate total LLM cost (USD) and provide formatted values
-        Note: kept INR conversion for backward compatibility but formatted
-        output requested to be in dollars (USD).
+        Note: Removed rounding and INR conversion as requested.
         """
-        # Gemini 2.0 Flash pricing (as of 2024)
-        # Input: $0.075 per 1M tokens
-        # Output: $0.30 per 1M tokens
-        INPUT_COST_PER_1M_TOKENS = 0.075  # USD
-        OUTPUT_COST_PER_1M_TOKENS = 0.30  # USD
-        
-        # USD to INR conversion rate (approximate) - kept for compatibility
-        USD_TO_INR = 83.0
+        # Gemini 3 Flash pricing (as of Jan 2025)
+        # Input: $0.50 per 1M tokens
+        # Output: $3.00 per 1M tokens
+        INPUT_COST_PER_1M_TOKENS = 0.50  # USD
+        OUTPUT_COST_PER_1M_TOKENS = 3.00  # USD
         
         # Calculate costs
         input_cost_usd = (self.cost_tracker['total_input_tokens'] / 1_000_000) * INPUT_COST_PER_1M_TOKENS
         output_cost_usd = (self.cost_tracker['total_output_tokens'] / 1_000_000) * OUTPUT_COST_PER_1M_TOKENS
         total_cost_usd = input_cost_usd + output_cost_usd
         
-        # Convert to INR (kept for reference)
-        total_cost_inr = total_cost_usd * USD_TO_INR
-
+        # No INR conversion or rounding as requested by user
+        
         return {
             "total_api_calls": self.cost_tracker['api_calls'],
             "input_tokens": self.cost_tracker['total_input_tokens'],
             "output_tokens": self.cost_tracker['total_output_tokens'],
             "total_tokens": self.cost_tracker['total_input_tokens'] + self.cost_tracker['total_output_tokens'],
-            "cost_usd": round(total_cost_usd, 6),
-            "cost_inr": round(total_cost_inr, 4),
-            # User requested dollars instead of INR for the formatted value.
-            # Provide explicit USD formatted field and also set the existing
-            # "cost_inr_formatted" key to USD for compatibility with callers
-            # that expect that key name.
-            "cost_usd_formatted": f"${total_cost_usd:.6f}",
-            "cost_inr_formatted": f"{total_cost_usd:.6f}",
-            "pricing_model": "Gemini 2.0 Flash",
-            "input_rate": "$0.075 per 1M tokens",
-            "output_rate": "$0.30 per 1M tokens",
-            "conversion_rate": f"1 USD = {USD_TO_INR} INR"
+            "cost_usd": total_cost_usd, # No rounding
+            "cost_usd_formatted": f"${total_cost_usd:.10f}".rstrip('0').rstrip('.'), # Precise formatting
+            "pricing_model": "Gemini 3 Flash Preview",
+            "input_rate": "$0.50 per 1M tokens",
+            "output_rate": "$3.00 per 1M tokens"
         }
     
     async def _calculate_sentiment_with_llm(self, user_text: str, conversation_text: str) -> Dict:
         """Calculate sentiment score and category using LLM (replaces TextBlob+VADER)"""
         
-        logger.debug("Calling LLM for sentiment calculation...")
+        logger.debug("Calling LLM for sentiment calculation with structured output...")
         if not self.gemini_api_key:
             # Fallback to neutral if no API key
             return {
@@ -643,67 +644,40 @@ TASK: Analyze the prospect's sentiment and provide:
 1. Sentiment category: Positive, Neutral, Negative, or Very Interested
 2. Sentiment score: -1.0 (very negative) to +1.0 (very positive)
 3. Confidence: 0.0 to 1.0
-
-Respond in this EXACT JSON format:
-{{
-  "category": "Positive|Neutral|Negative|Very Interested",
-  "sentiment_score": -1.0 to 1.0,
-  "confidence": 0.0 to 1.0,
-  "reasoning": "Brief explanation"
-}}"""
+4. Brief reasoning for the sentiment"""
             
-            result = self._call_gemini_api(prompt, temperature=0.1, max_output_tokens=150)
+            # Using structured output - result is already a parsed dict
+            sentiment_data = self._call_gemini_structured(prompt, SENTIMENT_SCHEMA, temperature=0.1, max_output_tokens=2000)
             
-            if result:
-                # Clean JSON response
-                if "```json" in result:
-                    start = result.find("```json") + 7
-                    end = result.find("```", start)
-                    if end != -1:
-                        result = result[start:end].strip()
-                elif "```" in result:
-                    start = result.find("```") + 3
-                    end = result.find("```", start)
-                    if end != -1:
-                        result = result[start:end].strip()
+            if sentiment_data:
+                category = sentiment_data.get("category", "Neutral")
+                sentiment_score = float(sentiment_data.get("sentiment_score", 0.0))
+                confidence = float(sentiment_data.get("confidence", 0.5))
+                reasoning = sentiment_data.get("reasoning", "")
                 
-                # Extract JSON
-                if "{" in result:
-                    json_start = result.find("{")
-                    result = result[json_start:]
+                # Ensure sentiment_score is in valid range (-1.0 to 1.0)
+                sentiment_score = max(-1.0, min(1.0, sentiment_score))
                 
-                try:
-                    sentiment_data = json.loads(result)
-                    category = sentiment_data.get("category", "Neutral")
-                    sentiment_score = float(sentiment_data.get("sentiment_score", 0.0))
-                    confidence = float(sentiment_data.get("confidence", 0.5))
-                    reasoning = sentiment_data.get("reasoning", "")
-                    
-                    # Ensure sentiment_score is in valid range (-1.0 to 1.0)
-                    sentiment_score = max(-1.0, min(1.0, sentiment_score))
-                    
-                    # Map category to ensure proper score range for consistency
-                    if category == "Very Interested":
-                        sentiment_score = max(sentiment_score, 0.6)
-                    elif category == "Positive":
-                        sentiment_score = max(sentiment_score, 0.1)
-                    elif category == "Negative":
-                        sentiment_score = min(sentiment_score, -0.1)
-                    else:
-                        sentiment_score = max(-0.1, min(0.1, sentiment_score))
-                    
-                    # For backward compatibility, set textblob_polarity and vader_compound to sentiment_score
-                    return {
-                        "sentiment_score": sentiment_score,
-                        "category": category,
-                        "confidence": confidence,
-                        "textblob_polarity": sentiment_score,  # Backward compatibility (LLM-generated)
-                        "vader_compound": sentiment_score,  # Backward compatibility (LLM-generated)
-                        "combined_score": sentiment_score,  # Float value (-1.0 to 1.0)
-                        "llm_reasoning": reasoning
-                    }
-                except json.JSONDecodeError:
-                    pass
+                # Map category to ensure proper score range for consistency
+                if category == "Very Interested":
+                    sentiment_score = max(sentiment_score, 0.6)
+                elif category == "Positive":
+                    sentiment_score = max(sentiment_score, 0.1)
+                elif category == "Negative":
+                    sentiment_score = min(sentiment_score, -0.1)
+                else:
+                    sentiment_score = max(-0.1, min(0.1, sentiment_score))
+                
+                # For backward compatibility, set textblob_polarity and vader_compound to sentiment_score
+                return {
+                    "sentiment_score": sentiment_score,
+                    "category": category,
+                    "confidence": confidence,
+                    "textblob_polarity": sentiment_score,  # Backward compatibility (LLM-generated)
+                    "vader_compound": sentiment_score,  # Backward compatibility (LLM-generated)
+                    "combined_score": sentiment_score,  # Float value (-1.0 to 1.0)
+                    "llm_reasoning": reasoning
+                }
             
         except Exception as e:
             logger.error(f"LLM sentiment calculation error: {e}", exc_info=True)
@@ -726,7 +700,7 @@ Respond in this EXACT JSON format:
             logger.debug(f"Skipping LLM validation - Confidence {confidence:.2f} is high enough")
             return {"validated": False, "llm_sentiment": None}
         
-        logger.debug(f"Validating sentiment with LLM - Initial: {initial_sentiment}, Confidence: {confidence:.2f}")
+        logger.debug(f"Validating sentiment with LLM structured output - Initial: {initial_sentiment}, Confidence: {confidence:.2f}")
         try:
             prompt = f"""
             Analyze the sentiment of this sales conversation. Consider:
@@ -737,32 +711,20 @@ Respond in this EXACT JSON format:
             CONVERSATION:
             {conversation_text[:500]}
             
-            Is the prospect's overall sentiment:
-            A) Positive (interested, engaged, open)
-            B) Neutral (professional, noncommittal)
-            C) Negative (uninterested, frustrated, dismissive)
+            Is the prospect's overall sentiment Positive, Neutral, or Negative?
+            Provide a brief reason (max 20 words)."""
             
-            Respond with ONLY one letter (A, B, or C) and a brief reason (max 20 words).
-            Format: "Letter: Reason"
-            """
-            
-            result = self._call_gemini_api(prompt, temperature=0.1, max_output_tokens=50)
+            # Using structured output - result is already a parsed dict
+            result = self._call_gemini_structured(prompt, LLM_VALIDATION_SCHEMA, temperature=0.1, max_output_tokens=2000)
             
             if result:
-                # Parse result
-                if result.startswith('A'):
-                    llm_sentiment = "Positive"
-                elif result.startswith('B'):
-                    llm_sentiment = "Neutral"
-                elif result.startswith('C'):
-                    llm_sentiment = "Negative"
-                else:
-                    llm_sentiment = None
+                llm_sentiment = result.get("sentiment")
+                reason = result.get("reason", "")
                 
                 return {
                     "validated": True,
                     "llm_sentiment": llm_sentiment,
-                    "llm_reasoning": result.split(':', 1)[1].strip() if ':' in result else result
+                    "llm_reasoning": reason
                 }
             
         except Exception as e:
@@ -1046,7 +1008,7 @@ Write 2 sentences analyzing:
 
 Be specific and psychological, not generic."""
             
-            description = self._call_gemini_api(prompt, temperature=0.3, max_output_tokens=120)
+            description = self._call_gemini_text(prompt, temperature=0.3, max_output_tokens=2000)
             
             if description:
                 # Remove quotes if LLM added them
@@ -1163,7 +1125,7 @@ Write 3 sentences covering:
 
 Be specific about their mindset, not generic."""
             
-            description = self._call_gemini_api(prompt, temperature=0.3, max_output_tokens=150)
+            description = self._call_gemini_text(prompt, temperature=0.3, max_output_tokens=2000)
             
             if description:
                 # Remove quotes if LLM added them
@@ -1425,7 +1387,7 @@ Be specific about their mindset, not generic."""
             Use simple language that anyone can understand. Keep it brief (2-3 sentences).
             """
             
-            full_summary = self._call_gemini_api(prompt, temperature=0.3, max_output_tokens=800)
+            full_summary = self._call_gemini_text(prompt, temperature=0.3, max_output_tokens=2000)
             
             if full_summary:
                 # Clean up the response
@@ -1505,7 +1467,7 @@ ACTION: [One-line recommended action]
 REASONING: [One sentence explaining why]
 CONFIDENCE: [High/Medium/Low]"""
 
-            llm_response = self._call_gemini_api(prompt, temperature=0.1, max_output_tokens=150)
+            llm_response = self._call_gemini_text(prompt, temperature=0.1, max_output_tokens=2000)
             
             if not llm_response:
                 logger.warning("LLM disposition failed, using fallback")
@@ -1908,7 +1870,7 @@ CONFIDENCE: [High/Medium/Low]"""
             """
             
             logger.debug(f"Generating summary - Conversation length: {len(conversation_text)} chars, Duration: {duration}s")
-            summary_text = self._call_gemini_api(prompt, temperature=0.3, max_output_tokens=800)
+            summary_text = self._call_gemini_text(prompt, temperature=0.3, max_output_tokens=2000)
             
             if not summary_text:
                 logger.error("Gemini API error - unable to generate summary")
@@ -2314,9 +2276,36 @@ CONFIDENCE: [High/Medium/Low]"""
         word_count = len(conversation_text.split())
         logger.info(f"Processing call - Word count: {word_count}, Duration: {duration_seconds}s, Text length: {len(conversation_text)} chars")
         
-        logger.info("Step 1/7: Analyzing sentiment...")
-        sentiment = await self.analyze_sentiment(conversation_text, duration=duration_seconds, word_count=word_count)
+        # ===== PARALLEL PHASE 1: Sentiment + Lead Info Extraction =====
+        # These two are independent and can run in parallel
+        logger.info("Step 1/7: Analyzing sentiment + Step 7/7: Extracting lead info (PARALLEL)...")
         
+        async def extract_lead_info_safe():
+            """Wrapper for lead info extraction with error handling"""
+            if not self.lead_extractor:
+                logger.debug("Lead extractor not available - skipping lead info extraction")
+                return None, None
+            try:
+                # Pass None for summary since we don't have it yet - lead extraction doesn't strictly need it
+                lead_info = await self.lead_extractor.extract_lead_information(conversation_text, None)
+                lead_info_path = None
+                if lead_info:
+                    lead_info_path = self.lead_extractor.save_to_json(lead_info, call_id)
+                    logger.info(f"Lead info extracted: {len(lead_info)} fields, saved to: {lead_info_path}")
+                else:
+                    logger.debug("No lead information found in this call")
+                return lead_info, lead_info_path
+            except Exception as e:
+                logger.error(f"Lead info extraction failed: {e}", exc_info=True)
+                return None, None
+        
+        # Run sentiment analysis and lead info extraction in parallel
+        sentiment, (lead_info, lead_info_path) = await asyncio.gather(
+            self.analyze_sentiment(conversation_text, duration=duration_seconds, word_count=word_count),
+            extract_lead_info_safe()
+        )
+        
+        # ===== SEQUENTIAL PHASE: Summary → Disposition (dependencies) =====
         logger.info("Step 2/7: Generating summary...")
         summary = await self.generate_summary(conversation_text, sentiment_data=sentiment, duration=duration_seconds)
         
@@ -2324,6 +2313,7 @@ CONFIDENCE: [High/Medium/Low]"""
         lead_disposition = await self._determine_lead_disposition_llm(sentiment, summary)
         logger.info(f"Lead disposition: {lead_disposition.get('disposition', 'Unknown')} - Action: {lead_disposition.get('recommended_action', 'N/A')}")
         
+        # ===== NON-LLM STEPS (fast, no API calls) =====
         logger.info("Step 4/7: Calculating lead score from disposition...")
         lead_score = self._calculate_lead_score_from_disposition(lead_disposition)
         logger.info(f"Lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
@@ -2334,22 +2324,7 @@ CONFIDENCE: [High/Medium/Low]"""
         logger.info("Step 6/7: Extracting call stages...")
         stage_info = self.extract_call_stages(conversation_text, summary)
         
-        # Step 7/7: Extract lead information and save to JSON
-        lead_info = None
-        lead_info_path = None
-        if self.lead_extractor:
-            logger.info("Step 7/7: Extracting lead information...")
-            try:
-                lead_info = await self.lead_extractor.extract_lead_information(conversation_text, summary)
-                if lead_info:
-                    lead_info_path = self.lead_extractor.save_to_json(lead_info, call_id)
-                    logger.info(f"Lead info extracted: {len(lead_info)} fields, saved to: {lead_info_path}")
-                else:
-                    logger.debug("No lead information found in this call")
-            except Exception as e:
-                logger.error(f"Lead info extraction failed: {e}", exc_info=True)
-        else:
-            logger.debug("Lead extractor not available - skipping lead info extraction")
+        # Lead info already extracted in parallel phase above
         
         # Enhance recommendations with complete analytics data
         if summary and 'recommendations' in summary and lead_score:
@@ -2733,18 +2708,15 @@ CONFIDENCE: [High/Medium/Low]"""
                 "cost_full": cost_data,
             }
             
-            # Extract cost values
+            # Extract cost values - use USD directly (INR conversion removed)
             cost_numeric = None
             analysis_cost_value = None
             if cost_data:
-                # Try to extract numeric cost
-                cost_inr = cost_data.get("cost_inr_formatted", "")
-                if cost_inr:
-                    try:
-                        cost_numeric = float(str(cost_inr).replace("₹", "").replace(",", "").strip())
-                        analysis_cost_value = cost_numeric
-                    except (ValueError, TypeError):
-                        pass
+                # Use cost_usd directly (INR was removed as legacy)
+                cost_usd = cost_data.get("cost_usd", 0.0)
+                if cost_usd and cost_usd > 0:
+                    cost_numeric = float(cost_usd)
+                    analysis_cost_value = cost_numeric
             
             # Prepare text fields for old columns (convert lists/dicts to text)
             def to_text(val):

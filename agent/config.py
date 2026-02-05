@@ -1,3 +1,4 @@
+
 """
 Voice Pipeline Configuration
 ============================
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class VADConfig:
     """Silero Voice Activity Detection configuration."""
-    
+
     # -------------------------------------------------------------------------
     # min_silence_duration (seconds)
     # -------------------------------------------------------------------------
@@ -50,8 +51,8 @@ class VADConfig:
     #   - Patient/Careful: 0.6 - 0.8
     #
     # Trade-off: Speed vs. not interrupting users who say "I want... umm..."
-    min_silence_duration: float = 0.1
-    
+    min_silence_duration: float = 0.45
+
     # -------------------------------------------------------------------------
     # min_speech_duration (seconds)
     # -------------------------------------------------------------------------
@@ -67,7 +68,7 @@ class VADConfig:
     #   - Most cases: 0.05 (default is good)
     #   - Noisy environment: 0.1 - 0.15
     min_speech_duration: float = 0.05
-    
+
     # -------------------------------------------------------------------------
     # activation_threshold (0.0 - 1.0)
     # -------------------------------------------------------------------------
@@ -86,7 +87,7 @@ class VADConfig:
     #
     # Trade-off: Lower catches more speech but may false-trigger on noise
     activation_threshold: float = 0.5
-    
+
     # -------------------------------------------------------------------------
     # prefix_padding_duration (seconds)
     # -------------------------------------------------------------------------
@@ -99,7 +100,7 @@ class VADConfig:
     #   - Most cases: 0.3 - 0.5
     #   - If words are getting cut off at start: increase to 0.6 - 0.8
     prefix_padding_duration: float = 0.5
-    
+
     # -------------------------------------------------------------------------
     # max_buffered_speech (seconds)
     # -------------------------------------------------------------------------
@@ -112,7 +113,7 @@ class VADConfig:
     #   - Most cases: 60 (default is fine)
     #   - Long monologues expected: 90 - 120
     max_buffered_speech: float = 60.0
-    
+
     # -------------------------------------------------------------------------
     # sample_rate (Hz)
     # -------------------------------------------------------------------------
@@ -123,7 +124,7 @@ class VADConfig:
     #
     # Note: 16000 is standard for speech recognition
     sample_rate: int = 16000
-    
+
     # -------------------------------------------------------------------------
     # force_cpu (boolean)
     # -------------------------------------------------------------------------
@@ -144,7 +145,7 @@ class VADConfig:
 @dataclass
 class STTConfig:
     """Deepgram Speech-to-Text configuration."""
-    
+
     # -------------------------------------------------------------------------
     # model
     # -------------------------------------------------------------------------
@@ -160,7 +161,7 @@ class STTConfig:
     #   - General use: "nova-3"
     #   - Phone calls with poor audio: "nova-2-phonecall"
     model: str = "nova-3"
-    
+
     # -------------------------------------------------------------------------
     # language
     # -------------------------------------------------------------------------
@@ -171,7 +172,7 @@ class STTConfig:
     #
     # Note: Can be overridden per-call based on agent configuration
     language: str = "en"
-    
+
     # -------------------------------------------------------------------------
     # endpointing_ms (milliseconds)
     # -------------------------------------------------------------------------
@@ -190,8 +191,8 @@ class STTConfig:
     #
     # Trade-off: Speed vs. transcript quality
     # NOTE: This value IS sent to Deepgram. 10ms is aggressive but valid.
-    endpointing_ms: int = 25  # Using Deepgram default for balanced performance
-    
+    endpointing_ms: int = 10  # Aggressive - compensates for SIP transfer latency
+
     # -------------------------------------------------------------------------
     # interim_results (boolean)
     # -------------------------------------------------------------------------
@@ -204,7 +205,7 @@ class STTConfig:
     #
     # Recommendation: Always True for real-time voice agents
     interim_results: bool = True
-    
+
     # -------------------------------------------------------------------------
     # no_delay (boolean)
     # -------------------------------------------------------------------------
@@ -217,7 +218,7 @@ class STTConfig:
     #
     # Recommendation: True for voice agents (punctuation less important)
     no_delay: bool = True
-    
+
     # -------------------------------------------------------------------------
     # smart_format (boolean)
     # -------------------------------------------------------------------------
@@ -230,7 +231,7 @@ class STTConfig:
     #
     # Recommendation: False for speed, True if formatting matters
     smart_format: bool = False
-    
+
     # -------------------------------------------------------------------------
     # punctuate (boolean)
     # -------------------------------------------------------------------------
@@ -240,7 +241,7 @@ class STTConfig:
     #
     # Recommendation: True (helps LLM understand sentence structure)
     punctuate: bool = True
-    
+
     # -------------------------------------------------------------------------
     # profanity_filter (boolean)
     # -------------------------------------------------------------------------
@@ -250,7 +251,7 @@ class STTConfig:
     #
     # Recommendation: False (let LLM handle appropriately)
     profanity_filter: bool = False
-    
+
     # -------------------------------------------------------------------------
     # diarize (boolean)
     # -------------------------------------------------------------------------
@@ -271,7 +272,7 @@ class STTConfig:
 @dataclass
 class TurnDetectorConfig:
     """Turn detection configuration."""
-    
+
     # -------------------------------------------------------------------------
     # unlikely_threshold (0.0 - 1.0)
     # -------------------------------------------------------------------------
@@ -291,7 +292,7 @@ class TurnDetectorConfig:
     # Trade-off: Speed vs. not interrupting users mid-thought
     #
     # Set to None to use model default
-    unlikely_threshold: Optional[float] = None
+    unlikely_threshold: Optional[float] = 0.18  # Aggressive - trigger faster turn detection
 
 
 # =============================================================================
@@ -303,7 +304,7 @@ class TurnDetectorConfig:
 @dataclass
 class EndpointingConfig:
     """Agent session endpointing configuration."""
-    
+
     # -------------------------------------------------------------------------
     # min_endpointing_delay (seconds)
     # -------------------------------------------------------------------------
@@ -322,7 +323,7 @@ class EndpointingConfig:
     #
     # Trade-off: Lower = faster but may interrupt users
     min_endpointing_delay: float = 0.1
-    
+
     # -------------------------------------------------------------------------
     # max_endpointing_delay (seconds)
     # -------------------------------------------------------------------------
@@ -337,8 +338,8 @@ class EndpointingConfig:
     # Recommendations:
     #   - Most cases: 1.0 - 1.5 seconds
     #   - Very patient: 2.0 - 3.0 seconds
-    max_endpointing_delay: float = 1.0
-    
+    max_endpointing_delay: float = 0.4
+
     # -------------------------------------------------------------------------
     # preemptive_generation (boolean)
     # -------------------------------------------------------------------------
@@ -366,7 +367,7 @@ class EndpointingConfig:
 @dataclass
 class InterruptionConfig:
     """Interruption handling configuration."""
-    
+
     # -------------------------------------------------------------------------
     # allow_interruptions (boolean)
     # -------------------------------------------------------------------------
@@ -379,7 +380,7 @@ class InterruptionConfig:
     #
     # Recommendation: True for natural conversations
     allow_interruptions: bool = True
-    
+
     # -------------------------------------------------------------------------
     # min_interruption_duration (seconds)
     # -------------------------------------------------------------------------
@@ -388,19 +389,22 @@ class InterruptionConfig:
     # Range: 0.01 - 0.5 seconds
     # Default: 0.5
     #
-    # Lower = More sensitive, even "um" or coughs interrupt
-    # Higher = Only deliberate speech interrupts
+    # Lower = More sensitive, even "um" or coughs may trigger
+    # Higher = Only deliberate, sustained speech triggers interruption
+    #
+    # This works WITH min_interruption_words:
+    #   - Audio must exceed this duration AND contain enough words
     #
     # Recommendations:
     #   - Very responsive: 0.05 - 0.1
     #   - Balanced: 0.15 - 0.25
     #   - Ignore brief sounds: 0.3 - 0.5
-    min_interruption_duration: float = 0.05
-    
+    min_interruption_duration: float = 0.12
+
     # -------------------------------------------------------------------------
     # min_interruption_words (int)
     # -------------------------------------------------------------------------
-    # Minimum words required to count as an interruption.
+    # Minimum words required to count as an interruption WHILE AGENT IS SPEAKING.
     #
     # Range: 0 - 5
     # Default: 0
@@ -408,9 +412,19 @@ class InterruptionConfig:
     # 0 = Any speech interrupts (most responsive)
     # 1+ = Requires actual words, not just sounds
     #
-    # Recommendation: 0 for most cases
-    min_interruption_words: int = 0
-    
+    # IMPORTANT: This setting ONLY affects interruptions during agent speech.
+    # When the agent is listening (waiting for user response), even single-word
+    # answers like "yes" or "no" will register as valid responses.
+    #
+    # Recommendations:
+    #   - 0: Most responsive, but backchannels like "yes", "uh-huh" interrupt
+    #   - 2: Ignores single-word backchannels, requires "okay stop" or similar
+    #   - 3: Very patient, requires deliberate multi-word interruption
+    #
+    # Use 2 to prevent "yes", "okay", "hum hum" from interrupting agent speech
+    # while still allowing single-word answers when agent asks questions.
+    min_interruption_words: int = 2
+
     # -------------------------------------------------------------------------
     # resume_false_interruption (boolean)
     # -------------------------------------------------------------------------
@@ -423,7 +437,7 @@ class InterruptionConfig:
     #
     # Recommendation: True
     resume_false_interruption: bool = True
-    
+
     # -------------------------------------------------------------------------
     # false_interruption_timeout (seconds)
     # -------------------------------------------------------------------------
@@ -439,7 +453,7 @@ class InterruptionConfig:
     #   - Fast recovery: 0.5 - 0.7
     #   - Balanced: 0.8 - 1.0
     #   - Patient: 1.5 - 2.0
-    false_interruption_timeout: float = 0.6
+    false_interruption_timeout: float = 0.4
 
 
 # =============================================================================
@@ -450,21 +464,21 @@ class InterruptionConfig:
 @dataclass
 class AmbienceConfig:
     """Background audio and ambience configuration.
-    
+
     LiveKit provides 3 built-in audio clips:
       - OFFICE_AMBIENCE: Subtle office background sounds
       - KEYBOARD_TYPING: Keyboard typing sound
       - KEYBOARD_TYPING2: Alternative typing sound
-    
+
     For custom audio (like call center chatter), provide a path to an .ogg file.
     Example: "data/audio/call_center_ambience.ogg"
-    
+
     Recommended sources for royalty-free audio:
       - https://freesound.org (search "call center ambience")
       - https://pixabay.com/sound-effects/
       - https://mixkit.co/free-sound-effects/
     """
-    
+
     # -------------------------------------------------------------------------
     # enable_office_ambience (boolean)
     # -------------------------------------------------------------------------
@@ -474,7 +488,7 @@ class AmbienceConfig:
     #
     # Creates a more natural, human-like atmosphere.
     enable_office_ambience: bool = False
-    
+
     # -------------------------------------------------------------------------
     # enable_typing_noise (boolean)
     # -------------------------------------------------------------------------
@@ -484,7 +498,7 @@ class AmbienceConfig:
     #
     # Provides audio feedback that agent is working on a response.
     enable_typing_noise: bool = True
-    
+
     # -------------------------------------------------------------------------
     # enable_people_talking (boolean)
     # -------------------------------------------------------------------------
@@ -495,7 +509,7 @@ class AmbienceConfig:
     # Requires a custom audio file - set people_talking_audio_path below.
     # LiveKit doesn't include this by default.
     enable_people_talking: bool = True
-    
+
     # -------------------------------------------------------------------------
     # people_talking_audio_path (string or None)
     # -------------------------------------------------------------------------
@@ -507,9 +521,10 @@ class AmbienceConfig:
     #
     # Supported formats: .ogg, .wav, .mp3
     # Recommendation: Use a loopable audio file for continuous playback.
-    people_talking_audio_path: str | None = None
+    # Default: Uses the office-ambience-6322.mp3 file in v2/data/audio/
+    people_talking_audio_path: str | None = r"data/audio/office-ambience-6322.mp3"
     
-    # -------------------------------------------------------------------------
+   # -------------------------------------------------------------------------
     # people_talking_volume (0.0 - 1.0)
     # -------------------------------------------------------------------------
     # Volume level for people talking ambience.
@@ -520,7 +535,7 @@ class AmbienceConfig:
     # Keep this low so it doesn't interfere with conversation.
     # Recommendation: 0.1 - 0.2 for subtle background chatter
     people_talking_volume: float = 0.2
-    
+
     # -------------------------------------------------------------------------
     # ambience_volume (0.0 - 1.0)
     # -------------------------------------------------------------------------
@@ -533,7 +548,7 @@ class AmbienceConfig:
     #   - Subtle: 0.1 - 0.2
     #   - Noticeable: 0.3 - 0.4
     #   - Prominent: 0.5+
-    ambience_volume: float = 0.35    
+    ambience_volume: float = 0.35
     # -------------------------------------------------------------------------
     # custom_ambience_audio_path (string or None)
     # -------------------------------------------------------------------------
@@ -546,7 +561,7 @@ class AmbienceConfig:
     # If set, this replaces the built-in OFFICE_AMBIENCE clip.
     #custom_ambience_audio_path: str | None = r"data\ambient_sounds\people-talking-at-cafe-ambience-6159.mp3"
     custom_ambience_audio_path: str | None = None
-    
+
     # -------------------------------------------------------------------------
     # typing_volume (0.0 - 1.0)
     # -------------------------------------------------------------------------
@@ -557,7 +572,7 @@ class AmbienceConfig:
     #
     # Note: Lower than ambience since typing is more attention-grabbing
     typing_volume: float = 0.09
-    
+
     # -------------------------------------------------------------------------
     # typing_interval_min (seconds)
     # -------------------------------------------------------------------------
@@ -569,7 +584,7 @@ class AmbienceConfig:
     # Lower = More frequent typing (busier sounding)
     # Higher = Less frequent typing (more relaxed)
     typing_interval_min: float = 6.0
-    
+
     # -------------------------------------------------------------------------
     # typing_interval_max (seconds)
     # -------------------------------------------------------------------------
@@ -580,7 +595,7 @@ class AmbienceConfig:
     #
     # Must be greater than typing_interval_min
     typing_interval_max: float = 10.0
-    
+
     # -------------------------------------------------------------------------
     # typing_probability (0.0 - 1.0)
     # -------------------------------------------------------------------------
@@ -592,7 +607,7 @@ class AmbienceConfig:
     # Lower = Typing sounds less frequently during thinking
     # Higher = Typing sounds more consistently during thinking
     typing_probability: float = 0.6
-    
+
     # -------------------------------------------------------------------------
     # delay_after_first_speech (seconds)
     # -------------------------------------------------------------------------
@@ -613,7 +628,7 @@ class AmbienceConfig:
 @dataclass
 class NoiseReductionConfig:
     """Audio noise reduction configuration."""
-    
+
     # -------------------------------------------------------------------------
     # enable_noise_reduction (boolean)
     # -------------------------------------------------------------------------
@@ -626,7 +641,7 @@ class NoiseReductionConfig:
     #
     # Trade-off: Can reduce latency but may affect speech quality
     enable_noise_reduction: bool = False
-    
+
     # -------------------------------------------------------------------------
     # noise_reduction_level (0.0 - 1.0)
     # -------------------------------------------------------------------------
@@ -638,7 +653,7 @@ class NoiseReductionConfig:
     # Lower = Subtle noise reduction, preserves speech quality
     # Higher = Aggressive noise removal, may distort speech
     noise_reduction_level: float = 0.5
-    
+
     # -------------------------------------------------------------------------
     # echo_cancellation (boolean)
     # -------------------------------------------------------------------------
@@ -658,7 +673,7 @@ class NoiseReductionConfig:
 @dataclass
 class SilenceConfig:
     """Call silence and timeout configuration."""
-    
+
     # -------------------------------------------------------------------------
     # silence_warning_seconds (seconds)
     # -------------------------------------------------------------------------
@@ -671,8 +686,8 @@ class SilenceConfig:
     #   - Active conversations: 10 - 15
     #   - Forms/data entry: 20 - 30
     #   - Patient waiting: 30 - 45
-    silence_warning_seconds: float = 15.0
-    
+    silence_warning_seconds: float = 35.0
+
     # -------------------------------------------------------------------------
     # silence_timeout_seconds (seconds)
     # -------------------------------------------------------------------------
@@ -682,18 +697,39 @@ class SilenceConfig:
     # Default: 35
     #
     # Note: Should be > silence_warning_seconds
-    silence_timeout_seconds: float = 35.0
+    silence_timeout_seconds: float = 45.0
 
 
 # =============================================================================
-# OUTBOUND CALL SETTINGS
+# INITIAL GREETING / CALL START SETTINGS
 # =============================================================================
-# Settings specific to outbound (agent-initiated) calls.
+# Settings for handling the initial greeting when calls start.
+# These help prevent the "hello collision" where both agent and user speak at once.
 
 @dataclass
-class OutboundCallConfig:
-    """Outbound call configuration."""
-    
+class GreetingConfig:
+    """Initial greeting configuration for call start."""
+
+    # -------------------------------------------------------------------------
+    # greeting_uninterruptible (boolean)
+    # -------------------------------------------------------------------------
+    # Make the initial greeting uninterruptible.
+    #
+    # Default: True
+    #
+    # When True:
+    #   - Agent's first greeting cannot be interrupted by user's "hello"
+    #   - Prevents 2-3 turn sync issues at call start
+    #   - Allows AEC (Acoustic Echo Cancellation) calibration
+    #   - After greeting finishes, normal interruption rules apply
+    #
+    # When False:
+    #   - User can interrupt agent's first greeting
+    #   - May cause collision if both say "hello" simultaneously
+    #
+    # Recommendation: True (as per LiveKit best practices)
+    greeting_uninterruptible: bool = True
+
     # -------------------------------------------------------------------------
     # greeting_delay_seconds (seconds)
     # -------------------------------------------------------------------------
@@ -704,12 +740,24 @@ class OutboundCallConfig:
     #
     # Allows time for:
     #   - Call audio to stabilize
-    #   - User to say "Hello?"
+    #   - User to say "Hello?" first (if greeting_uninterruptible=False)
     #   - Natural conversation start
     #
     # Recommendations:
     #   - Immediate greeting: 0.2 - 0.3
     #   - Wait for "Hello?": 0.5 - 1.0
+    greeting_delay_seconds: float = 0.3
+
+
+# =============================================================================
+# OUTBOUND CALL SETTINGS (DEPRECATED - use GreetingConfig)
+# =============================================================================
+# Kept for backward compatibility.
+
+@dataclass
+class OutboundCallConfig:
+    """Outbound call configuration (deprecated - use GreetingConfig)."""
+
     greeting_delay_seconds: float = 0.3
 
 
@@ -721,31 +769,32 @@ class OutboundCallConfig:
 class PipelineConfig:
     """
     Master configuration for the entire voice pipeline.
-    
+
     Usage:
         config = PipelineConfig.load()
-        
+
         # Access individual configs:
         config.vad.min_silence_duration
         config.stt.endpointing_ms
         config.endpointing.preemptive_generation
     """
-    
+
     vad: VADConfig = field(default_factory=VADConfig)
     stt: STTConfig = field(default_factory=STTConfig)
     turn_detector: TurnDetectorConfig = field(default_factory=TurnDetectorConfig)
     endpointing: EndpointingConfig = field(default_factory=EndpointingConfig)
+    greeting: GreetingConfig = field(default_factory=GreetingConfig)
     interruption: InterruptionConfig = field(default_factory=InterruptionConfig)
     ambience: AmbienceConfig = field(default_factory=AmbienceConfig)
     noise_reduction: NoiseReductionConfig = field(default_factory=NoiseReductionConfig)
     silence: SilenceConfig = field(default_factory=SilenceConfig)
     outbound: OutboundCallConfig = field(default_factory=OutboundCallConfig)
-    
+
     @classmethod
     def load(cls) -> "PipelineConfig":
         """
         Load configuration from this file.
-        
+
         Values defined in this file are used directly.
         This method exists for future extensibility (e.g., loading from YAML).
         """
@@ -756,7 +805,7 @@ class PipelineConfig:
         logger.info(f"  Endpointing: min={config.endpointing.min_endpointing_delay}s, max={config.endpointing.max_endpointing_delay}s")
         logger.info(f"  Preemptive generation: {config.endpointing.preemptive_generation}")
         return config
-    
+
     def log_summary(self) -> None:
         """Log a summary of the current configuration."""
         logger.info("=" * 60)
@@ -804,7 +853,7 @@ def get_config() -> PipelineConfig:
 def get_fast_preset() -> PipelineConfig:
     """
     Preset for fastest possible response time.
-    
+
     Trade-off: May interrupt users more often.
     """
     config = PipelineConfig()
@@ -821,7 +870,7 @@ def get_fast_preset() -> PipelineConfig:
 def get_balanced_preset() -> PipelineConfig:
     """
     Preset for balanced speed and accuracy.
-    
+
     Good for most use cases.
     """
     return PipelineConfig()  # Defaults are balanced
@@ -830,7 +879,7 @@ def get_balanced_preset() -> PipelineConfig:
 def get_patient_preset() -> PipelineConfig:
     """
     Preset for patient, non-interrupting agent.
-    
+
     Good for complex conversations where users need time to think.
     """
     config = PipelineConfig()
@@ -841,3 +890,4 @@ def get_patient_preset() -> PipelineConfig:
     config.interruption.min_interruption_duration = 0.2
     config.interruption.false_interruption_timeout = 1.0
     return config
+

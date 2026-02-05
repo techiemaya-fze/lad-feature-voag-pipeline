@@ -39,6 +39,8 @@ from api.services.call_service import (
     DEFAULT_GLINKS_KB_STORE_IDS,
 )
 from db.storage import CallStorage, BatchStorage
+from db.db_config import get_db_config
+from utils.call_routing import validate_and_format_call
 
 logger = logging.getLogger(__name__)
 
@@ -485,6 +487,28 @@ async def trigger_single_call(payload: SingleCallPayload, request: Request) -> C
             payload.agent_id,
             frontend_id,
         )
+    
+    # ===== VALIDATION: Check call routing BEFORE accepting the request =====
+    # This ensures invalid calls (e.g., UAE number with India-only carrier) are rejected
+    # with 400 error instead of 202 ACCEPTED then silent failure
+    # NOTE: tenant_id is resolved later in dispatch_call - this is just format validation
+    routing_result = validate_and_format_call(
+        from_number=payload.from_number,
+        to_number=payload.to_number,
+        db_config=get_db_config(),
+        tenant_id=None,  # Pre-dispatch validation; tenant_id resolved in dispatch_call
+    )
+    
+    if not routing_result.success:
+        logger.error(f"Call routing validation failed: {routing_result.error_message}")
+        raise HTTPException(
+            status_code=400,
+            detail=routing_result.error_message
+        )
+    
+    # Use the formatted number for dialing (after validation)
+    dial_number = routing_result.formatted_to_number or payload.to_number
+    logger.info(f"Call routing validated: {payload.to_number} -> {dial_number} (carrier: {routing_result.carrier_name})")
     
     # Generate job and dispatch
     job_id = uuid.uuid4().hex

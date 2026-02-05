@@ -8,7 +8,6 @@ import sys
 import json
 import asyncio
 import re
-import httpx
 import logging
 import argparse
 import uuid
@@ -23,6 +22,18 @@ _SCRIPT_DIR = Path(__file__).parent
 _PROJECT_ROOT = _SCRIPT_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+# Structured output client for guaranteed JSON responses - handle both module and script execution
+try:
+    # Try direct import first (when run as script from analysis directory or project root)
+    from gemini_client import generate_with_schema_async, BOOKING_INFO_SCHEMA
+except ImportError:
+    try:
+        # Try relative import (when run as module)
+        from .gemini_client import generate_with_schema_async, BOOKING_INFO_SCHEMA
+    except ImportError:
+        # Try absolute import (when run from project root)
+        from analysis.gemini_client import generate_with_schema_async, BOOKING_INFO_SCHEMA
 
 # Import schedule_calculator - handle both module and script execution
 try:
@@ -72,66 +83,39 @@ class LeadBookingsExtractor:
         """Close the database connection pool"""
         await self.storage.close()
     
-    async def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 8172, max_retries: int = 3) -> str:
-        """Call Gemini API asynchronously with increased token limits to handle long conversations"""
+    async def _call_gemini_structured(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 4096, max_retries: int = 3) -> Optional[Dict]:
+        """Call Gemini API with structured output schema - guarantees proper JSON response"""
         if not self.gemini_api_key:
             logger.warning("Gemini API key not available")
             return None
         
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={self.gemini_api_key}"
-        headers = {"Content-Type": "application/json"}
-        data = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_output_tokens
-            }
-        }
+        logger.debug(f"Calling Gemini API with structured output: temperature={temperature}, maxOutputTokens={max_output_tokens}")
         
-        # Log the payload being sent to Gemini (DEBUG level to reduce noise in production)
-        logger.debug(f"Sending payload to Gemini API: temperature={temperature}, maxOutputTokens={max_output_tokens}")
-        logger.debug(f"Prompt length: {len(prompt)} characters")
-        logger.debug(f"Prompt preview (first 500 chars): {prompt[:500]}..." if len(prompt) > 500 else f"Full prompt: {prompt}")
-        
-        for attempt in range(max_retries):
-            try:
-                # Use httpx.AsyncClient for async HTTP requests
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    response = await client.post(url, headers=headers, json=data)
-                    response.raise_for_status()
-                    
-                    result = response.json()
-                    if 'candidates' in result and len(result['candidates']) > 0:
-                        content = result['candidates'][0]['content']['parts'][0]['text']
-                        return content.strip()
-                    
-                    return None
-                    
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:
-                    # Rate limit error - exponential backoff
-                    wait_time = (2 ** attempt) * 2  # 2s, 4s, 8s
-                    logger.warning(f"Rate limit (429) hit. Attempt {attempt + 1}/{max_retries}. Waiting {wait_time}s before retry...")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(wait_time)
-                        continue
-                    else:
-                        logger.error(f"Rate limit (429) exceeded max retries ({max_retries})")
-                        return None
-                else:
-                    logger.error(f"Gemini API HTTP error {e.response.status_code}: {e}")
-                    return None
-            except httpx.TimeoutException as e:
-                logger.error(f"Gemini API timeout error: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2)
-                    continue
+        try:
+            # Use structured output for guaranteed JSON response
+            result = await generate_with_schema_async(
+                prompt=prompt,
+                schema=BOOKING_INFO_SCHEMA,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                max_retries=max_retries,
+            )
+            
+            if result:
+                # Extract and log usage metadata if present
+                if '_usage_metadata' in result:
+                    usage = result.pop('_usage_metadata')
+                    logger.info(f"Gemini usage for booking extraction: {usage}")
+                
+                logger.debug(f"Booking extraction structured response received")
+                return result
+            else:
+                logger.warning("No result from structured generation")
                 return None
-            except Exception as e:
-                logger.error(f"Gemini API error: {e}")
-                return None
-        
-        return None
+            
+        except Exception as e:
+            logger.error(f"Gemini structured API exception: {str(e)}", exc_info=True)
+            return None
     
     def extract_last_timestamp(self, transcriptions_data) -> Optional[datetime]:
         """
@@ -449,50 +433,45 @@ Respond in JSON:
 }}}}"""
 
         # Log the extraction request details being sent to Gemini
-        logger.info(f"Calling Gemini API for booking extraction")
+        logger.info(f"Calling Gemini API for booking extraction with structured output")
         logger.info(f"Conversation length: {len(conversation_text)} chars")
         
-        # Increased max_output_tokens to handle longer conversations and detailed responses
-        response = await self._call_gemini_api(prompt, temperature=0.1, max_output_tokens=4096)
-        if not response:
+        # Using structured output - response is already a parsed dict
+        booking_info = await self._call_gemini_structured(prompt, temperature=0.1, max_output_tokens=4096)
+        if not booking_info:
             # Default to auto_followup if API fails
             return {"booking_type": "auto_followup", "scheduled_at": None, "student_grade": None, "call_id": None}
         
-        try:
-            # Extract JSON from response
-            json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
-            if json_match:
-                booking_info = json.loads(json_match.group())
-                # Ensure booking_type is never null - default to auto_followup
-                if not booking_info.get("booking_type") or booking_info.get("booking_type") not in ["auto_followup", "auto_consultation"]:
-                    booking_info["booking_type"] = "auto_followup"
-                # Ensure student_grade is an integer or null
-                if "student_grade" in booking_info and booking_info["student_grade"] is not None:
-                    try:
-                        booking_info["student_grade"] = int(booking_info["student_grade"])
-                    except (ValueError, TypeError):
-                        booking_info["student_grade"] = None
-                
-                # If no future discussion mentioned and scheduled_at is null, force auto_followup with default timing
-                # This handles cases where conversation only discusses past consultations
-                has_future = booking_info.get("has_future_discussion", True)
-                if not has_future and not booking_info.get("scheduled_at"):
-                    logger.info("No future discussion detected - forcing auto_followup with grade 12 default")
-                    booking_info["booking_type"] = "auto_followup"
-                    booking_info["scheduled_at"] = "use_default_timing"  # Signal to use first timestamp + schedule calculator
-                    if not booking_info.get("student_grade"):
-                        booking_info["student_grade"] = 12  # Default to grade 12
-                
-                # Remove has_future_discussion from final result (internal use only)
-                booking_info.pop("has_future_discussion", None)
-                
-                return booking_info
-            else:
-                logger.warning(f"Could not parse JSON from response: {response}")
-                return {"booking_type": "auto_followup", "scheduled_at": None, "student_grade": None, "call_id": None}
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON decode error: {e}, Response: {response}")
-            return {"booking_type": "auto_followup", "scheduled_at": None, "student_grade": None, "call_id": None}
+        # Ensure booking_type is never null - default to auto_followup
+        if not booking_info.get("booking_type") or booking_info.get("booking_type") not in ["auto_followup", "auto_consultation"]:
+            booking_info["booking_type"] = "auto_followup"
+        
+        # Ensure student_grade is an integer or null
+        if "student_grade" in booking_info and booking_info["student_grade"] is not None:
+            try:
+                booking_info["student_grade"] = int(booking_info["student_grade"])
+            except (ValueError, TypeError):
+                booking_info["student_grade"] = None
+        
+        # Sanitize "null" strings from Gemini
+        for key in ["scheduled_at", "call_id"]:
+            if isinstance(booking_info.get(key), str) and booking_info[key].lower() == "null":
+                booking_info[key] = None
+
+        # If no future discussion mentioned and scheduled_at is null, force auto_followup with default timing
+        # This handles cases where conversation only discusses past consultations
+        has_future = booking_info.get("has_future_discussion", True)
+        if not has_future and not booking_info.get("scheduled_at"):
+            logger.info("No future discussion detected - forcing auto_followup with grade 12 default")
+            booking_info["booking_type"] = "auto_followup"
+            booking_info["scheduled_at"] = "use_default_timing"  # Signal to use first timestamp + schedule calculator
+            if not booking_info.get("student_grade"):
+                booking_info["student_grade"] = 12  # Default to grade 12
+        
+        # Remove has_future_discussion from final result (internal use only)
+        booking_info.pop("has_future_discussion", None)
+        
+        return booking_info
     
     def normalize_time_string(self, time_str: str) -> str:
         """
@@ -1644,6 +1623,106 @@ Respond in JSON:
             scheduled_at_str = booking_info.get('scheduled_at')
             student_grade = booking_info.get('student_grade')  # Extract student grade
 
+            # CRITICAL: If Gemini returned a relative time (like "after around two hours"), 
+            # check if there's a specific time mentioned in the conversation that the user accepted.
+            # If agent says "after 2 hours" but also mentions "1:59 PM" and user accepts, use the specific time.
+            if scheduled_at_str and conversation_text:
+                # Check if scheduled_at_str is a relative time
+                is_relative_time = bool(re.search(r'(?:after|in|within|around)\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\s*(?:mins?|minutes?|hours?|hrs?)', scheduled_at_str.lower()))
+                
+                logger.debug(f"Checking for specific time override: scheduled_at_str='{scheduled_at_str}', is_relative_time={is_relative_time}")
+                logger.debug(f"Conversation text (first 500 chars): {conversation_text[:500]}")
+                
+                if is_relative_time:
+                    # Try to extract a specific time from conversation text
+                    # Look for patterns like "1:59 PM", "1:59", "at 1:59", "1 59", "one fifty-nine", etc.
+                    specific_time_patterns = [
+                        r'(?:at|around|about|by)\s+(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "at 1:59 PM"
+                        r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)\b',  # "1:59 PM"
+                        r'\b(\d{1,2}):(\d{2})\s*(?:GST|IST|UTC)\b',  # "1:59 GST"
+                        r'(?:call|ring|phone|reach|connect)\s+(?:you|me|him|her|them|us)?\s+(?:back\s+)?(?:at|around|about)?\s*(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "call you at 1:59 PM"
+                        # Pattern for times without AM/PM (e.g., "1:59") - infer PM for hours 1-11, AM for 12
+                        r'(?:at|around|about|by|call|ring|phone)\s+(\d{1,2}):(\d{2})(?:\s|\.|$|,|;|\'|")(?!\s*(?:AM|PM|am|pm|GST|IST|UTC))',  # "at 1:59" or "call 1:59"
+                        r'\b(\d{1,2}):(\d{2})(?:\s|\.|$|,|;|\'|")(?!\s*(?:AM|PM|am|pm|GST|IST|UTC|mins?|minutes?|hours?))',  # "1:59" standalone
+                        # Pattern for times with space instead of colon (e.g., "1 59 PM", "at 1 59")
+                        r'(?:at|around|about|by)\s+(\d{1,2})\s+(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "at 1 59 PM"
+                        r'\b(\d{1,2})\s+(\d{2})\s*(AM|PM|am|pm)\b',  # "1 59 PM"
+                        r'(?:call|ring|phone|reach|connect)\s+(?:you|me|him|her|them|us)?\s+(?:back\s+)?(?:at|around|about)?\s*(\d{1,2})\s+(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "call you at 1 59 PM"
+                    ]
+                    
+                    conversation_lower = conversation_text.lower()
+                    logger.debug(f"Searching for specific time patterns in conversation (length: {len(conversation_lower)} chars)")
+                    
+                    for idx, pattern in enumerate(specific_time_patterns):
+                        match = re.search(pattern, conversation_lower, re.IGNORECASE)
+                        if match:
+                            logger.debug(f"Pattern #{idx+1} matched: '{pattern[:60]}...' -> '{match.group(0)}'")
+                            hour = match.group(1)
+                            minute = match.group(2)
+                            ampm = match.group(3) if len(match.groups()) >= 3 and match.group(3) else None
+                            
+                            # Validate hour and minute
+                            try:
+                                hour_int = int(hour)
+                                minute_int = int(minute)
+                                
+                                # If no AM/PM specified, infer based on hour
+                                # Hours 1-11: likely PM (afternoon/evening callbacks)
+                                # Hour 12: could be AM or PM, default to PM for callbacks
+                                # Hours 13-23: 24-hour format, keep as-is
+                                inferred_ampm = ampm
+                                if not ampm:
+                                    if 1 <= hour_int <= 11:
+                                        inferred_ampm = "PM"  # Afternoon/evening callbacks are more common
+                                    elif hour_int == 12:
+                                        inferred_ampm = "PM"  # Default to PM for callbacks
+                                    elif 13 <= hour_int <= 23:
+                                        # 24-hour format, convert to 12-hour
+                                        hour_int = hour_int - 12
+                                        inferred_ampm = "PM"
+                                    else:
+                                        continue  # Invalid hour
+                                
+                                max_hour = 12 if inferred_ampm else 23
+                                if 1 <= hour_int <= max_hour and 0 <= minute_int <= 59:
+                                    # Build time string - ensure minute is 2 digits
+                                    minute_str = f"{minute_int:02d}"
+                                    if inferred_ampm:
+                                        specific_time = f"{hour_int}:{minute_str} {inferred_ampm.upper()}"
+                                    else:
+                                        specific_time = f"{hour_int}:{minute_str}"
+                                    
+                                    # Check if GST/IST/UTC is in the match
+                                    matched_text = match.group(0).upper()
+                                    if 'GST' in matched_text:
+                                        specific_time += " GST"
+                                    elif 'IST' in matched_text:
+                                        specific_time += " IST"
+                                    elif 'UTC' in matched_text:
+                                        specific_time += " UTC"
+                                    
+                                    # Check if this specific time appears AFTER the relative phrase in conversation
+                                    # This indicates the agent mentioned it later and user likely accepted it
+                                    relative_phrase_pos = conversation_lower.find(scheduled_at_str.lower())
+                                    specific_time_pos = conversation_lower.find(match.group(0).lower())
+                                    
+                                    # If specific time appears after relative phrase, or if we can't determine order,
+                                    # prefer the specific time (it's more precise)
+                                    logger.debug(f"Found specific time '{specific_time}' at position {specific_time_pos}, relative phrase at position {relative_phrase_pos}")
+                                    if specific_time_pos > relative_phrase_pos or relative_phrase_pos == -1:
+                                        logger.info(f"Found specific time '{specific_time}' in conversation after relative phrase '{scheduled_at_str}' - using specific time instead")
+                                        scheduled_at_str = specific_time
+                                        break
+                                    else:
+                                        logger.debug(f"Found specific time '{specific_time}' but it appears before relative phrase - keeping relative time")
+                            except (ValueError, IndexError, AttributeError) as e:
+                                logger.debug(f"Error processing matched time pattern: {e}")
+                                continue
+                    
+                    # Log if no specific time was found
+                    if is_relative_time and scheduled_at_str and not re.search(r'\d{1,2}:\d{2}', scheduled_at_str):
+                        logger.debug(f"No specific time found in conversation, keeping relative time: '{scheduled_at_str}'")
+
             # --- CUSTOM LOGIC: handle use_default_timing for grade 12 ---
             if scheduled_at_str == "use_default_timing":
                 # Use first transcription timestamp as base
@@ -1658,6 +1737,7 @@ Respond in JSON:
                         buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
                         # Overwrite scheduled_at_str so downstream logic doesn't re-handle
                         scheduled_at_str = None
+                        special_handling_mode = True
                     else:
                         # For other grades, fallback to today + time (or implement other logic as needed)
                         scheduled_date = first_transcript_timestamp.date()
@@ -1666,6 +1746,7 @@ Respond in JSON:
                         logger.info(f"[use_default_timing] Non-12th grade fallback: scheduled_at set to {scheduled_at} (same day as first transcript)")
                         buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
                         scheduled_at_str = None
+                        special_handling_mode = True
                 else:
                     # Fallback: use now + 2 days for grade 12
                     now_gst = datetime.now(GST)
@@ -1676,11 +1757,13 @@ Respond in JSON:
                         logger.info(f"[use_default_timing] Grade 12 fallback: scheduled_at set to {scheduled_at} (2 days after now)")
                         buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
                         scheduled_at_str = None
+                        special_handling_mode = True
                     else:
                         scheduled_at = now_gst
                         buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15))
                         logger.info(f"[use_default_timing] Non-12th grade fallback: scheduled_at set to {scheduled_at} (now)")
                         scheduled_at_str = None
+                        special_handling_mode = True
             
             # Ensure booking_type is never null - default to auto_followup
             if not booking_type or booking_type not in ["auto_followup", "auto_consultation"]:
@@ -1855,13 +1938,22 @@ Respond in JSON:
                     
                     # Pattern 1: Absolute times (e.g., "7:45 PM GST", "6:30 PM", "at 7:45") - CHECK FIRST
                     # These should be extracted directly from conversation
+                    # CRITICAL: If agent says "after 2 hours" but also mentions a specific time like "at 3:30 PM",
+                    # we should prefer the specific time if user accepts it
                     absolute_time_patterns = [
-                        r'(?:call|ring|phone|reach|connect)\s+(?:you|me|him|her|them|us)?\s+(?:back\s+)?(?:at|around|about)?\s*(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "call you back at 7:45 PM GST"
+                        # Pattern 1a: "I'll call you back at 3:30 PM" or "call you at 3:30 PM" (with action verb)
+                        r'(?:call|ring|phone|reach|connect|follow\s+up|get\s+back)\s+(?:you|me|him|her|them|us)?\s+(?:back\s+)?(?:at|around|about)?\s*(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "call you back at 7:45 PM GST"
+                        # Pattern 1b: "at 3:30 PM" or "around 3:30 PM" (standalone)
                         r'(?:at|around|about)\s+(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)?\b',  # "at 7:45 PM GST"
+                        # Pattern 1c: "3:30 PM GST" or "7:45 PM" (with timezone or AM/PM)
                         r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\s*(?:GST|IST|UTC)\b',  # "7:45 PM GST", "6:30 PM GST"
                         r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)\b',  # "7:45 PM", "6:30 AM"
+                        # Pattern 1d: "7:45 GST" (without AM/PM but with timezone)
                         r'\b(\d{1,2}):(\d{2})\s*(?:GST|IST|UTC)\b',  # "7:45 GST"
+                        # Pattern 1e: "7.45 PM" (dot separator)
                         r'\b(\d{1,2})\.(\d{2})\s*(AM|PM|am|pm)?\b',  # "7.45 PM"
+                        # Pattern 1f: "3 PM" or "3:00 PM" (hour only, with AM/PM)
+                        r'\b(\d{1,2})(?::00)?\s*(AM|PM|am|pm)\s*(?:GST|IST|UTC)?\b',  # "3 PM", "3:00 PM GST"
                     ]
                     
                     for idx, pattern in enumerate(absolute_time_patterns):
@@ -1869,25 +1961,42 @@ Respond in JSON:
                             match = re.search(pattern, text_lower, re.IGNORECASE)
                             if match:
                                 hour = match.group(1)
-                                minute = match.group(2)
-                                ampm = match.group(3) if len(match.groups()) >= 3 and match.group(3) else None
+                                # Pattern 1f (hour-only) doesn't have a minute group, others do
+                                minute = match.group(2) if len(match.groups()) >= 2 and match.group(2) else "00"
+                                # AM/PM is in different group positions depending on pattern
+                                ampm = None
+                                if len(match.groups()) >= 3:
+                                    # Check if group 3 is AM/PM (for patterns with minute)
+                                    if match.group(3) and match.group(3).upper() in ['AM', 'PM']:
+                                        ampm = match.group(3)
+                                elif len(match.groups()) >= 2:
+                                    # For pattern 1f, AM/PM is in group 2
+                                    if match.group(2) and match.group(2).upper() in ['AM', 'PM']:
+                                        ampm = match.group(2)
+                                        minute = "00"  # Hour-only pattern, default to :00
                                 
                                 # Validate hour and minute
                                 try:
                                     hour_int = int(hour)
-                                    minute_int = int(minute)
-                                    if not (0 <= hour_int <= 23 and 0 <= minute_int <= 59):
-                                        logger.debug(f"Invalid time values: hour={hour_int}, minute={minute_int}, skipping")
+                                    minute_int = int(minute) if minute else 0
+                                    # For 12-hour format with AM/PM, hour can be 1-12
+                                    # For 24-hour format, hour can be 0-23
+                                    max_hour = 12 if ampm else 23
+                                    if not (1 <= hour_int <= max_hour):
+                                        logger.debug(f"Invalid hour value: {hour_int} (max={max_hour}), skipping")
                                         continue
-                                except ValueError:
+                                    if not (0 <= minute_int <= 59):
+                                        logger.debug(f"Invalid minute value: {minute_int}, skipping")
+                                        continue
+                                except (ValueError, TypeError):
                                     logger.debug(f"Could not parse hour/minute: hour={hour}, minute={minute}")
                                     continue
                                 
                                 # Build time string
                                 if ampm:
-                                    result = f"{hour}:{minute} {ampm.upper()}"
+                                    result = f"{hour}:{minute:02d} {ampm.upper()}"
                                 else:
-                                    result = f"{hour}:{minute}"
+                                    result = f"{hour}:{minute:02d}"
                                 
                                 # Check if GST/IST/UTC is in the match
                                 matched_text = match.group(0).upper()
@@ -1950,6 +2059,12 @@ Respond in JSON:
                                 # Production safety: cap at reasonable maximum
                                 MAX_MINUTES = 10080  # 7 days
                                 MIN_MINUTES = 1
+                                
+                                # CRITICAL: Reject numbers that look like years (1900-2100 range)
+                                # These are likely timestamps or years, not minutes
+                                if 1900 <= minutes <= 2100:
+                                    logger.warning(f"Extracted value {minutes} looks like a year/timestamp, not minutes - skipping")
+                                    continue
                                 
                                 if minutes < MIN_MINUTES:
                                     logger.warning(f"Extracted invalid minutes value: {minutes} (too small), skipping")
@@ -2083,6 +2198,7 @@ Respond in JSON:
                                 def _parse_time():
                                     calculator = ScheduleCalculator()
                                     return calculator.parse_callback_time(normalized_extracted_time, reference_time)
+                                # Safe to use asyncio.to_thread() - runs in dedicated analysis thread with own executor
                                 calc_result = await asyncio.to_thread(_parse_time)
                                 
                                 # Only combine with first timestamp for RELATIVE times
@@ -2135,6 +2251,7 @@ Respond in JSON:
                                 def _parse_time():
                                     calculator = ScheduleCalculator()
                                     return calculator.parse_callback_time(normalized_extracted_time, reference_time)
+                                # Safe to use asyncio.to_thread() - runs in dedicated analysis thread with own executor
                                 calc_result = await asyncio.to_thread(_parse_time)
                                 
                                 # Only combine with first timestamp for RELATIVE times
@@ -2183,9 +2300,12 @@ Respond in JSON:
                 # Calculate buffer_until (scheduled_at + 15 minutes)
                 buffer_until = self._normalize_datetime(scheduled_at + timedelta(minutes=15)) if scheduled_at else None
             else:
+                # Skip final extraction if special handling mode is active (e.g. use_default_timing)
+                if locals().get('special_handling_mode'):
+                    logger.info("Skipping final extraction because special_handling_mode is active")
                 # No explicit CONFIRMED time phrase mentioned by Gemini - try one final extraction attempt
                 # But skip if time was mentioned but not confirmed (uncertain/question)
-                if not time_is_confirmed and scheduled_at_str:
+                elif not time_is_confirmed and scheduled_at_str:
                     logger.info(f"Time mentioned but not confirmed ('{scheduled_at_str}'), skipping final extraction - will use first transcription time with schedule_calculator date")
                     use_glinks_scheduler = True
                     scheduled_at = None
@@ -2407,6 +2527,7 @@ Respond in JSON:
                             schedule_result = calculator.calculate_next_call(outcome, outcome_details, lead_info, first_timestamp_datetime)
                             return schedule_result
                         
+                        # Safe to use asyncio.to_thread() - runs in dedicated analysis thread with own executor
                         schedule_datetime = await asyncio.to_thread(_get_schedule_date)
                         
                         if schedule_datetime:

@@ -253,6 +253,8 @@ class KnowledgeBaseStorage:
         description: Optional[str] = None,
         document_count: Optional[int] = None,
         is_active: Optional[bool] = None,
+        is_default: Optional[bool] = None,
+        priority: Optional[int] = None,
     ) -> bool:
         """Update a store's metadata."""
         updates = []
@@ -270,6 +272,12 @@ class KnowledgeBaseStorage:
         if is_active is not None:
             updates.append("is_active = %s")
             params.append(is_active)
+        if is_default is not None:
+            updates.append("is_default = %s")
+            params.append(is_default)
+        if priority is not None:
+            updates.append("priority = %s")
+            params.append(priority)
 
         if not updates:
             return True
@@ -310,6 +318,38 @@ class KnowledgeBaseStorage:
                     return deleted
         except Exception as exc:
             logger.error("Failed to delete store %s: %s", store_id, exc, exc_info=True)
+            return False
+
+    async def update_document_count(self, store_id: str, delta: int) -> bool:
+        """
+        Update document count by a delta (positive to add, negative to remove).
+        
+        Args:
+            store_id: Store UUID
+            delta: Number to add to document_count (can be negative)
+            
+        Returns:
+            True if updated successfully
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        UPDATE {self.SCHEMA}.{self.STORES_TABLE}
+                        SET document_count = GREATEST(0, COALESCE(document_count, 0) + %s),
+                            updated_at = NOW()
+                        WHERE id = %s::uuid
+                        """,
+                        (delta, store_id),
+                    )
+                    conn.commit()
+                    updated = cur.rowcount > 0
+                    if updated:
+                        logger.debug("Updated document count for store %s: delta=%d", store_id, delta)
+                    return updated
+        except Exception as exc:
+            logger.error("Failed to update document count for %s: %s", store_id, exc, exc_info=True)
             return False
 
     # =========================================================================

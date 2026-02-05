@@ -42,7 +42,12 @@ class DatabaseError(Exception):
 
 def _split_phone_number(phone: str | None) -> tuple[str | None, int | None]:
     """
-    Split phone number into country code and base number.
+    Split phone number into country code and base number using E.164 rules.
+    
+    Implements expert logic:
+    - Cleans formatting
+    - Normalizes international exit codes (00, 011 → +)
+    - Smart heuristics for bare local numbers
     
     Args:
         phone: Phone number string (e.g., "+919876543210", "919876543210")
@@ -60,21 +65,25 @@ def _split_phone_number(phone: str | None) -> tuple[str | None, int | None]:
     else:
         cleaned = re.sub(r'[^\d]', '', cleaned)
     
+    # Normalize international exit codes (00, 011 → +)
+    cleaned = re.sub(r'^(00|011)', '+', cleaned)
+    
     if not cleaned or cleaned == '+':
         return None, None
     
-    # Known country code patterns (most common first)
+    # Known country code patterns (longer prefixes first to avoid false matches)
+    # IMPORTANT: 971 must come before 91, and all before 1
     country_codes = [
+        ('+971', 3),  # UAE (must be before India)
         ('+91', 2),   # India
-        ('+1', 1),    # USA/Canada
         ('+44', 2),   # UK
-        ('+971', 3),  # UAE
         ('+65', 2),   # Singapore
         ('+61', 2),   # Australia
         ('+86', 2),   # China
+        ('+1', 1),    # USA/Canada (LAST due to short prefix)
     ]
     
-    # Handle +XX format
+    # Handle +XX format - numbers starting with + are already normalized
     if cleaned.startswith('+'):
         for prefix, length in country_codes:
             if cleaned.startswith(prefix):
@@ -90,19 +99,49 @@ def _split_phone_number(phone: str | None) -> tuple[str | None, int | None]:
                 if base.isdigit():
                     return cc, int(base)
         
-        # Fallback
+        # Fallback for + numbers
         return cleaned[:4], int(cleaned[4:]) if len(cleaned) > 4 and cleaned[4:].isdigit() else None
     
-    # No + prefix - detect by known patterns
+    # PRIORITY 1: Handle 0-prefix for India (11 digits: 0 + 10) and UAE (10 digits: 0 + 9)
+    # This MUST come BEFORE country code matching to avoid false positives
+    if cleaned.startswith('0'):
+        if len(cleaned) == 11:
+            # India: 0 + 10 digit number
+            base = cleaned[1:]
+            if base.isdigit():
+                return '+91', int(base)
+        elif len(cleaned) == 10:
+            # UAE: 0 + 9 digit number
+            base = cleaned[1:]
+            if base.isdigit():
+                return '+971', int(base)
+    
+    # PRIORITY 2: No + prefix - detect by country code digits (longer prefixes first)
     for prefix, length in country_codes:
         digits_prefix = prefix[1:]  # Remove + 
         if cleaned.startswith(digits_prefix) and len(cleaned) >= length + 8:
             base = cleaned[length:]
+            # USA-specific validation: US numbers don't start with 0 after country code
+            if prefix == '+1' and base.startswith('0'):
+                continue  # Skip - not a valid US number
             return prefix, int(base)
     
-    # Short number - no country code detectable
+    # PRIORITY 3: Smart heuristics for bare local numbers (Expert Logic)
     if cleaned.isdigit():
-        return None, int(cleaned)
+        if len(cleaned) == 9:
+            # 9 digits → UAE national number
+            return '+971', int(cleaned)
+        elif len(cleaned) == 10:
+            # 10 digits → ambiguous between India and US
+            # Heuristic: India mobile numbers typically start with 6-9
+            if cleaned[0] in '6789':
+                return '+91', int(cleaned)
+            else:
+                # US/Canada
+                return '+1', int(cleaned)
+        else:
+            # Short number - no country code detectable
+            return None, int(cleaned)
     
     return None, None
 

@@ -109,8 +109,8 @@ async def _resolve_tenant_id_from_user(user_id: str | None) -> str | None:
 
 
 # E.164 pattern for validation
-import re
-E164_PATTERN = re.compile(r"^(\+[1-9]\d{1,14}|0\d{9,14})$")
+# E.164 pattern for validation (removed in favor of semantic validation)
+from utils.call_routing import normalize_phone_to_e164
 
 
 def _validate_optional_number(value: str | None, field_name: str) -> str | None:
@@ -119,9 +119,10 @@ def _validate_optional_number(value: str | None, field_name: str) -> str | None:
     text = value.strip()
     if not text:
         return None
-    if not E164_PATTERN.match(text):
+    try:
+        return normalize_phone_to_e164(text)
+    except ValueError:
         raise HTTPException(status_code=400, detail=f"{field_name} must be E.164 formatted")
-    return text
 
 
 def _validate_optional_positive_int(value: Any, field_name: str) -> int | None:
@@ -165,7 +166,9 @@ def _parse_batch_csv(file_bytes: bytes) -> list[BatchCallEntry]:
             continue
         
         to_number = to_number.strip()
-        if not E164_PATTERN.match(to_number):
+        try:
+            to_number = normalize_phone_to_e164(to_number)
+        except ValueError:
             logger.warning("Skipping invalid number in CSV: %s", to_number[:5] + "...")
             continue
         
@@ -638,13 +641,25 @@ async def cancel_batch(batch_id: str) -> dict[str, Any]:
     
     logger.info("Batch %s cancelled: %d entries cancelled", batch_id, cancelled_count)
     
+    # Check if all entries are done and trigger report if so
+    # This ensures report is generated even when batch is manually cancelled
+    result = await batch_storage.check_and_complete_batch(batch_record["id"])
+    report_triggered = False
+    if result.get("should_report") or result.get("completed"):
+        # Batch is fully done - trigger report generation
+        logger.info(f"Batch {batch_record['id']} fully done after cancellation - triggering report")
+        asyncio.create_task(_generate_and_send_batch_report(batch_record["id"]))
+        report_triggered = True
+    
     return {
         "batch_id": batch_record["id"],
         "job_id": batch_record["job_id"],
         "status": "stopped",
         "cancelled_count": cancelled_count,
-        "message": f"Batch stopped. {cancelled_count} pending entries cancelled.",
+        "report_triggered": report_triggered,
+        "message": f"Batch stopped. {cancelled_count} pending entries cancelled." + (" Report generation triggered." if report_triggered else ""),
     }
+
 
 
 # =============================================================================
@@ -706,8 +721,17 @@ async def entry_completed_callback(request: EntryCompletedRequest) -> dict:
 
 
 async def _generate_and_send_batch_report(batch_id: str) -> None:
-    """Generate and send batch report email. Runs in main.py's stable event loop."""
+    """Generate and send batch report email. Runs in main.py's stable event loop.
+    
+    Includes a 15s delay to ensure the last call's analysis has time to complete
+    and save to DB before we start polling for analysis records.
+    """
     try:
+        # Wait 15s to give the final analysis time to complete and save to DB
+        # This prevents the race condition where report starts before analysis finishes
+        logger.info(f"Waiting 15s for analysis completion before generating report for batch_id={batch_id}")
+        await asyncio.sleep(15)
+        
         from analysis.batch_report import generate_batch_report
         logger.info(f"Starting batch report generation for batch_id={batch_id}")
         result = await generate_batch_report(batch_id, send_email=True)

@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configure Microsoft Bookings - TechieMaya</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #f5f7fa;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.12);
+            max-width: 520px;
+            width: 100%;
+            overflow: hidden;
+        }
+        .header {
+            background: #1a2a4a;
+            color: white;
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .header-logo {
+            height: 36px;
+            width: auto;
+            background: white;
+            padding: 6px 12px;
+            border-radius: 6px;
+        }
+        .header-text {
+            flex: 1;
+        }
+        .header h1 {
+            font-size: 1.35rem;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        .header p {
+            opacity: 0.85;
+            font-size: 0.9rem;
+        }
+        .steps-indicator {
+            display: flex;
+            justify-content: center;
+            padding: 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+        }
+        .step-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #dee2e6;
+            margin: 0 8px;
+            transition: all 0.3s ease;
+        }
+        .step-dot.active {
+            background: #1a2a4a;
+            transform: scale(1.2);
+        }
+        .step-dot.completed {
+            background: #22c55e;
+        }
+        .content {
+            padding: 20px 24px;
+            min-height: 240px;
+        }
+        .step {
+            display: none;
+        }
+        .step.active {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .step-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #1a2a4a;
+            margin-bottom: 16px;
+        }
+        .options-list {
+            list-style: none;
+        }
+        .option-item {
+            padding: 14px 16px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+        }
+        .option-item:hover {
+            border-color: #1a2a4a;
+            background: #f8f9fc;
+        }
+        .option-item.selected {
+            border-color: #1a2a4a;
+            background: #f0f4f8;
+        }
+        .option-radio {
+            width: 20px;
+            height: 20px;
+            border: 2px solid #adb5bd;
+            border-radius: 50%;
+            margin-right: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .option-item.selected .option-radio {
+            border-color: #1a2a4a;
+        }
+        .option-item.selected .option-radio::after {
+            content: '';
+            width: 10px;
+            height: 10px;
+            background: #1a2a4a;
+            border-radius: 50%;
+        }
+        .option-details {
+            flex: 1;
+        }
+        .option-name {
+            font-weight: 500;
+            color: #1a2a4a;
+        }
+        .option-meta {
+            font-size: 0.85rem;
+            color: #6c757d;
+            margin-top: 2px;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+        }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #e9ecef;
+            border-top-color: #1a2a4a;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 16px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .loading-text {
+            color: #6c757d;
+            font-size: 0.95rem;
+        }
+        .error-message {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            color: #dc2626;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+        }
+        .empty-message {
+            background: #fffbeb;
+            border: 1px solid #fcd34d;
+            color: #92400e;
+            padding: 16px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .footer {
+            padding: 16px 24px;
+            background: #f8f9fa;
+            border-top: 1px solid #e9ecef;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .btn {
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: none;
+        }
+        .btn-primary {
+            background: #1a2a4a;
+            color: white;
+        }
+        .btn-primary:hover:not(:disabled) {
+            background: #243756;
+        }
+        .btn-primary:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+        }
+        .btn-secondary {
+            background: white;
+            color: #1a2a4a;
+            border: 1px solid #d1d5db;
+        }
+        .btn-secondary:hover {
+            background: #f3f4f6;
+        }
+        .btn-skip {
+            background: transparent;
+            color: #6c757d;
+            text-decoration: underline;
+            border: none;
+            font-size: 0.9rem;
+        }
+        .btn-skip:hover {
+            color: #1a2a4a;
+        }
+        .success-icon {
+            width: 80px;
+            height: 80px;
+            background: #dcfce7;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+        }
+        .success-icon svg {
+            width: 40px;
+            height: 40px;
+            stroke: #22c55e;
+        }
+        .success-message {
+            text-align: center;
+        }
+        .success-message h2 {
+            color: #22c55e;
+            margin-bottom: 12px;
+        }
+        .success-message p {
+            color: #6c757d;
+        }
+        .auto-saving {
+            background: #f0f4f8;
+            border: 1px solid #d1d5db;
+            color: #1a2a4a;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+        }
+        .auto-saving .spinner {
+            width: 20px;
+            height: 20px;
+            margin: 0 12px 0 0;
+            border-width: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <img src="/auth/microsoft/logo" alt="TechieMaya" class="header-logo">
+            <div class="header-text">
+                <h1>Configure Microsoft Bookings</h1>
+                <p>Select your booking preferences</p>
+            </div>
+        </div>
+        
+        <div class="steps-indicator">
+            <div class="step-dot active" data-step="1"></div>
+            <div class="step-dot" data-step="2"></div>
+            <div class="step-dot" data-step="3"></div>
+        </div>
+        
+        <div class="content">
+            <!-- Step 1: Select Business -->
+            <div class="step active" id="step-1">
+                <h3 class="step-title">Step 1: Select Booking Business</h3>
+                <div id="businesses-loading" class="loading">
+                    <div class="spinner"></div>
+                    <p class="loading-text">Loading your booking businesses...</p>
+                </div>
+                <div id="businesses-error" class="error-message" style="display: none;"></div>
+                <ul id="businesses-list" class="options-list"></ul>
+            </div>
+            
+            <!-- Step 2: Select Service -->
+            <div class="step" id="step-2">
+                <h3 class="step-title">Step 2: Select Service</h3>
+                <div id="services-loading" class="loading">
+                    <div class="spinner"></div>
+                    <p class="loading-text">Loading services...</p>
+                </div>
+                <div id="services-error" class="error-message" style="display: none;"></div>
+                <ul id="services-list" class="options-list"></ul>
+            </div>
+            
+            <!-- Step 3: Select Staff -->
+            <div class="step" id="step-3">
+                <h3 class="step-title">Step 3: Select Staff Member</h3>
+                <div id="staff-loading" class="loading">
+                    <div class="spinner"></div>
+                    <p class="loading-text">Loading staff members...</p>
+                </div>
+                <div id="staff-error" class="error-message" style="display: none;"></div>
+                <ul id="staff-list" class="options-list"></ul>
+            </div>
+            
+            <!-- Success Step -->
+            <div class="step" id="step-success">
+                <div class="success-message">
+                    <div class="success-icon">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                    </div>
+                    <h2>Configuration Saved!</h2>
+                    <p>Redirecting you back to the application...</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <button class="btn btn-skip" onclick="skipConfiguration()">Skip for now</button>
+            <div>
+                <button class="btn btn-secondary" id="btn-back" onclick="goBack()" style="display: none; margin-right: 8px;">Back</button>
+                <button class="btn btn-primary" id="btn-next" onclick="goNext()" disabled>Next</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration injected by backend
+        const CONFIG = {
+            userId: '{{USER_ID}}',
+            frontendId: '{{FRONTEND_ID}}',
+            apiKey: '{{API_KEY}}',
+            baseUrl: '{{BASE_URL}}',
+            frontendRedirect: '{{FRONTEND_REDIRECT}}'
+        };
+
+        // State
+        let currentStep = 1;
+        let selectedBusiness = null;
+        let selectedService = null;
+        let selectedStaff = null;
+        let businesses = [];
+        let services = [];
+        let staffMembers = [];
+
+        // API helpers
+        async function apiCall(endpoint, method = 'GET', body = null) {
+            const headers = {
+                'X-Frontend-ID': CONFIG.frontendId,
+                'X-API-Key': CONFIG.apiKey,
+                'Content-Type': 'application/json'
+            };
+            
+            const options = { method, headers };
+            if (body) {
+                options.body = JSON.stringify(body);
+            }
+            
+            const response = await fetch(`${CONFIG.baseUrl}${endpoint}`, options);
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({ detail: 'Request failed' }));
+                throw new Error(error.detail || 'Request failed');
+            }
+            return response.json();
+        }
+
+        // Render helpers
+        function renderOption(item, type) {
+            const li = document.createElement('li');
+            li.className = 'option-item';
+            li.dataset.id = item.id;
+            li.dataset.name = item.display_name;
+            
+            let meta = '';
+            if (type === 'business' && item.email) {
+                meta = item.email;
+            } else if (type === 'service' && item.default_duration) {
+                meta = `Duration: ${item.default_duration}`;
+            } else if (type === 'staff' && item.email) {
+                meta = item.email;
+            }
+            
+            li.innerHTML = `
+                <div class="option-radio"></div>
+                <div class="option-details">
+                    <div class="option-name">${escapeHtml(item.display_name)}</div>
+                    ${meta ? `<div class="option-meta">${escapeHtml(meta)}</div>` : ''}
+                </div>
+            `;
+            
+            li.addEventListener('click', () => selectOption(li, type));
+            return li;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function selectOption(element, type) {
+            // Deselect all in this list
+            element.parentElement.querySelectorAll('.option-item').forEach(el => el.classList.remove('selected'));
+            element.classList.add('selected');
+            
+            const id = element.dataset.id;
+            const name = element.dataset.name;
+            
+            if (type === 'business') {
+                selectedBusiness = { id, name };
+            } else if (type === 'service') {
+                selectedService = { id, name };
+            } else if (type === 'staff') {
+                selectedStaff = { id, name };
+            }
+            
+            document.getElementById('btn-next').disabled = false;
+        }
+
+        function updateStepIndicators() {
+            document.querySelectorAll('.step-dot').forEach(dot => {
+                const step = parseInt(dot.dataset.step);
+                dot.classList.remove('active', 'completed');
+                if (step === currentStep) {
+                    dot.classList.add('active');
+                } else if (step < currentStep) {
+                    dot.classList.add('completed');
+                }
+            });
+        }
+
+        function showStep(step) {
+            document.querySelectorAll('.step').forEach(el => el.classList.remove('active'));
+            document.getElementById(`step-${step}`).classList.add('active');
+            
+            // Update buttons
+            document.getElementById('btn-back').style.display = step > 1 && step <= 3 ? 'inline-block' : 'none';
+            document.getElementById('btn-next').textContent = step === 3 ? 'Save & Continue' : 'Next';
+            document.getElementById('btn-next').disabled = true;
+            
+            // Check if already selected
+            if (step === 1 && selectedBusiness) {
+                document.getElementById('btn-next').disabled = false;
+            } else if (step === 2 && selectedService) {
+                document.getElementById('btn-next').disabled = false;
+            } else if (step === 3 && selectedStaff) {
+                document.getElementById('btn-next').disabled = false;
+            }
+            
+            currentStep = step;
+            updateStepIndicators();
+        }
+
+        // Step navigation
+        async function goNext() {
+            if (currentStep === 1) {
+                showStep(2);
+                await loadServices();
+            } else if (currentStep === 2) {
+                showStep(3);
+                await loadStaff();
+            } else if (currentStep === 3) {
+                await saveConfiguration();
+            }
+        }
+
+        function goBack() {
+            if (currentStep === 2) {
+                showStep(1);
+            } else if (currentStep === 3) {
+                showStep(2);
+            }
+        }
+
+        // Load data functions
+        async function loadBusinesses() {
+            const loadingEl = document.getElementById('businesses-loading');
+            const errorEl = document.getElementById('businesses-error');
+            const listEl = document.getElementById('businesses-list');
+            
+            loadingEl.style.display = 'block';
+            errorEl.style.display = 'none';
+            listEl.innerHTML = '';
+            
+            try {
+                const data = await apiCall(`/auth/microsoft/list-businesses?user_id=${CONFIG.userId}`);
+                businesses = Array.isArray(data) ? data : (data.businesses || []);
+                loadingEl.style.display = 'none';
+                
+                if (businesses.length === 0) {
+                    listEl.innerHTML = '<div class="empty-message">No booking businesses found. Please set up Microsoft Bookings first.</div>';
+                    return;
+                }
+                
+                // Auto-select if only one
+                if (businesses.length === 1) {
+                    selectedBusiness = { id: businesses[0].id, name: businesses[0].display_name };
+                    const item = renderOption(businesses[0], 'business');
+                    item.classList.add('selected');
+                    listEl.appendChild(item);
+                    document.getElementById('btn-next').disabled = false;
+                    
+                    // Auto-advance
+                    setTimeout(() => goNext(), 500);
+                    return;
+                }
+                
+                businesses.forEach(biz => {
+                    listEl.appendChild(renderOption(biz, 'business'));
+                });
+            } catch (error) {
+                loadingEl.style.display = 'none';
+                errorEl.textContent = error.message;
+                errorEl.style.display = 'block';
+            }
+        }
+
+        async function loadServices() {
+            const loadingEl = document.getElementById('services-loading');
+            const errorEl = document.getElementById('services-error');
+            const listEl = document.getElementById('services-list');
+            
+            loadingEl.style.display = 'block';
+            errorEl.style.display = 'none';
+            listEl.innerHTML = '';
+            selectedService = null;
+            
+            try {
+                const data = await apiCall(`/auth/microsoft/list-services?user_id=${CONFIG.userId}&business_id=${encodeURIComponent(selectedBusiness.id)}`);
+                services = Array.isArray(data) ? data : (data.services || []);
+                loadingEl.style.display = 'none';
+                
+                if (services.length === 0) {
+                    listEl.innerHTML = '<div class="empty-message">No services found for this business.</div>';
+                    return;
+                }
+                
+                // Auto-select if only one
+                if (services.length === 1) {
+                    selectedService = { id: services[0].id, name: services[0].display_name };
+                    const item = renderOption(services[0], 'service');
+                    item.classList.add('selected');
+                    listEl.appendChild(item);
+                    document.getElementById('btn-next').disabled = false;
+                    
+                    // Auto-advance
+                    setTimeout(() => goNext(), 500);
+                    return;
+                }
+                
+                services.forEach(svc => {
+                    listEl.appendChild(renderOption(svc, 'service'));
+                });
+            } catch (error) {
+                loadingEl.style.display = 'none';
+                errorEl.textContent = error.message;
+                errorEl.style.display = 'block';
+            }
+        }
+
+        async function loadStaff() {
+            const loadingEl = document.getElementById('staff-loading');
+            const errorEl = document.getElementById('staff-error');
+            const listEl = document.getElementById('staff-list');
+            
+            loadingEl.style.display = 'block';
+            errorEl.style.display = 'none';
+            listEl.innerHTML = '';
+            selectedStaff = null;
+            
+            try {
+                const data = await apiCall(`/auth/microsoft/staff?user_id=${CONFIG.userId}&business_id=${encodeURIComponent(selectedBusiness.id)}`);
+                staffMembers = Array.isArray(data) ? data : (data.staff || []);
+                loadingEl.style.display = 'none';
+                
+                if (staffMembers.length === 0) {
+                    listEl.innerHTML = '<div class="empty-message">No staff members found for this business.</div>';
+                    // Allow saving without staff
+                    document.getElementById('btn-next').disabled = false;
+                    return;
+                }
+                
+                // Auto-select if only one
+                if (staffMembers.length === 1) {
+                    selectedStaff = { id: staffMembers[0].id, name: staffMembers[0].display_name };
+                    const item = renderOption(staffMembers[0], 'staff');
+                    item.classList.add('selected');
+                    listEl.appendChild(item);
+                    document.getElementById('btn-next').disabled = false;
+                    
+                    // Auto-save since all steps complete
+                    setTimeout(() => saveConfiguration(), 500);
+                    return;
+                }
+                
+                staffMembers.forEach(staff => {
+                    listEl.appendChild(renderOption(staff, 'staff'));
+                });
+            } catch (error) {
+                loadingEl.style.display = 'none';
+                errorEl.textContent = error.message;
+                errorEl.style.display = 'block';
+            }
+        }
+
+        async function saveConfiguration() {
+            const btnNext = document.getElementById('btn-next');
+            btnNext.disabled = true;
+            btnNext.textContent = 'Saving...';
+            
+            try {
+                await apiCall('/auth/microsoft/save-config', 'POST', {
+                    user_id: CONFIG.userId,
+                    business_id: selectedBusiness.id,
+                    business_name: selectedBusiness.name,
+                    service_id: selectedService?.id || null,
+                    staff_member_id: selectedStaff?.id || null
+                });
+                
+                // Show success and redirect
+                showStep('success');
+                document.querySelector('.footer').style.display = 'none';
+                
+                setTimeout(() => {
+                    redirectToFrontend(true);
+                }, 1500);
+            } catch (error) {
+                btnNext.disabled = false;
+                btnNext.textContent = 'Save & Continue';
+                alert('Failed to save configuration: ' + error.message);
+            }
+        }
+
+        function skipConfiguration() {
+            redirectToFrontend(false);
+        }
+
+        function redirectToFrontend(configured) {
+            let url = CONFIG.frontendRedirect;
+            const separator = url.includes('?') ? '&' : '?';
+            url += `${separator}status=success&provider=microsoft&frontend_id=${encodeURIComponent(CONFIG.frontendId)}`;
+            if (!configured) {
+                url += '&skipped=true';
+            }
+            window.location.href = url;
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadBusinesses();
+        });
+    </script>
+</body>
+</html>

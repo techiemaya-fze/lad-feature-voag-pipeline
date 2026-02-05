@@ -1,0 +1,16 @@
+Timestamp: 2026-01-31T08:39:19.326059
+Error: Unterminated string starting at: line 2 column 17 (char 18)
+Prompt (first 500 chars): Extract lead information from this conversation.
+
+CONVERSATION:
+
+[17:27:07] Agent: Hi, this is Nithya from Sasya Spaces, Dubai. I hope I'm catching you at a good time?
+[17:27:08] User: Yes.
+[17:27:16] User: Okay.
+[17:27:20] Agent: We got a list of profiles, and I think... your profile might be eligible for Dubai Golden Visa. We are currently assisting investors with Dubai real estate opportunities that qualify for the UAE Golden Visa.
+[17:27:22] User: Okay.
+[17:27:30] Agent: Just to confirm, are
+============================================================
+Raw Response:
+{
+  "first_name": "

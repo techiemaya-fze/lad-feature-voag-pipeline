@@ -194,6 +194,18 @@ class StoreInfo:
     display_name: str
 
 
+@dataclass
+class StoreStats:
+    """Storage statistics for a FileSearchStore."""
+    name: str
+    display_name: str
+    size_bytes: int = 0
+    active_documents_count: int = 0
+    pending_documents_count: int = 0
+    failed_documents_count: int = 0
+    create_time: Optional[str] = None
+    update_time: Optional[str] = None
+
 class FileSearchTool:
     """
     Wrapper for Google Gemini File Search API.
@@ -311,6 +323,38 @@ class FileSearchTool:
             )
         except Exception as exc:
             logger.error("Failed to get store '%s': %s", store_name, exc, exc_info=True)
+            return None
+
+    async def get_store_stats(self, store_name: str) -> Optional[StoreStats]:
+        """
+        Get storage statistics for a FileSearchStore.
+        
+        Returns size, document counts, and timestamps from Gemini API.
+        
+        Args:
+            store_name: The store's resource name (e.g., "fileSearchStores/xxx")
+            
+        Returns:
+            StoreStats with storage info or None if not found
+        """
+        client = self._ensure_client()
+
+        try:
+            store = client.file_search_stores.get(name=store_name)
+            
+            # Extract stats fields from the store object
+            return StoreStats(
+                name=store.name,
+                display_name=getattr(store, "display_name", store.name),
+                size_bytes=int(getattr(store, "size_bytes", 0) or 0),
+                active_documents_count=int(getattr(store, "active_documents_count", 0) or 0),
+                pending_documents_count=int(getattr(store, "pending_documents_count", 0) or 0),
+                failed_documents_count=int(getattr(store, "failed_documents_count", 0) or 0),
+                create_time=str(getattr(store, "create_time", None)) if getattr(store, "create_time", None) else None,
+                update_time=str(getattr(store, "update_time", None)) if getattr(store, "update_time", None) else None,
+            )
+        except Exception as exc:
+            logger.error("Failed to get store stats '%s': %s", store_name, exc, exc_info=True)
             return None
 
     # =========================================================================
@@ -504,59 +548,89 @@ class FileSearchTool:
         """
         List all documents in a FileSearchStore.
         
-        Note: This uses REST API as SDK may not expose document listing.
-        
         Args:
-            store_name: The store's resource name
+            store_name: The store's resource name (e.g., "fileSearchStores/xxx")
             
         Returns:
             List of DocumentInfo objects
         """
         client = self._ensure_client()
 
-        # The SDK exposes documents through file_search_stores
-        # Try to iterate through documents
         try:
             docs = []
-            # SDK may vary - try common patterns
-            store = client.file_search_stores.get(name=store_name)
+            # Use the correct API: file_search_stores.documents.list(parent=store_name)
+            for doc in client.file_search_stores.documents.list(parent=store_name):
+                docs.append(DocumentInfo(
+                    name=doc.name,
+                    display_name=getattr(doc, "display_name", ""),
+                    state=getattr(doc, "state", "UNKNOWN"),
+                    mime_type=getattr(doc, "mime_type", None),
+                    size_bytes=getattr(doc, "size_bytes", None),
+                ))
             
-            # If documents are accessible via the store
-            if hasattr(store, "documents"):
-                for doc in store.documents:
-                    docs.append(DocumentInfo(
-                        name=doc.name,
-                        display_name=getattr(doc, "display_name", doc.name),
-                        state=getattr(doc, "state", "UNKNOWN"),
-                        mime_type=getattr(doc, "mime_type", None),
-                        size_bytes=getattr(doc, "size_bytes", None),
-                    ))
-            
+            logger.info("Listed %d documents in store '%s'", len(docs), store_name)
             return docs
         except Exception as exc:
-            logger.warning("Failed to list documents for '%s': %s", store_name, exc)
-            # Return empty list on failure - documents may still exist
-            return []
+            logger.error("Failed to list documents for '%s': %s", store_name, exc, exc_info=True)
+            raise FileSearchToolError(f"Failed to list documents: {exc}") from exc
 
     async def delete_document(
         self,
         document_name: str,
-        force: bool = True,
     ) -> bool:
         """
         Delete a document from a FileSearchStore.
         
         Args:
-            document_name: Full document resource name
-            force: If True, force delete even if has chunks
+            document_name: Full document resource name 
+                           (e.g., "fileSearchStores/xxx/documents/yyy")
             
         Returns:
             True if deleted successfully
         """
-        # Documents API deletion - may need REST call
-        # For now, log and return success (documents expire with store deletion)
-        logger.info("Document deletion requested: %s (force=%s)", document_name, force)
-        return True
+        client = self._ensure_client()
+
+        try:
+            # force=True is required to delete documents that have content/chunks
+            # SDK requires force to be passed via config parameter
+            client.file_search_stores.documents.delete(
+                name=document_name, 
+                config={"force": True}
+            )
+            logger.info("Deleted document: %s", document_name)
+            return True
+        except Exception as exc:
+            logger.error("Failed to delete document '%s': %s", document_name, exc, exc_info=True)
+            raise FileSearchToolError(f"Failed to delete document: {exc}") from exc
+
+    async def get_document(
+        self,
+        document_name: str,
+    ) -> Optional[DocumentInfo]:
+        """
+        Get a specific document's info from a FileSearchStore.
+        
+        Args:
+            document_name: Full document resource name
+                           (e.g., "fileSearchStores/xxx/documents/yyy")
+            
+        Returns:
+            DocumentInfo or None if not found
+        """
+        client = self._ensure_client()
+
+        try:
+            doc = client.file_search_stores.documents.get(name=document_name)
+            return DocumentInfo(
+                name=doc.name,
+                display_name=getattr(doc, "display_name", ""),
+                state=getattr(doc, "state", "UNKNOWN"),
+                mime_type=getattr(doc, "mime_type", None),
+                size_bytes=getattr(doc, "size_bytes", None),
+            )
+        except Exception as exc:
+            logger.error("Failed to get document '%s': %s", document_name, exc, exc_info=True)
+            return None
 
     # =========================================================================
     # HELPERS

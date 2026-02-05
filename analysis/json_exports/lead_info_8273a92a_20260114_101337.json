@@ -1,0 +1,12 @@
+{
+  "call_id": "8273a92a-4d84-41ef-97c2-087a79b6c910",
+  "extracted_at": "2026-01-14T10:13:37.258365",
+  "lead_info": {
+    "first_name": "Sahil",
+    "full_name": "Sahil",
+    "education_level": "10th standard",
+    "curriculum": "CBSE",
+    "program_interested": "Economics",
+    "country_interested": "Germany"
+  }
+}

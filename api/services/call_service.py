@@ -625,10 +625,12 @@ class CallService:
         
         # ===== CALL ROUTING VALIDATION =====
         # Validate and format to_number based on from_number's carrier rules
+        # Uses tenant_id for multi-tenant isolation in number lookup
         routing_result = validate_and_format_call(
             from_number=from_number,
             to_number=to_number,
-            db_config=get_db_config()
+            db_config=get_db_config(),
+            tenant_id=tenant_id,  # Multi-tenant filtering
         )
         
         if not routing_result.success:
@@ -648,11 +650,11 @@ class CallService:
         # Lookup from_number_id from voice_agent_numbers table
         from_number_id = None
         if from_number:
-            from_number_id = await self._number_storage.find_number_by_phone(from_number)
+            from_number_id = await self._number_storage.find_number_by_phone(from_number, tenant_id)
             if from_number_id:
                 logger.debug(f"Resolved from_number {from_number} to from_number_id={from_number_id}")
             else:
-                logger.warning(f"Could not find from_number_id for from_number={from_number}")
+                logger.warning(f"Could not find from_number_id for from_number={from_number} (tenant_id={tenant_id[:8] if tenant_id else 'None'}...)")
         
         # Create call log
         call_log_id = await self.create_call_log(

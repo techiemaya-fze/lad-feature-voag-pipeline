@@ -515,6 +515,189 @@ async def trigger_lead_bookings_extraction(
 
 
 # =============================================================================
+# SUBMIT ANALYSIS TO MAIN API (STABLE PROCESS)
+# =============================================================================
+
+async def _submit_analysis_to_main_api(
+    call_log_id: str,
+    transcription_data: dict | None,
+    duration_seconds: float | None,
+    call_details: dict | None,
+    tenant_id: str | None,
+    lead_id: str | None,
+) -> None:
+    """
+    Submit analysis request to the main API process.
+    
+    The main API runs as a stable systemctl service that doesn't exit after
+    each call. By offloading analysis to that process, we ensure analysis
+    completes even after the worker process exits.
+    
+    This is fire-and-forget from the worker's perspective - we don't wait
+    for analysis to complete, just for the request to be accepted.
+    
+    Args:
+        call_log_id: The call log ID to analyze
+        transcription_data: Transcription dict (can be empty for failed calls)
+        duration_seconds: Call duration
+        call_details: Full call record
+        tenant_id: Tenant ID for multi-tenancy
+        lead_id: Lead ID for vertical routing
+    """
+    import os
+    import json
+    import httpx
+    from datetime import datetime, date
+    from decimal import Decimal
+    from uuid import UUID
+    
+    def json_serial(obj):
+        """JSON serializer for objects not serializable by default.
+        
+        Handles common types from database records:
+        - datetime/date → ISO format string
+        - Decimal → float
+        - UUID → string
+        - bytes → base64 string
+        - set → list
+        """
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        if isinstance(obj, Decimal):
+            return float(obj)
+        if isinstance(obj, UUID):
+            return str(obj)
+        if isinstance(obj, bytes):
+            import base64
+            return base64.b64encode(obj).decode('utf-8')
+        if isinstance(obj, set):
+            return list(obj)
+        # For any other unknown type, convert to string as fallback
+        try:
+            return str(obj)
+        except Exception:
+            raise TypeError(f"Type {type(obj)} not serializable")
+    
+    # Get main API URL from environment (same as batch completion uses)
+    main_api_url = os.getenv("MAIN_API_BASE_URL", "http://localhost:8000")
+    endpoint = f"{main_api_url}/analysis/run-background-analysis"
+    
+    # Prepare request payload
+    payload = {
+        "call_log_id": str(call_log_id),
+        "transcription_data": transcription_data or {},
+        "duration_seconds": duration_seconds,
+        "call_details": call_details,
+        "tenant_id": str(tenant_id) if tenant_id else None,
+        "lead_id": str(lead_id) if lead_id else None,
+    }
+    
+    # Fire-and-forget: send request without waiting for response
+    # Worker should not block on analysis - just submit and move on
+    asyncio.create_task(_fire_analysis_request(
+        endpoint=endpoint,
+        payload_json=json.dumps(payload, default=json_serial),
+        internal_frontend_id=os.getenv("INTERNAL_FRONTEND_ID", "dev"),
+        internal_api_key=os.getenv("INTERNAL_API_KEY", os.getenv("DEV_API_KEY", "")),
+        call_log_id=call_log_id,
+    ))
+
+
+async def _fire_analysis_request(
+    endpoint: str,
+    payload_json: str,
+    internal_frontend_id: str,
+    internal_api_key: str,
+    call_log_id: str,
+) -> None:
+    """
+    Actually send the HTTP request to main API. This runs as a background task
+    so the worker cleanup can continue without waiting.
+    """
+    import httpx
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                endpoint,
+                content=payload_json,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Frontend-ID": internal_frontend_id,
+                    "X-API-Key": internal_api_key,
+                }
+            )
+            
+            if response.status_code == 200:
+                logger.debug(
+                    "Analysis request accepted by main API: call_log_id=%s",
+                    call_log_id
+                )
+            else:
+                logger.error(
+                    "Main API rejected analysis request: call_log_id=%s, status=%d, response=%s",
+                    call_log_id, response.status_code, response.text[:500]
+                )
+    except httpx.TimeoutException:
+        # Timeout is acceptable - the request was likely received
+        logger.warning(
+            "Timeout submitting analysis to main API (request likely received): call_log_id=%s",
+            call_log_id
+        )
+    except Exception as exc:
+        # Log but don't fail - analysis is optional
+        logger.error(
+            "Failed to submit analysis to main API: call_log_id=%s, error=%s",
+            call_log_id, exc, exc_info=True
+        )
+
+
+# =============================================================================
+# BACKGROUND ANALYSIS RUNNER (FIRE-AND-FORGET)
+# =============================================================================
+
+async def _run_analysis_background(
+    ctx: CleanupContext,
+    transcription_data: dict | None,
+    duration_seconds: float | None,
+    call_details: dict | None,
+) -> None:
+    """
+    Run all post-call analysis tasks in background.
+    
+    This is a fire-and-forget task that runs independently of cleanup.
+    It handles its own errors and saves results to DB.
+    
+    Includes:
+    1. Post-call sentiment/summary analysis (saves to voice_call_analysis)
+    2. Lead bookings extraction (saves to lead_bookings)
+    
+    Args:
+        ctx: Cleanup context (immutable after cleanup completes)
+        transcription_data: Transcription dict
+        duration_seconds: Call duration
+        call_details: Full call record
+    """
+    call_log_id = ctx.call_log_id
+    
+    try:
+        # 1. Run post-call analysis (sentiment, summary, lead score, etc.)
+        await trigger_post_call_analysis(ctx, transcription_data, duration_seconds, call_details)
+        logger.info("Post-call analysis completed for call_log_id=%s", call_log_id)
+    except Exception as exc:
+        logger.error("Background post-call analysis failed for call_log_id=%s: %s", call_log_id, exc, exc_info=True)
+    
+    try:
+        # 2. Extract and save lead bookings
+        await trigger_lead_bookings_extraction(ctx, transcription_data, call_details)
+        logger.info("Lead bookings extraction completed for call_log_id=%s", call_log_id)
+    except Exception as exc:
+        logger.error("Background lead bookings extraction failed for call_log_id=%s: %s", call_log_id, exc, exc_info=True)
+    
+    logger.info("All background analysis tasks completed for call_log_id=%s", call_log_id)
+
+
+# =============================================================================
 # AUDIO CLEANUP
 # =============================================================================
 
@@ -605,21 +788,29 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
         except Exception:
             pass
     
-    # 6. Run post-call analysis
-    await trigger_post_call_analysis(ctx, transcription_data, duration_seconds, call_details)
+    # 6. Run post-call analysis (FIRE-AND-FORGET - via Main API)
+    # Instead of running in a daemon thread (which dies with worker process),
+    # we send the analysis request to the main API which runs in a stable,
+    # long-running process. This ensures analysis completes even after worker exits.
+    await _submit_analysis_to_main_api(
+        call_log_id=ctx.call_log_id,
+        transcription_data=transcription_data,
+        duration_seconds=duration_seconds,
+        call_details=call_details,
+        tenant_id=ctx.tenant_id,
+        lead_id=ctx.lead_id,
+    )
+    logger.info("Post-call analysis submitted to main API for call_log_id=%s", ctx.call_log_id)
     
-    # 7. Extract and save lead bookings
-    await trigger_lead_bookings_extraction(ctx, transcription_data, call_details)
-    
-    # 8. Stop background audio
+    # 7. Stop background audio
     await stop_background_audio(ctx)
     
-    # 9. Release semaphore
+    # 8. Release semaphore
     if ctx.acquired_call_slot and ctx.call_semaphore:
         ctx.call_semaphore.release()
         logger.info("Released semaphore for job %s", ctx.job_id)
     
-    # 10. Update batch entry status and check for batch completion
+    # 9. Update batch entry status and check for batch completion
     # If cleanup_and_save is called, the call completed normally -> status is "ended"
     # (call_details has the OLD status from before update_call_status was called)
     await update_batch_on_call_complete(ctx, "ended")

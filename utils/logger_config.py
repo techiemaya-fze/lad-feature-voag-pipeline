@@ -140,6 +140,15 @@ def configure_non_blocking_logging(
             "aiohttp",
             "google.auth",
             "google.auth.transport",
+            "google_genai",
+            "google_genai._api_client",
+            "google_genai.models",
+            # Analysis modules - keep at INFO to avoid polluting main.py logs
+            "analysis.merged_analytics",
+            "analysis.gemini_client",
+            "analysis.lead_info_extractor",
+            "analysis.lead_bookings_extractor",
+            "analysis.sentiment_analyzer",
         ]
         for logger_name in noisy_loggers:
             logging.getLogger(logger_name).setLevel(logging.WARNING)

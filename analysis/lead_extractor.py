@@ -60,9 +60,9 @@ class LeadInfoExtractor:
             return 0
         return len(text) // 4
     
-    def _call_gemini_api(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 500) -> Optional[str]:
+    def _call_gemini_text(self, prompt: str, temperature: float = 0.2, max_output_tokens: int = 8192) -> Optional[str]:
         """
-        Call Gemini 2.0 Flash API - matches merged_analytics.py pattern
+        Call Gemini API using google-genai library for plain text generation
         
         Args:
             prompt: The prompt to send to Gemini
@@ -76,71 +76,38 @@ class LeadInfoExtractor:
             logger.warning("Gemini API key not available, skipping API call")
             return None
         
-        input_tokens = self._estimate_tokens(prompt)
-        logger.debug(f"Lead extraction API call - Input tokens: ~{input_tokens}, Max output: {max_output_tokens}")
-        
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={self.gemini_api_key}"
+            from google import genai
+            from google.genai import types
             
-            headers = {
-                "Content-Type": "application/json"
-            }
+            client = genai.Client(api_key=self.gemini_api_key)
             
-            data = {
-                "contents": [{
-                    "parts": [{"text": prompt}]
-                }],
-                "generationConfig": {
-                    "temperature": temperature,
-                    "maxOutputTokens": max_output_tokens
-                }
-            }
+            response = client.models.generate_content(
+                model="gemini-flash-latest",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                )
+            )
             
-            # 10 second timeout - matches merged_analytics.py
-            response = requests.post(url, headers=headers, json=data, timeout=10)
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                logger.debug("Lead extraction API call successful")
+            if response.text:
+                logger.debug(f"API response length: {len(response.text)} chars")
                 
-                # Track costs if cost_tracker is provided (from parent CallAnalytics)
+                # Track costs if cost_tracker is provided
                 if self.cost_tracker is not None:
                     self.cost_tracker['api_calls'] += 1
-                    
-                    # Get actual token counts from response if available
-                    if "usageMetadata" in response_data:
-                        usage = response_data["usageMetadata"]
-                        if "promptTokenCount" in usage:
-                            self.cost_tracker['total_input_tokens'] += usage["promptTokenCount"]
-                        else:
-                            self.cost_tracker['total_input_tokens'] += input_tokens
-                        if "candidatesTokenCount" in usage:
-                            self.cost_tracker['total_output_tokens'] += usage["candidatesTokenCount"]
-                    else:
-                        self.cost_tracker['total_input_tokens'] += input_tokens
+                    if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                        if hasattr(response.usage_metadata, 'prompt_token_count'):
+                            self.cost_tracker['total_input_tokens'] += response.usage_metadata.prompt_token_count
+                        if hasattr(response.usage_metadata, 'candidates_token_count'):
+                            self.cost_tracker['total_output_tokens'] += response.usage_metadata.candidates_token_count
                 
-                if "candidates" in response_data and len(response_data["candidates"]) > 0:
-                    if "content" in response_data["candidates"][0]:
-                        if "parts" in response_data["candidates"][0]["content"]:
-                            output_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                            logger.debug(f"API response length: {len(output_text)} chars")
-                            
-                            # Track output tokens if no usageMetadata
-                            if self.cost_tracker is not None and "usageMetadata" not in response_data:
-                                output_tokens = self._estimate_tokens(output_text)
-                                self.cost_tracker['total_output_tokens'] += output_tokens
-                            
-                            return output_text
-                
-                if "promptFeedback" in response_data:
-                    logger.warning(f"Gemini API warning: {response_data.get('promptFeedback', {})}")
-            else:
-                logger.error(f"Gemini API error: {response.status_code} - {response.text[:200]}")
+                return response.text.strip()
+            
+            logger.warning("Gemini API returned empty response")
             return None
             
-        except requests.exceptions.Timeout:
-            logger.error("Gemini API timeout after 10 seconds")
-            return None
         except Exception as e:
             logger.error(f"Gemini API exception: {str(e)}", exc_info=True)
             return None
@@ -342,7 +309,7 @@ CRITICAL RULES:
 """
         
         logger.debug("Calling Gemini API for lead info extraction...")
-        result = self._call_gemini_api(prompt, temperature=0.2, max_output_tokens=500)
+        result = self._call_gemini_text(prompt, temperature=0.2, max_output_tokens=8192)
         
         if not result:
             logger.warning("LLM did not return lead information")

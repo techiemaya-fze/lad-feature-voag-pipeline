@@ -1,0 +1,18 @@
+{
+  "tenant_id": "734cd516-e252-4728-9c52-4663ee552653",
+  "lead_id": "15edc307-a954-4674-8be9-5b8876df9c11",
+  "student_parent_name": null,
+  "parent_designation": null,
+  "program_interested_in": null,
+  "country_interested": null,
+  "intake_year": 0,
+  "intake_month": null,
+  "created_at": "2026-01-31T11:39:26.001221",
+  "updated_at": "2026-01-31T11:39:26.001221",
+  "is_deleted": false,
+  "metadata": {
+    "followup_time": "tomorrow at 6:00 PM GST",
+    "summary_last_call": "Agent contacted the user regarding Dubai Golden Visa and real estate investment; user requested a callback for the following day due to being busy.",
+    "additional_notes": "The conversation is focused on real estate investment and the UAE Golden Visa rather than educational programs."
+  }
+}

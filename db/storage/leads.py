@@ -77,6 +77,100 @@ class LeadStorage:
         parts = [n for n in [first_name, last_name] if n]
         return " ".join(parts) if parts else None
 
+    def _normalize_phone(self, phone: str | None) -> str | None:
+        """
+        Normalize phone number to include country code using E.164 format.
+        
+        Implements deterministic rules matching expert reference:
+        - Cleans formatting (parentheses, spaces, dashes)
+        - Normalizes international exit codes (00, 011 → +)
+        - Detects 0-prefix for UAE (10d) and India (11d)
+        - Applies smart heuristics for bare local numbers
+        
+        Args:
+            phone: Raw phone number string
+            
+        Returns:
+            Normalized phone with country code (e.g., '+971506341191')
+        """
+        import re
+        
+        if not phone:
+            return None
+        
+        # STEP 1: Clean the phone number - remove all non-digits except leading +
+        cleaned = str(phone).strip()
+        # Keep leading + if present, strip everything else
+        if cleaned.startswith('+'):
+            cleaned = '+' + re.sub(r'[^\d]', '', cleaned[1:])
+        else:
+            cleaned = re.sub(r'[^\d]', '', cleaned)
+        
+        # STEP 2: Normalize international exit codes (00, 011 → +)
+        cleaned = re.sub(r'^(00|011)', '+', cleaned)
+        
+        if not cleaned or cleaned == '+':
+            return None
+        
+        # STEP 3: If already has + prefix, validate and return
+        if cleaned.startswith('+'):
+            # Already normalized with country code
+            return cleaned
+        
+        # Extract digits only for pattern matching
+        digits = cleaned
+        
+        # PRIORITY 1: Handle 0-prefix for India (11 digits) and UAE (10 digits)
+        # This MUST come before country code matching to avoid false positives
+        if digits.startswith('0'):
+            if len(digits) == 11:
+                # India: 0 + 10 digit number
+                return f"+91{digits[1:]}"
+            elif len(digits) == 10:
+                # UAE: 0 + 9 digit number
+                return f"+971{digits[1:]}"
+        
+        # PRIORITY 2: Known country code patterns (longer prefixes first)
+        # IMPORTANT: 971 must come before 91, which must come before 1
+        country_codes = [
+            ('971', '+971', 9),   # UAE: 971 + 9 digits = 12 total
+            ('91', '+91', 10),    # India: 91 + 10 digits = 12 total
+            ('44', '+44', 10),    # UK
+            ('65', '+65', 8),     # Singapore
+            ('61', '+61', 9),     # Australia
+            ('1', '+1', 10),      # USA/Canada: 1 + 10 digits = 11 total (LAST due to short prefix)
+        ]
+        
+        # Check if starts with country code (without +)
+        for prefix, cc_with_plus, expected_base_len in country_codes:
+            if digits.startswith(prefix):
+                base = digits[len(prefix):]
+                # STRICT check: base must be exactly the expected length
+                if len(base) == expected_base_len:
+                    return f"{cc_with_plus}{base}"
+        
+        # PRIORITY 3: Smart heuristics for bare local numbers (Expert Logic)
+        # These are numbers without country code or trunk prefix
+        if len(digits) == 9:
+            # 9 digits → UAE national number
+            return f"+971{digits}"
+        elif len(digits) == 10:
+            # 10 digits → ambiguous between India and US
+            # Heuristic: India mobile numbers typically start with 6-9
+            if digits[0] in '6789':
+                return f"+91{digits}"
+            else:
+                # US/Canada or other India numbers
+                return f"+1{digits}"
+        
+        # FALLBACK: If >= 10 digits but no pattern matched, add + prefix
+        # (This handles edge cases but should rarely be hit with above logic)
+        if len(digits) >= 10:
+            return f"+{digits}"
+        
+        # Short number (< 10 digits) - return as-is (could be extension, short code, etc.)
+        return phone
+
     # =========================================================================
     # READ
     # =========================================================================
@@ -217,6 +311,12 @@ class LeadStorage:
             logger.error("tenant_id is required for create_lead")
             return None
         
+        # Normalize phone number (0-prefix -> +971/+91)
+        normalized_phone = self._normalize_phone(phone_number)
+        if not normalized_phone:
+            logger.error(f"Invalid phone number: {phone_number}")
+            return None
+        
         # Handle name splitting
         if name and not first_name:
             first_name, last_name = self._split_name(name)
@@ -233,7 +333,7 @@ class LeadStorage:
                         """,
                         (
                             tenant_id,
-                            phone_number,
+                            normalized_phone,
                             first_name,
                             last_name,
                             email,
@@ -251,7 +351,7 @@ class LeadStorage:
                         lead = dict(result)
                         lead['name'] = self._combine_name(lead.get('first_name'), lead.get('last_name'))
                         lead['lead_number'] = lead.get('phone')
-                        logger.info(f"Created new lead: id={lead['id']}, phone={phone_number}")
+                        logger.info(f"Created new lead: id={lead['id']}, phone={normalized_phone}")
                         return lead
                     
                     logger.warning(f"No lead returned when creating phone={phone_number}")
@@ -298,9 +398,15 @@ class LeadStorage:
             logger.error("tenant_id is required for find_or_create_lead")
             return None
         
+        # Normalize phone number (0-prefix -> +971/+91) for consistent lookup
+        normalized_phone = self._normalize_phone(phone_number)
+        if not normalized_phone:
+            logger.error(f"Invalid phone number: {phone_number}")
+            return None
+        
         try:
-            # First try to find existing lead
-            existing_lead = await self.get_lead_by_phone(phone_number, tenant_id)
+            # First try to find existing lead with normalized phone
+            existing_lead = await self.get_lead_by_phone(normalized_phone, tenant_id)
             
             if existing_lead:
                 logger.info(f"Using existing lead: id={existing_lead['id']}, phone={phone_number}")
@@ -326,11 +432,11 @@ class LeadStorage:
                 
                 return existing_lead
             
-            # If not found, create new lead
-            logger.info(f"Creating new lead for phone: {phone_number}")
+            # If not found, create new lead with normalized phone
+            logger.info(f"Creating new lead for phone: {normalized_phone}")
             return await self.create_lead(
                 tenant_id=tenant_id,
-                phone_number=phone_number,
+                phone_number=normalized_phone,
                 first_name=first_name,
                 last_name=last_name,
                 name=name,

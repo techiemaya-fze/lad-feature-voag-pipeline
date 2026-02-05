@@ -1,0 +1,14 @@
+Timestamp: 2026-01-31T08:57:22.012132
+Error: Expecting value: line 1 column 1 (char 0)
+Prompt (first 500 chars): Analyze the sentiment of this sales conversation and provide a sentiment score.
+
+CONVERSATION:
+[agent]: Hi, this is Nithya from Sasya Spaces, Dubai. I hope I'm catching you at a good time?
+[user]: Yes.
+[user]: Okay.
+[agent]: We got a list of profiles, and I think... your profile might be eligible for Dubai Golden Visa. We are currently assisting investors with Dubai real estate opportunities that qualify for the UAE Golden Visa.
+[user]: Okay.
+[agent]: Just to confirm, are you currently exploring
+============================================================
+Raw Response:
+Here is the

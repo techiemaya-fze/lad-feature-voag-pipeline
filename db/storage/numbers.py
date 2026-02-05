@@ -35,12 +35,13 @@ class NumberStorage:
     
     # Note: Uses get_db_connection() context manager for automatic cleanup
     
-    async def find_number_by_phone(self, phone_number: str) -> Optional[str]:
+    async def find_number_by_phone(self, phone_number: str, tenant_id: str | None = None) -> Optional[str]:
         """
         Find number ID by phone number string
         
         Args:
             phone_number: Phone number to search for (e.g., "+919876543210")
+            tenant_id: Optional tenant ID for multi-tenant filtering
             
         Returns:
             number_id (UUID string) if found, None otherwise
@@ -58,8 +59,19 @@ class NumberStorage:
             
             with get_db_connection(self.db_config) as conn:
                 with conn.cursor() as cursor:
-                    # Search by country_code and base_number (new lad_dev schema)
-                    if country_code:
+                    # Search by country_code and base_number with optional tenant_id filter
+                    if country_code and tenant_id:
+                        cursor.execute(
+                            """
+                            SELECT id
+                            FROM lad_dev.voice_agent_numbers
+                            WHERE country_code = %s AND base_number = %s AND tenant_id = %s
+                            LIMIT 1
+                            """,
+                            (country_code, base_number, tenant_id)
+                        )
+                    elif country_code:
+                        # Fallback without tenant_id (legacy)
                         cursor.execute(
                             """
                             SELECT id
@@ -69,8 +81,18 @@ class NumberStorage:
                             """,
                             (country_code, base_number)
                         )
+                    elif tenant_id:
+                        cursor.execute(
+                            """
+                            SELECT id
+                            FROM lad_dev.voice_agent_numbers
+                            WHERE base_number = %s AND tenant_id = %s
+                            LIMIT 1
+                            """,
+                            (base_number, tenant_id)
+                        )
                     else:
-                        # Only base_number known
+                        # Only base_number known (legacy fallback)
                         cursor.execute(
                             """
                             SELECT id

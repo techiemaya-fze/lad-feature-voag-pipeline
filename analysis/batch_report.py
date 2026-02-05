@@ -516,7 +516,7 @@ async def get_batch_call_count(batch_id: str) -> Dict[str, int]:
 
 async def wait_for_analysis_completion(
     batch_id: str,
-    max_wait_seconds: int = 120,
+    max_wait_seconds: int = 200,
     poll_interval_seconds: int = 10
 ) -> Dict[str, int]:
     """
@@ -650,7 +650,7 @@ def _format_list_field(value) -> str:
 
 
 def _format_duration(started_at, ended_at) -> str:
-    """Format duration from timestamps"""
+    """Format duration from timestamps (DEPRECATED - use _format_duration_from_seconds)"""
     if not started_at or not ended_at:
         return "N/A"
     
@@ -673,6 +673,30 @@ def _format_duration(started_at, ended_at) -> str:
         seconds = duration_seconds % 60
         return f"{minutes}m {seconds}s"
     except Exception:
+        return "N/A"
+
+
+def _format_duration_from_seconds(duration_seconds) -> str:
+    """
+    Format duration from seconds value (uses dedicated duration_seconds column).
+    
+    Args:
+        duration_seconds: Duration in seconds (float or int)
+    
+    Returns:
+        Formatted string like "2m 30s" or "N/A" if invalid
+    """
+    if duration_seconds is None:
+        return "N/A"
+    
+    try:
+        total_seconds = int(float(duration_seconds))
+        if total_seconds < 0:
+            return "N/A"
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+        return f"{minutes}m {seconds}s"
+    except (ValueError, TypeError):
         return "N/A"
 
 
@@ -1063,7 +1087,7 @@ def export_to_excel(
             'Date': date_str,
             'Start Time (GST)': start_time_str,
             'End Time (GST)': end_time_str,
-            'Duration': _format_duration(started_at, ended_at),
+            'Duration': _format_duration_from_seconds(record.get('call_duration')),  # Use dedicated duration column
             'Call Status': record.get('call_status', '') or '',
             'Time Period (GST)': _get_time_period(started_at),
             'Disposition': record.get('disposition', '') or '',
@@ -1769,7 +1793,7 @@ async def generate_batch_report(
     send_email: bool = False,
     email_recipients: Optional[List[str]] = None,
     wait_for_analysis: bool = True,
-    max_wait_seconds: int = 120,
+    max_wait_seconds: int = 200,
 ) -> Dict[str, Any]:
     """
     Generate a batch report with Excel export and optional email
@@ -1782,7 +1806,7 @@ async def generate_batch_report(
         send_email: Whether to send email with report
         email_recipients: Optional list of email addresses (defaults to env var)
         wait_for_analysis: Whether to wait for post-call analysis to complete (default True)
-        max_wait_seconds: Maximum time to wait for analysis (default 120s)
+        max_wait_seconds: Maximum time to wait for analysis (default 200s)
     
     Returns:
         Dict with status, file_path, email_sent, etc.
@@ -1817,6 +1841,34 @@ async def generate_batch_report(
     
     calls_with_analysis = len([c for c in call_data if c.get('summary')])
     calls_without_analysis = len(call_data) - calls_with_analysis
+    
+    # Compute accurate completed/failed counts from actual call statuses
+    # This is more reliable than the database counters which may miss updates
+    FAILED_STATUSES = {'failed', 'declined', 'cancelled', 'error', 'not_reachable', 'busy', 'no_answer', 'rejected'}
+    COMPLETED_STATUSES = {'ended', 'completed'}
+    
+    computed_completed = 0
+    computed_failed = 0
+    for call in call_data:
+        status = (call.get('call_status') or '').lower().strip()
+        if status in COMPLETED_STATUSES:
+            computed_completed += 1
+        elif status in FAILED_STATUSES:
+            computed_failed += 1
+        # Other statuses (ongoing, in_queue, ringing) are ignored for counts
+    
+    # Update batch_info with computed counts (override database values if they seem wrong)
+    if computed_failed > batch_info.get('failed_calls', 0):
+        logger.warning(
+            f"Computed failed count ({computed_failed}) differs from database ({batch_info.get('failed_calls', 0)}), using computed"
+        )
+        batch_info['failed_calls'] = computed_failed
+    if computed_completed > batch_info.get('completed_calls', 0):
+        logger.warning(
+            f"Computed completed count ({computed_completed}) differs from database ({batch_info.get('completed_calls', 0)}), using computed"
+        )
+        batch_info['completed_calls'] = computed_completed
+
     
     logger.info(f"Fetched {len(call_data)} calls ({calls_with_analysis} with analysis)")
     

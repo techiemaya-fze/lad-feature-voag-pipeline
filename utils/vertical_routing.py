@@ -407,37 +407,39 @@ Respond in JSON format:
 CRITICAL: Only extract information PROVIDED BY THE LEAD/USER, NOT the agent/bot.
 """
         
-        # Call Gemini API
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={gemini_api_key}"
-        response = requests.post(
-            url,
-            headers={"Content-Type": "application/json"},
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 500}
-            },
-            timeout=15
-        )
-        
-        if response.status_code != 200:
-            logger.error(f"Gemini API error: {response.status_code}")
+        # Call Gemini API using google-genai library
+        try:
+            from google import genai
+            from google.genai import types
+            
+            client = genai.Client(api_key=gemini_api_key)
+            
+            response = client.models.generate_content(
+                model="gemini-flash-latest",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    max_output_tokens=2000,
+                )
+            )
+            
+            if not response.text:
+                logger.warning("Empty response from Gemini API")
+                return VerticalRoutingResult(
+                    vertical="general",
+                    routed=False,
+                    error="Empty API response"
+                )
+            
+            raw_text = response.text.strip()
+            
+        except Exception as api_error:
+            logger.error(f"Gemini API error: {api_error}")
             return VerticalRoutingResult(
                 vertical="general",
                 routed=False,
-                error=f"API error: {response.status_code}"
+                error=f"API error: {api_error}"
             )
-        
-        # Parse response
-        response_data = response.json()
-        if "candidates" not in response_data or not response_data["candidates"]:
-            logger.warning("No candidates in Gemini response")
-            return VerticalRoutingResult(
-                vertical="general",
-                routed=False,
-                error="Empty API response"
-            )
-        
-        raw_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
         
         # Parse JSON from response
         lead_info = None

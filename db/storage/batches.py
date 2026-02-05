@@ -695,7 +695,7 @@ class BatchStorage:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
                         f"""
-                        SELECT id, call_log_id, to_number, lead_name, status
+                        SELECT id, call_log_id, to_phone, metadata->>'lead_name' as lead_name, status
                         FROM {FULL_ENTRY_TABLE}
                         WHERE batch_id = %s 
                           AND id = ANY(%s::uuid[])

@@ -40,12 +40,14 @@ from db.connection_pool import get_db_connection
 logger = logging.getLogger(__name__)
 
 # Country code patterns for detection
+# IMPORTANT: Longer prefixes must come BEFORE shorter ones (971 before 91)
 COUNTRY_CODE_PATTERNS = [
+    ('+971', 'uae', 9),     # UAE with + (must be before +91)
+    ('971', 'uae', 9),      # UAE without + (must be before 91)
     ('+91', 'india', 10),   # India: +91 + 10 digits
     ('91', 'india', 10),    # India without +
     ('+1', 'usa', 10),      # USA/Canada
     ('+44', 'uk', 10),      # UK
-    ('+971', 'uae', 9),     # UAE
     ('+61', 'australia', 9), # Australia
 ]
 
@@ -113,7 +115,7 @@ def parse_phone_number(phone: str) -> ParsedNumber:
                     original=original
                 )
     
-    # Check for 0-prefix (India local format)
+    # Check for 0-prefix (India local format: 0 + 10 digits)
     if cleaned.startswith('0') and len(cleaned) == 11:
         # 0 + 10 digits = India local format
         return ParsedNumber(
@@ -123,7 +125,46 @@ def parse_phone_number(phone: str) -> ParsedNumber:
             original=original
         )
     
-    # Bare number without country code or 0-prefix - no assumption
+    # Check for 0-prefix (UAE local format: 0 + 9 digits)
+    if cleaned.startswith('0') and len(cleaned) == 10:
+        # 0 + 9 digits = UAE local format
+        return ParsedNumber(
+            country_code='+971',
+            base_number=cleaned[1:],  # Remove leading 0
+            country='uae',
+            original=original
+        )
+    
+    # SMART HEURISTICS for bare numbers (matching expert logic)
+    # These numbers have no country code or trunk prefix
+    if len(cleaned) == 9:
+        # 9 digits → UAE national number
+        return ParsedNumber(
+            country_code='+971',
+            base_number=cleaned,
+            country='uae',
+            original=original
+        )
+    elif len(cleaned) == 10:
+        # 10 digits → ambiguous between India and US
+        # Heuristic: India mobile numbers typically start with 6-9
+        if cleaned[0] in '6789':
+            return ParsedNumber(
+                country_code='+91',
+                base_number=cleaned,
+                country='india',
+                original=original
+            )
+        else:
+            # US/Canada
+            return ParsedNumber(
+                country_code='+1',
+                base_number=cleaned,
+                country='usa',
+                original=original
+            )
+    
+    # Bare number without recognizable pattern - no assumption
     # Return as unknown format - caller must validate
     return ParsedNumber(
         country_code=None,
@@ -131,6 +172,54 @@ def parse_phone_number(phone: str) -> ParsedNumber:
         country=None,
         original=original
     )
+
+
+def normalize_phone_to_e164(phone: str) -> str:
+    """
+    Normalize a phone number to E.164 format using smart heuristics.
+    
+    This handles:
+    - Cleaning formatting characters
+    - Normalizing international exit codes (00, 011 -> +)
+    - Formatting bare numbers based on length and prefix
+    
+    Args:
+        phone: Raw phone number string
+        
+    Returns:
+        E.164 formatted string (e.g., +971501234567)
+        
+    Raises:
+        ValueError: If number cannot be normalized
+    """
+    if not phone:
+        raise ValueError("Phone number cannot be empty")
+        
+    cleaned = phone.strip()
+    
+    # Handle + prefix (keep it, strip formatting)
+    if cleaned.startswith('+'):
+        cleaned = '+' + re.sub(r'[^\d]', '', cleaned[1:])
+    else:
+        cleaned = re.sub(r'[^\d]', '', cleaned)
+    
+    # Normalize international exit codes (00, 011 -> +)
+    cleaned = re.sub(r'^(00|011)', '+', cleaned)
+    
+    if not cleaned or cleaned == '+':
+        raise ValueError("Phone number cannot be empty")
+    
+    # If already has + prefix and looks valid, return it
+    if cleaned.startswith('+') and len(cleaned) >= 10:
+        return cleaned
+    
+    # Use parse_phone_number to apply smart heuristics
+    parsed = parse_phone_number(cleaned)
+    
+    if parsed.country_code and parsed.base_number:
+        return f"{parsed.country_code}{parsed.base_number}"
+        
+    raise ValueError(f"Could not normalize '{phone}' to E.164 format")
 
 
 def format_for_carrier(parsed: ParsedNumber, rules: Dict[str, Any]) -> str:
@@ -163,13 +252,14 @@ def format_for_carrier(parsed: ParsedNumber, rules: Dict[str, Any]) -> str:
     return ''.join(parts)
 
 
-def get_number_rules(from_number: str, db_config: dict) -> Optional[Dict[str, Any]]:
+def get_number_rules(from_number: str, db_config: dict, tenant_id: str | None = None) -> Optional[Dict[str, Any]]:
     """
     Fetch carrier rules for a from_number from database.
     
     Args:
         from_number: The from/caller number
         db_config: Database configuration
+        tenant_id: Optional tenant ID for multi-tenant filtering
         
     Returns:
         Dict with 'carrier_name' and 'rules', or None if not found
@@ -183,16 +273,31 @@ def get_number_rules(from_number: str, db_config: dict) -> Optional[Dict[str, An
     try:
         with get_db_connection(db_config) as conn:
             with conn.cursor() as cur:
-                # Try exact match on base_number first
-                if parsed.country_code:
+                # Build query with optional tenant_id filter
+                if parsed.country_code and tenant_id:
+                    cur.execute("""
+                        SELECT provider, rules
+                        FROM lad_dev.voice_agent_numbers
+                        WHERE country_code = %s AND base_number = %s AND tenant_id = %s
+                        LIMIT 1
+                    """, (parsed.country_code, int(parsed.base_number) if parsed.base_number.isdigit() else 0, tenant_id))
+                elif parsed.country_code:
+                    # Fallback without tenant_id (legacy calls)
                     cur.execute("""
                         SELECT provider, rules
                         FROM lad_dev.voice_agent_numbers
                         WHERE country_code = %s AND base_number = %s
                         LIMIT 1
                     """, (parsed.country_code, int(parsed.base_number) if parsed.base_number.isdigit() else 0))
+                elif tenant_id:
+                    cur.execute("""
+                        SELECT provider, rules
+                        FROM lad_dev.voice_agent_numbers
+                        WHERE base_number = %s AND tenant_id = %s
+                        LIMIT 1
+                    """, (int(parsed.base_number) if parsed.base_number.isdigit() else 0, tenant_id))
                 else:
-                    # Try just base_number
+                    # Fallback - just base_number
                     cur.execute("""
                         SELECT provider, rules
                         FROM lad_dev.voice_agent_numbers
@@ -207,7 +312,11 @@ def get_number_rules(from_number: str, db_config: dict) -> Optional[Dict[str, An
                         'rules': row[1] or {}
                     }
                 
-                logger.warning(f"No carrier rules found for from_number: {from_number}")
+                # If tenant_id was provided but no match, log a warning
+                if tenant_id:
+                    logger.warning(f"No carrier rules found for from_number: {from_number} (tenant_id: {tenant_id[:8]}...)")
+                else:
+                    logger.warning(f"No carrier rules found for from_number: {from_number}")
                 return None
                 
     except Exception as e:
@@ -218,7 +327,8 @@ def get_number_rules(from_number: str, db_config: dict) -> Optional[Dict[str, An
 def validate_and_format_call(
     from_number: str,
     to_number: str,
-    db_config: dict
+    db_config: dict,
+    tenant_id: str | None = None,
 ) -> CallRoutingResult:
     """
     Validate and format phone number for outbound call based on carrier rules.
@@ -227,6 +337,7 @@ def validate_and_format_call(
         from_number: The from/caller number (determines carrier rules)
         to_number: The destination number to validate and format
         db_config: Database configuration for rule lookup
+        tenant_id: Optional tenant ID for multi-tenant filtering
         
     Returns:
         CallRoutingResult with success status and formatted number or error
@@ -249,8 +360,8 @@ def validate_and_format_call(
     # Parse the destination number
     parsed_to = parse_phone_number(to_number)
     
-    # Get carrier rules
-    carrier_info = get_number_rules(from_number, db_config)
+    # Get carrier rules (with tenant_id for multi-tenant isolation)
+    carrier_info = get_number_rules(from_number, db_config, tenant_id)
     
     if not carrier_info:
         # No rules found - still validate country detection
@@ -288,7 +399,7 @@ def validate_and_format_call(
     detected_country = parsed_to.country
     
     if allowed_outbound == 'india':
-        if detected_country and detected_country != 'india':
+        if detected_country and detected_country.lower() != 'india':
             return CallRoutingResult(
                 success=False,
                 error_message=f"Only Indian calls allowed with {carrier_name}. Detected country: {detected_country}",
@@ -305,6 +416,25 @@ def validate_and_format_call(
                 original=parsed_to.original
             )
             detected_country = 'india'
+    
+    elif allowed_outbound.lower() == 'uae':
+        if detected_country and detected_country.lower() != 'uae':
+            return CallRoutingResult(
+                success=False,
+                error_message=f"Only UAE calls allowed with {carrier_name}. Detected country: {detected_country}",
+                carrier_name=carrier_name,
+                detected_country=detected_country
+            )
+        
+        # For UAE-only carriers, if no country detected, assume UAE
+        if not detected_country:
+            parsed_to = ParsedNumber(
+                country_code='+971',
+                base_number=parsed_to.base_number,
+                country='uae',
+                original=parsed_to.original
+            )
+            detected_country = 'uae'
     
     elif allowed_outbound == 'global':
         # Global carrier - country code or 0-prefix REQUIRED

@@ -1,0 +1,13 @@
+{
+  "call_id": "30c4f46b-ab9c-48bf-a555-54f867d013b0",
+  "extracted_at": "2026-01-31T16:35:23.323477",
+  "lead_info": {
+    "first_name": "Pavan",
+    "full_name": "Pavan",
+    "available_time": "Today at 6:00 PM GST",
+    "contact_preference": "Phone call",
+    "program_interested": "Investment opportunities",
+    "country_interested": "Dubai",
+    "additional_notes": "The lead requested a callback in three hours because he was busy at the moment."
+  }
+}

@@ -942,6 +942,7 @@ def build_human_support_tools(
     from_number: str | None = None,
     voice_assistant: Any = None,  # VoiceAssistant instance for muting
     audit_trail: Any = None,  # ToolAuditTrail for logging events
+    tenant_id: str | None = None,  # Tenant ID for multi-tenant number lookup
 ) -> list[Callable]:
     """
     Build human support tools for transferring calls to a human agent.
@@ -953,6 +954,7 @@ def build_human_support_tools(
         from_number: From number of current call (for validation/logging)
         voice_assistant: VoiceAssistant instance for muting AI after human joins
         audit_trail: ToolAuditTrail for logging human handoff events
+        tenant_id: Tenant UUID for multi-tenant number routing isolation
         
     Returns:
         List of @function_tool decorated functions
@@ -1065,7 +1067,7 @@ def build_human_support_tools(
                 logger.info(f"[HumanSupport] Validating number using from_number={from_number[:4] if from_number else 'None'}*** routing rules")
                 # Import here to avoid circular imports
                 from utils.call_routing import validate_and_format_call
-                routing_result = validate_and_format_call(from_number, phone_number, db_config)
+                routing_result = validate_and_format_call(from_number, phone_number, db_config, tenant_id=tenant_id)
                 if not routing_result.success:
                     logger.error(f"[HumanSupport] FAILED: Number validation failed: {routing_result.error_message}")
                     return f"I'm sorry, I cannot transfer you to that number: {routing_result.error_message}"
@@ -1457,6 +1459,7 @@ async def attach_tools(
                     from_number=from_number,
                     voice_assistant=_get_assistant,  # Pass getter function
                     audit_trail=audit_trail,  # For logging handoff events
+                    tenant_id=tenant_id,  # Multi-tenant number routing
                 )
                 attached_tools.extend(tools)
                 logger.info(f"Attached Human Support tools: {len(tools)} functions (trunk={'set' if sip_trunk_id else 'env'})")

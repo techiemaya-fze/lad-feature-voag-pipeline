@@ -6,8 +6,9 @@ import logging
 from typing import Any
 
 import httpx
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse, Response
 from pydantic import BaseModel
 
 from utils.google_oauth import (
@@ -98,6 +99,36 @@ def _resolve_frontend_redirect(frontend_id: str | None, *, success: bool, messag
         query["frontend_id"] = frontend_id
     encoded = urlencode(query)
     return urlunparse(parsed._replace(query=encoded))
+
+
+def _get_frontend_base_url(frontend_id: str | None) -> str:
+    """Get the base frontend redirect URL (without query params)."""
+    settings = get_google_oauth_settings()
+    redirect_map = settings.frontend_redirect_map
+    if frontend_id and frontend_id in redirect_map:
+        return redirect_map[frontend_id]
+    return settings.success_fallback
+
+
+def _render_booking_wizard(user_id: str, frontend_id: str, api_key: str, base_url: str) -> str:
+    """Render the booking wizard HTML template with injected configuration."""
+    template_path = Path(__file__).parent.parent / "templates" / "booking_wizard.html"
+    
+    if not template_path.exists():
+        logger.error("Booking wizard template not found at %s", template_path)
+        raise HTTPException(status_code=500, detail="Wizard template not found")
+    
+    template = template_path.read_text(encoding="utf-8")
+    frontend_redirect = _get_frontend_base_url(frontend_id)
+    
+    # Replace template placeholders
+    html = template.replace("{{USER_ID}}", user_id)
+    html = html.replace("{{FRONTEND_ID}}", frontend_id)
+    html = html.replace("{{API_KEY}}", api_key)
+    html = html.replace("{{BASE_URL}}", base_url)
+    html = html.replace("{{FRONTEND_REDIRECT}}", frontend_redirect)
+    
+    return html
 
 
 async def _resolve_user_record(user_id: str) -> tuple[str, dict[str, Any]]:
@@ -434,6 +465,7 @@ async def microsoft_auth_callback(
     logger.info("Stored Microsoft OAuth tokens for user_id=%s", canonical_id)
 
     # Auto-configure booking if only one business/service exists
+    auto_configured_fully = False
     if access_token:
         try:
             auto_result = await _auto_configure_booking(canonical_id, access_token)
@@ -444,12 +476,90 @@ async def microsoft_auth_callback(
                     auto_result.get("business_name"),
                     auto_result.get("service_id"),
                 )
+                # Check if fully configured (business + service + staff all auto-saved)
+                auto_configured_fully = (
+                    auto_result.get("business_auto_saved") and
+                    auto_result.get("service_auto_saved") and
+                    auto_result.get("staff_auto_saved")
+                )
         except Exception as exc:
             # Don't fail OAuth if auto-config fails
             logger.warning("Auto-configure booking failed for user_id=%s: %s", canonical_id, exc)
 
+    # If not fully auto-configured, redirect to booking wizard for user to complete setup
+    if not auto_configured_fully:
+        from urllib.parse import urlencode
+        configure_url = f"/auth/microsoft/configure?{urlencode({'user_id': canonical_id, 'frontend_id': frontend_id or ''})}"
+        logger.info("Redirecting user_id=%s to booking wizard", canonical_id)
+        return RedirectResponse(configure_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
     redirect = _resolve_frontend_redirect(frontend_id, success=True, message="linked")
     return RedirectResponse(redirect, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
+@microsoft_router.get("/configure", response_class=HTMLResponse)
+async def configure_booking_wizard(
+    user_id: str,
+    frontend_id: str = "",
+) -> HTMLResponse:
+    """
+    Serve the booking configuration wizard HTML page.
+
+    This page allows users to select their booking business, service, and staff
+    after completing Microsoft OAuth. The wizard calls the existing API endpoints
+    to fetch options and save the configuration.
+
+    Query Params:
+        user_id: User identifier
+        frontend_id: Frontend key for post-configuration redirect
+
+    Returns:
+        HTML page with booking wizard
+    """
+    import os
+    import json
+    
+    # Validate user exists and has Microsoft connection
+    canonical_id, _ = await _resolve_user_record(user_id)
+    
+    storage = _get_token_storage()
+    blob = await storage.get_microsoft_token_blob(canonical_id)
+    if not blob:
+        # No Microsoft connection - redirect to error
+        redirect = _resolve_frontend_redirect(frontend_id, success=False, message="not_connected")
+        return RedirectResponse(redirect, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    
+    # Get API key for this frontend_id from environment
+    api_key = ""
+    try:
+        api_keys_raw = os.getenv("FRONTEND_API_KEYS", "{}")
+        api_keys = json.loads(api_keys_raw)
+        api_key = api_keys.get(frontend_id, "")
+    except Exception:
+        logger.warning("Failed to load FRONTEND_API_KEYS for wizard")
+    
+    # Use relative base URL since wizard is served from the same domain
+    base_url = ""
+    
+    html_content = _render_booking_wizard(
+        user_id=canonical_id,
+        frontend_id=frontend_id or "",
+        api_key=api_key,
+        base_url=base_url,
+    )
+    
+    return HTMLResponse(content=html_content, status_code=200)
+
+
+@microsoft_router.get("/logo")
+async def serve_logo() -> Response:
+    """Serve the TechieMaya logo for the booking wizard."""
+    logo_path = Path(__file__).parent.parent / "templates" / "logo.png"
+    if not logo_path.exists():
+        raise HTTPException(status_code=404, detail="Logo not found")
+    
+    content = logo_path.read_bytes()
+    return Response(content=content, media_type="image/png")
 
 
 @microsoft_router.get("/status", response_model=MicrosoftOAuthStatusResponse)

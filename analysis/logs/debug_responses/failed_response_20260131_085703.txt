@@ -1,0 +1,15 @@
+Timestamp: 2026-01-31T08:57:03.117429
+Error: Expecting value: line 2 column 16 (char 17)
+Prompt (first 500 chars): Extract ALL information about the lead from this sales conversation. Capture EVERYTHING the LEAD/USER mentioned (NOT the agent/bot).
+
+CONVERSATION:
+Agent: Hi, this is Nithya from Sasya Spaces, Dubai. I hope I'm catching you at a good time?
+User: Yes.
+User: Okay.
+Agent: We got a list of profiles, and I think... your profile might be eligible for Dubai Golden Visa. We are currently assisting investors with Dubai real estate opportunities that qualify for the UAE Golden Visa.
+User: Okay.
+Agent: Jus
+============================================================
+Raw Response:
+{
+  "first_name":
