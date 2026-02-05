@@ -14,15 +14,43 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from dotenv import load_dotenv
+import sys
 
-# Structured output client for guaranteed JSON responses
-from .gemini_client import (
-    generate_with_schema_retry, 
-    generate_text,
-    SENTIMENT_SCHEMA, 
-    DISPOSITION_SCHEMA, 
-    LLM_VALIDATION_SCHEMA
-)
+# Add parent directory to path to allow imports when running as script
+_SCRIPT_DIR = Path(__file__).parent
+_PROJECT_ROOT = _SCRIPT_DIR.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+# Structured output client for guaranteed JSON responses - handle both module and script execution
+try:
+    # Try direct import first (when run as script from analysis directory or project root)
+    from gemini_client import (
+        generate_with_schema_retry, 
+        generate_text,
+        SENTIMENT_SCHEMA, 
+        DISPOSITION_SCHEMA, 
+        LLM_VALIDATION_SCHEMA
+    )
+except ImportError:
+    try:
+        # Try relative import (when run as module)
+        from .gemini_client import (
+            generate_with_schema_retry, 
+            generate_text,
+            SENTIMENT_SCHEMA, 
+            DISPOSITION_SCHEMA, 
+            LLM_VALIDATION_SCHEMA
+        )
+    except ImportError:
+        # Try absolute import (when run from project root)
+        from analysis.gemini_client import (
+            generate_with_schema_retry, 
+            generate_text,
+            SENTIMENT_SCHEMA, 
+            DISPOSITION_SCHEMA, 
+            LLM_VALIDATION_SCHEMA
+        )
 
 load_dotenv()
 
@@ -365,6 +393,48 @@ class CallAnalytics:
         
         return concerns  # NO LIMIT - Return ALL concerns found
 
+    def _extract_next_steps_from_text(self, text: str) -> List[str]:
+        """Extract ALL next steps from raw text - NO LIMITS."""
+        next_steps = []
+        lines = text.split('\n')
+        
+        # Look for next steps section
+        in_next_steps_section = False
+        next_steps_section_keywords = ['next steps', 'next step', 'next actions', 'action items', 'follow up', 'follow-up']
+        
+        for line in lines:
+            line_lower = line.lower().strip()
+            
+            # Check if we're entering a next steps section
+            if any(keyword in line_lower for keyword in next_steps_section_keywords):
+                in_next_steps_section = True
+                continue
+            
+            # Check if we're leaving the next steps section
+            if in_next_steps_section and (line_lower.startswith('recommendations') or line_lower.startswith('business') or line_lower.startswith('contact')):
+                in_next_steps_section = False
+            
+            # Extract next steps (bullet points or numbered items)
+            if in_next_steps_section or re.match(r'^[•\-\*]\s+', line) or re.match(r'^\d+[\.\)]\s+', line):
+                step = re.sub(r'^[•\-\*\d+[\.\)]\s+', '', line).strip()
+                if len(step) > 10:  # Only meaningful steps
+                    next_steps.append(step)
+            # Look for lines starting with next step keywords
+            elif any(keyword in line.lower() for keyword in ['follow up', 'schedule', 'send', 'call back', 'meet', 'contact', 'reach out']):
+                if len(line.strip()) > 15:
+                    next_steps.append(line.strip())
+        
+        # Also extract from sentences with next step keywords
+        sentences = re.split(r'[.!?]+', text)
+        step_keywords = ['follow up', 'schedule', 'send', 'call back', 'meet', 'contact', 'reach out', 'next step', 'action']
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if any(keyword in sentence.lower() for keyword in step_keywords) and len(sentence) > 15:
+                if sentence not in next_steps:
+                    next_steps.append(sentence)
+        
+        return next_steps  # NO LIMIT - Return ALL next steps found
+
     def _extract_business_info_from_text(self, text: str) -> Dict:
         """Try to extract business name, contact person, phone from text."""
         business_name = None
@@ -443,7 +513,6 @@ class CallAnalytics:
         
         conversation_lines = []
         user_message_count = 0
-        voicemail_indicators = 0
         
         for segment in segments:
             speaker = segment.get('speaker', '').lower()
@@ -452,10 +521,6 @@ class CallAnalytics:
             # ALWAYS use 'text' field only, ignore 'intended_text'
             if not text:
                 continue
-            
-            # Count voicemail indicators (from system/user messages)
-            if speaker == 'user' and any(indicator in text.lower() for indicator in ["forwarded", "voice mail", "voicemail", "not available", "at the tone", "record"]):
-                voicemail_indicators += 1
             
             # Filter out phone system messages (usually from 'user' speaker in voicemail)
             is_system_message = any(sys_msg in text.lower() for sys_msg in SYSTEM_MESSAGES)
@@ -482,12 +547,77 @@ class CallAnalytics:
         conversation_text = "\n".join(conversation_lines)
         logger.info(f"Parsed {len(conversation_lines)} total messages from voiceagent format ({user_message_count} user, {len(conversation_lines) - user_message_count} agent, filtered from {len(segments)} total segments)")
         
-        # Detect voicemail: no user messages OR multiple voicemail indicators with minimal real content
-        if user_message_count == 0 or (voicemail_indicators >= 2 and user_message_count <= 1):
-            logger.warning(f"VOICEMAIL DETECTED - voicemail indicators: {voicemail_indicators}, user messages: {user_message_count}")
-            conversation_text = "[VOICEMAIL - No customer response, call went to voicemail]"
-        
         return conversation_text
+    
+
+    def get_duration_from_column(self, duration_seconds):
+        """
+        Return the call duration in seconds from the duration_seconds column.
+        """
+        return duration_seconds
+
+    def _detect_voicemail(self, conversation_log, conversation_text: Optional[str] = None) -> bool:
+        """
+        Basic voicemail detector placeholder.
+        
+        Currently, detailed detection of iPhone-style user-side voicemail is
+        handled by `_is_user_voicemail`. This method is kept for backwards
+        compatibility and can be extended with additional heuristics later.
+        """
+        return False
+
+    def _is_user_voicemail(self, conversation_log, conversation_text: Optional[str] = None) -> bool:
+        """
+        Detect if the "user" side is actually phone voicemail/system audio.
+        
+        Heuristics:
+        - User segments exist but contain voicemail keywords (iPhone voicemail often appears as user text)
+        - Plain text contains voicemail keywords without meaningful user speech
+        """
+        voicemail_keywords = [
+            "voice mail",
+            "voicemail",
+            "at the tone",
+            "record your message",
+            "leave a message",
+            "leave your message",
+            "not available",
+            "inbox",
+            "beep",
+            "please record",
+            "after the tone",
+            "mailbox is full",
+            "cannot take your call",
+        ]
+
+        # Check structured segments
+        if isinstance(conversation_log, dict) and "segments" in conversation_log:
+            segments = conversation_log["segments"] or []
+        elif isinstance(conversation_log, list) and conversation_log and isinstance(conversation_log[0], dict):
+            segments = conversation_log
+        else:
+            segments = []
+
+        if segments:
+            user_messages = [
+                (seg.get("text") or "").lower()
+                for seg in segments
+                if (seg.get("speaker") or "").lower() == "user" and (seg.get("text") or "").strip()
+            ]
+            # If there are user messages, but all look like voicemail prompts, treat as voicemail
+            if user_messages:
+                if all(any(k in msg for k in voicemail_keywords) for msg in user_messages):
+                    return True
+                for msg in user_messages:
+                    if any(k in msg for k in voicemail_keywords):
+                        return True
+
+        # Fallback: check plain text
+        text = (conversation_text or "").lower()
+        if text and any(k in text for k in voicemail_keywords):
+            return True
+
+        return False
     
     def _extract_user_messages(self, conversation_text: str) -> str:
         """Extract only user messages from conversation (exclude bot/agent messages)"""
@@ -525,7 +655,10 @@ class CallAnalytics:
         try:
             # Track API call
             self.cost_tracker['api_calls'] += 1
-            
+            # Roughly estimate input tokens from prompt
+            estimated_input_tokens = self._estimate_tokens(prompt)
+            self.cost_tracker['total_input_tokens'] += estimated_input_tokens
+
             # Use structured output for guaranteed JSON response
             result = generate_with_schema_retry(
                 prompt=prompt,
@@ -535,12 +668,20 @@ class CallAnalytics:
             )
             
             if result:
-                # Extract and track usage metadata
-                if '_usage_metadata' in result:
-                    usage = result.pop('_usage_metadata')
-                    self.cost_tracker['total_input_tokens'] += usage.get('prompt_token_count', 0)
-                    self.cost_tracker['total_output_tokens'] += usage.get('candidates_token_count', 0)
-                    logger.debug(f"Gemini usage: {usage}")
+                # Estimate output tokens from JSON size
+                try:
+                    import json as _json
+                    result_text = _json.dumps(result)
+                    estimated_output_tokens = self._estimate_tokens(result_text)
+                    self.cost_tracker['total_output_tokens'] += estimated_output_tokens
+                    logger.debug(
+                        "Estimated LLM usage (structured): input_tokens=%d, output_tokens=%d",
+                        estimated_input_tokens,
+                        estimated_output_tokens,
+                    )
+                except Exception:
+                    # If estimation fails, we still keep the input token count
+                    logger.debug("Could not estimate output tokens for structured response")
                 
                 logger.debug(f"Gemini structured response received (Total calls: {self.cost_tracker['api_calls']})")
                 return result
@@ -551,7 +692,7 @@ class CallAnalytics:
         except Exception as e:
             logger.error(f"Gemini structured API exception: {str(e)}", exc_info=True)
             return None
-    
+
     def _call_gemini_text(self, prompt: str, temperature: float = 0.3, max_output_tokens: int = 8192) -> Optional[str]:
         """Helper function to call Gemini for plain text generation (summaries, etc.)"""
         if not self.gemini_api_key:
@@ -563,22 +704,27 @@ class CallAnalytics:
         try:
             # Track API call
             self.cost_tracker['api_calls'] += 1
-            
-            # Use plain text generation with usage tracking
-            result, usage = generate_text(
+            # Roughly estimate input tokens from prompt
+            estimated_input_tokens = self._estimate_tokens(prompt)
+            self.cost_tracker['total_input_tokens'] += estimated_input_tokens
+
+            # Plain text generation (no usage info available from generate_text)
+            result = generate_text(
                 prompt=prompt,
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
-                include_usage=True
             )
             
             if result:
-                # Track usage
-                if usage:
-                    self.cost_tracker['total_input_tokens'] += usage.get('prompt_token_count', 0)
-                    self.cost_tracker['total_output_tokens'] += usage.get('candidates_token_count', 0)
-                    logger.debug(f"Gemini usage: {usage}")
-                
+                # Estimate output tokens from returned text
+                estimated_output_tokens = self._estimate_tokens(result)
+                self.cost_tracker['total_output_tokens'] += estimated_output_tokens
+                logger.debug(
+                    "Estimated LLM usage (text): input_tokens=%d, output_tokens=%d",
+                    estimated_input_tokens,
+                    estimated_output_tokens,
+                )
+
                 logger.debug(f"Gemini text response received (Total calls: {self.cost_tracker['api_calls']})")
                 return result
             else:
@@ -588,6 +734,8 @@ class CallAnalytics:
         except Exception as e:
             logger.error(f"Gemini text API exception: {str(e)}", exc_info=True)
             return None
+    
+
     
     def _calculate_llm_cost(self) -> Dict:
         """Calculate total LLM cost (USD) and provide formatted values
@@ -606,17 +754,22 @@ class CallAnalytics:
         
         # No INR conversion or rounding as requested by user
         
+        # Format cost with up to 6 decimal places, trimmed (e.g., 0.004092 instead of 0.004092000000)
+        cost_usd_formatted = f"{total_cost_usd:.6f}".rstrip('0').rstrip('.')
+        
         return {
             "total_api_calls": self.cost_tracker['api_calls'],
             "input_tokens": self.cost_tracker['total_input_tokens'],
             "output_tokens": self.cost_tracker['total_output_tokens'],
             "total_tokens": self.cost_tracker['total_input_tokens'] + self.cost_tracker['total_output_tokens'],
-            "cost_usd": total_cost_usd, # No rounding
-            "cost_usd_formatted": f"${total_cost_usd:.10f}".rstrip('0').rstrip('.'), # Precise formatting
+            "cost_usd": total_cost_usd,  # Full-precision float
+            "cost_usd_formatted": f"${cost_usd_formatted}",
             "pricing_model": "Gemini 3 Flash Preview",
             "input_rate": "$0.50 per 1M tokens",
             "output_rate": "$3.00 per 1M tokens"
         }
+    
+   
     
     async def _calculate_sentiment_with_llm(self, user_text: str, conversation_text: str) -> Dict:
         """Calculate sentiment score and category using LLM (replaces TextBlob+VADER)"""
@@ -790,21 +943,6 @@ TASK: Analyze the prospect's sentiment and provide:
         
         logger.debug("Starting sentiment analysis...")
         user_text = self._extract_user_messages(conversation_text)
-        
-        if not user_text or len(user_text) < 10:
-            logger.warning("Insufficient user text for sentiment analysis")
-            # If no user text, return neutral sentiment
-            return {
-                "sentiment_description": "Prospect did not provide enough response for sentiment analysis",
-                "confidence_score": "0.0%",
-                "textblob_polarity": 0.0,
-                "vader_compound": 0.0,
-                "combined_score": "0.0%",
-                "key_phrases": [],
-                "reasoning": "Insufficient user input for analysis",
-                "advanced_emotions": {},
-                "llm_validated": False
-            }
         
         logger.debug(f"Analyzing sentiment - User text length: {len(user_text)} chars, Word count: {word_count}")
         llm_sentiment_data = await self._calculate_sentiment_with_llm(user_text, conversation_text)
@@ -1727,8 +1865,8 @@ CONFIDENCE: [High/Medium/Low]"""
         Mapping:
         - "PROCEED IMMEDIATELY" → lead_score = 10/10, lead_category = "Hot Lead"
         - "FOLLOW UP IN 3 DAYS" → lead_score = 8/10, lead_category = "warm Lead"
-        - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "Warm Lead"
-        - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Cold Lead"
+        - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "Cold Lead"
+        - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Not qualified"
         """
         disposition_str = disposition.get('disposition', '').upper()
         
@@ -1742,11 +1880,11 @@ CONFIDENCE: [High/Medium/Low]"""
             priority = "High"
         elif disposition_str in ['FOLLOW UP IN 7 DAYS', 'NURTURE (7 DAYS)', 'NURTURE']:
             lead_score = 6.0
-            lead_category = "Warm Lead"
+            lead_category = "Cold Lead"
             priority = "Medium"
         elif disposition_str == "DON'T PURSUE" or disposition_str == "DONT PURSUE":
             lead_score = 4.0
-            lead_category = "Cold Lead"
+            lead_category = "Not qualified"
             priority = "Low"
         else:
             # Default/Unknown disposition
@@ -1877,9 +2015,45 @@ CONFIDENCE: [High/Medium/Low]"""
                 return {"error": f"Gemini API error - unable to generate summary"}
             
             logger.debug(f"Summary API response received - Length: {len(summary_text)} chars")
+
+            # First try our internal JSON parser
             parsed_summary = self._parse_summary_json(summary_text)
 
+            # Fallback 1: try gemini_client-style JSON extraction to recover valid JSON
             if parsed_summary is None:
+                try:
+                    from gemini_client import extract_json_from_text as _ext_json  # script/run-relative
+                except ImportError:
+                    try:
+                        from .gemini_client import extract_json_from_text as _ext_json  # package-relative
+                    except ImportError:
+                        _ext_json = None
+
+                if _ext_json is not None:
+                    cleaned = _ext_json(summary_text)
+                    if cleaned:
+                        try:
+                            parsed_candidate = json.loads(cleaned)
+                            if isinstance(parsed_candidate, dict):
+                                parsed_summary = parsed_candidate
+                        except json.JSONDecodeError:
+                            pass
+
+            if parsed_summary is None:
+                # Log detailed debug info to understand WHY JSON parsing failed
+                text_sample = summary_text[:400]
+                open_braces = summary_text.count("{")
+                close_braces = summary_text.count("}")
+                logger.error(
+                    "Summary JSON parsing failed; falling back to text extraction. "
+                    "Length=%d, open_braces=%d, close_braces=%d, startswith=%r, sample(first 400 chars)=%r",
+                    len(summary_text),
+                    open_braces,
+                    close_braces,
+                    summary_text.lstrip()[:1],
+                    text_sample,
+                )
+
                 # HYBRID FALLBACK: Extract structured data from raw LLM text response
                 full_text = summary_text.strip()
                 
@@ -1893,24 +2067,33 @@ CONFIDENCE: [High/Medium/Low]"""
                 extracted_points = self._extract_simple_points_from_text(full_text)
                 extracted_questions = self._extract_questions_from_text(full_text)
                 extracted_concerns = self._extract_concerns_from_text(full_text)
+                extracted_next_steps = self._extract_next_steps_from_text(full_text)
                 extracted_info = self._extract_business_info_from_text(full_text)
                 
                 # Build fallback response with extracted data
+                # If we still don't have a clear call_summary, fall back to trimmed full LLM text
+                call_summary_val = extracted_call_summary if extracted_call_summary else full_text[:2000]
+                
                 fallback_summary = {
-                    "call_summary": extracted_call_summary if extracted_call_summary else "Summary extraction failed. See recommendations for full LLM response.",
-                    "key_discussion_points": extracted_points if extracted_points else ["See call_summary and recommendations for full details"],
-                    "prospect_questions": extracted_questions if extracted_questions else ["See call_summary and recommendations for questions"],
+                    "call_summary": call_summary_val,
+                    "key_discussion_points": extracted_points if extracted_points else [],
+                    "prospect_questions": extracted_questions if extracted_questions else [],
                     "prospect_concerns": extracted_concerns if extracted_concerns else [],
-                    "next_steps": [],
+                    "next_steps": extracted_next_steps if extracted_next_steps else [],
                     "business_name": extracted_info.get('business_name'),
                     "contact_person": extracted_info.get('contact_person'),
                     "phone_number": extracted_info.get('phone_number'),
-                    "recommendations": extracted_recommendations if extracted_recommendations else "Recommendations not found in LLM response. Full text available in call_summary field."
+                    "recommendations": extracted_recommendations if extracted_recommendations else "",
                 }
                 
-                logger.info(f"Hybrid fallback extracted - Summary: {len(extracted_call_summary)} chars, Points: {len(extracted_points)}, Questions: {len(extracted_questions)}, Concerns: {len(extracted_concerns)}")
+                logger.info(
+                    f"Hybrid fallback extracted - Summary: {len(call_summary_val)} chars, "
+                    f"Points: {len(extracted_points)}, Questions: {len(extracted_questions)}, "
+                    f"Concerns: {len(extracted_concerns)}, Next Steps: {len(extracted_next_steps)}"
+                )
                 
-                return fallback_summary
+                # Normalize types so all columns store clean, structured data
+                return self._normalize_summary_fields(fallback_summary)
 
             normalized_summary = self._normalize_summary_fields(parsed_summary)
             logger.info(f"Summary generation complete - Key points: {len(normalized_summary.get('key_discussion_points', []))}, Questions: {len(normalized_summary.get('prospect_questions', []))}")
@@ -2275,57 +2458,47 @@ CONFIDENCE: [High/Medium/Low]"""
         
         word_count = len(conversation_text.split())
         logger.info(f"Processing call - Word count: {word_count}, Duration: {duration_seconds}s, Text length: {len(conversation_text)} chars")
+
         
-        # ===== PARALLEL PHASE 1: Sentiment + Lead Info Extraction =====
-        # These two are independent and can run in parallel
-        logger.info("Step 1/7: Analyzing sentiment + Step 7/7: Extracting lead info (PARALLEL)...")
-        
-        async def extract_lead_info_safe():
-            """Wrapper for lead info extraction with error handling"""
-            if not self.lead_extractor:
-                logger.debug("Lead extractor not available - skipping lead info extraction")
-                return None, None
+        logger.info("Step 1/7: Analyzing sentiment...")
+        sentiment = await self.analyze_sentiment(conversation_text, duration=duration_seconds, word_count=word_count)
+
+        # ===== SEQUENTIAL PHASE: Summary → Disposition (dependencies) =====
+        logger.info("Step 2/7: Generating summary...")
+        summary = await self.generate_summary(conversation_text, sentiment_data=sentiment, duration=duration_seconds)
+
+        logger.info("Step 3/7: Determining lead disposition...")
+        lead_disposition = await self._determine_lead_disposition_llm(sentiment, summary)
+        logger.info(f"Lead disposition: {lead_disposition.get('disposition', 'Unknown')} - Action: {lead_disposition.get('recommended_action', 'N/A')}")
+
+        # ===== NON-LLM STEPS (fast, no API calls) =====
+        logger.info("Step 4/7: Calculating lead score from disposition...")
+        lead_score = self._calculate_lead_score_from_disposition(lead_disposition)
+        logger.info(f"Lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
+
+        logger.info("Step 5/7: Calculating quality metrics...")
+        quality_metrics = self.calculate_conversation_quality(conversation_text, sentiment, duration_seconds)
+
+        logger.info("Step 6/7: Extracting call stages...")
+        stage_info = self.extract_call_stages(conversation_text, summary)
+
+        # Step 7/7: Extract lead information and save to JSON
+        lead_info = None
+        lead_info_path = None
+        if self.lead_extractor:
+            logger.info("Step 7/7: Extracting lead information...")
             try:
-                # Pass None for summary since we don't have it yet - lead extraction doesn't strictly need it
-                lead_info = await self.lead_extractor.extract_lead_information(conversation_text, None)
-                lead_info_path = None
+                lead_info = await self.lead_extractor.extract_lead_information(conversation_text, summary)
                 if lead_info:
                     lead_info_path = self.lead_extractor.save_to_json(lead_info, call_id)
                     logger.info(f"Lead info extracted: {len(lead_info)} fields, saved to: {lead_info_path}")
                 else:
                     logger.debug("No lead information found in this call")
-                return lead_info, lead_info_path
             except Exception as e:
                 logger.error(f"Lead info extraction failed: {e}", exc_info=True)
-                return None, None
-        
-        # Run sentiment analysis and lead info extraction in parallel
-        sentiment, (lead_info, lead_info_path) = await asyncio.gather(
-            self.analyze_sentiment(conversation_text, duration=duration_seconds, word_count=word_count),
-            extract_lead_info_safe()
-        )
-        
-        # ===== SEQUENTIAL PHASE: Summary → Disposition (dependencies) =====
-        logger.info("Step 2/7: Generating summary...")
-        summary = await self.generate_summary(conversation_text, sentiment_data=sentiment, duration=duration_seconds)
-        
-        logger.info("Step 3/7: Determining lead disposition...")
-        lead_disposition = await self._determine_lead_disposition_llm(sentiment, summary)
-        logger.info(f"Lead disposition: {lead_disposition.get('disposition', 'Unknown')} - Action: {lead_disposition.get('recommended_action', 'N/A')}")
-        
-        # ===== NON-LLM STEPS (fast, no API calls) =====
-        logger.info("Step 4/7: Calculating lead score from disposition...")
-        lead_score = self._calculate_lead_score_from_disposition(lead_disposition)
-        logger.info(f"Lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
-        
-        logger.info("Step 5/7: Calculating quality metrics...")
-        quality_metrics = self.calculate_conversation_quality(conversation_text, sentiment, duration_seconds)
-        
-        logger.info("Step 6/7: Extracting call stages...")
-        stage_info = self.extract_call_stages(conversation_text, summary)
-        
-        # Lead info already extracted in parallel phase above
-        
+        else:
+            logger.debug("Lead extractor not available - skipping lead info extraction")
+
         # Enhance recommendations with complete analytics data
         if summary and 'recommendations' in summary and lead_score:
             enhanced_rec = self._enhance_recommendations(
@@ -2337,10 +2510,10 @@ CONFIDENCE: [High/Medium/Low]"""
                 duration_seconds
             )
             summary['recommendations'] = enhanced_rec
-        
+
         cost_info = self._calculate_llm_cost()
         logger.info(f"LLM cost for this call: ${cost_info.get('cost_usd', 0):.6f} ({cost_info.get('total_tokens', 0)} tokens)")
-        
+
         # Combine results (transcript removed - keeping only analytics)
         result = {
             "call_id": call_id,
@@ -2708,7 +2881,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 "cost_full": cost_data,
             }
             
-            # Extract cost values - use USD directly (INR conversion removed)
+             # Extract cost values - use USD directly (INR conversion removed)
             cost_numeric = None
             analysis_cost_value = None
             if cost_data:
@@ -2717,7 +2890,6 @@ CONFIDENCE: [High/Medium/Low]"""
                 if cost_usd and cost_usd > 0:
                     cost_numeric = float(cost_usd)
                     analysis_cost_value = cost_numeric
-            
             # Prepare text fields for old columns (convert lists/dicts to text)
             def to_text(val):
                 if val is None:
@@ -3197,13 +3369,14 @@ class StandaloneAnalytics:
             if isinstance(call_log_id, int):
                 # Integer ID: Use ROW_NUMBER() to find the Nth record (ordered by ctid)
                 cursor.execute("""
-                    SELECT id, transcripts, started_at, ended_at, recording_url
+                    SELECT id, transcripts, started_at, ended_at, duration_seconds, recording_url
                     FROM (
                         SELECT 
                             id, 
                             transcripts, 
                             started_at, 
                             ended_at, 
+                            duration_seconds,
                             recording_url,
                             ROW_NUMBER() OVER (ORDER BY ctid) as row_num
                         FROM lad_dev.voice_call_logs
@@ -3214,14 +3387,14 @@ class StandaloneAnalytics:
                 # UUID string: Try direct UUID match or text match
                 try:
                     cursor.execute("""
-                        SELECT id, transcripts, started_at, ended_at, recording_url
+                        SELECT id, transcripts, started_at, ended_at, duration_seconds, recording_url
                         FROM lad_dev.voice_call_logs
                         WHERE id = %s::uuid
                     """, (str(call_log_id),))
                 except (psycopg2.errors.InvalidTextRepresentation, psycopg2.errors.UndefinedFunction):
                     # Fallback: try text match
                     cursor.execute("""
-                        SELECT id, transcripts, started_at, ended_at, recording_url
+                        SELECT id, transcripts, started_at, ended_at, duration_seconds, recording_url
                         FROM lad_dev.voice_call_logs
                         WHERE id::text = %s
                     """, (str(call_log_id),))
@@ -3231,8 +3404,8 @@ class StandaloneAnalytics:
             if not call_data:
                 raise ValueError(f"Call log {call_log_id} not found in database")
             
-            db_call_id, transcripts, started_at, ended_at = call_data[:4]
-            recording_url = call_data[4] if len(call_data) > 4 else None
+            db_call_id, transcripts, started_at, ended_at, duration_seconds_db = call_data[:5]
+            recording_url = call_data[5] if len(call_data) > 5 else None
             
             # Get tenant_id for save_to_lad_dev
             cursor.execute(
@@ -3241,12 +3414,6 @@ class StandaloneAnalytics:
             )
             tenant_result = cursor.fetchone()
             tenant_id = tenant_result[0] if tenant_result else None
-            
-            # Calculate duration from timestamps
-            if started_at and ended_at:
-                duration = int((ended_at - started_at).total_seconds())
-            else:
-                duration = 0
             
             # Get transcript from transcripts column
             # Handle both JSONB (dict/list) and text formats
@@ -3274,6 +3441,13 @@ class StandaloneAnalytics:
             if not conversation_text:
                 raise ValueError(f"No transcript found for call {call_log_id}")
             
+            # Duration: only use duration_seconds column (if missing/invalid -> 0)
+            try:
+                duration = int(float(duration_seconds_db)) if duration_seconds_db is not None else 0
+            except (ValueError, TypeError):
+                duration = 0
+            logger.info(f"Duration from duration_seconds column: {duration}s")
+            
             call_id = f"DB_{call_log_id}_{started_at.strftime('%Y%m%d_%H%M%S') if started_at else 'unknown'}"
             
             logger.info(f"Call ID: {call_id}, Duration: {duration}s, Started: {started_at}, Ended: {ended_at}")
@@ -3290,18 +3464,18 @@ class StandaloneAnalytics:
             if tenant_id:
                 result['tenant_id'] = str(tenant_id)
             
-            # Save to database - use new method if tenant_id is available
-            if tenant_id and STORAGE_CLASSES_AVAILABLE:
-                logger.info("Saving analytics to lad_dev.voice_call_analysis table...")
-                success = await self.analytics.save_to_lad_dev(result, str(db_call_id), str(tenant_id))
-            else:
-                logger.info("Saving analytics to post_call_analysis_voiceagent table (legacy)...")
-                success = self.analytics.save_to_database(result, db_call_id, self.db_config)
-            
-            if success:
-                logger.info("Analytics saved to database successfully!")
-            else:
-                logger.error("Failed to save analytics to database")
+                # Save to database - use new method if tenant_id is available
+                if tenant_id and STORAGE_CLASSES_AVAILABLE:
+                    logger.info("Saving analytics to lad_dev.voice_call_analysis table...")
+                    success = await self.analytics.save_to_lad_dev(result, str(db_call_id), str(tenant_id))
+                else:
+                    logger.info("Saving analytics to post_call_analysis_voiceagent table (legacy)...")
+                    success = self.analytics.save_to_database(result, db_call_id, self.db_config)
+                
+                if success:
+                    logger.info("Analytics saved to database successfully!")
+                else:
+                    logger.error("Failed to save analytics to database")
             
             return result
             
