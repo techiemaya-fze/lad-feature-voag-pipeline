@@ -2018,7 +2018,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 "prospect_questions": [],
                 "prospect_concerns": [],
                 "next_steps": [],
-                "recommendations": "Prospect doesn't provide enough response to make the recomendation\n--- AI ANALYTICS RECOMMENDATION SUMMARY ---\nOverall Lead Status: Cold Lead (6.0/10)\nEngagement Level: Low\nFarthest Stage Reached: greeting\nProspect Sentiment: Neutral",
+                "recommendations": "Prospect doesn't provide enough response to make the recommendations\n--- AI ANALYTICS RECOMMENDATION SUMMARY ---\nOverall Lead Status: Cold Lead (6.0/10)\nEngagement Level: Low\nFarthest Stage Reached: greeting\nProspect Sentiment: Neutral",
                 "business_name": None,
                 "contact_person": None,
                 "phone_number": None
