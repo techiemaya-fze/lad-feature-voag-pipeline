@@ -2641,11 +2641,9 @@ CONFIDENCE: [High/Medium/Low]"""
             summary_text = summary.get("call_summary", "")
             if not summary_text and summary.get("key_discussion_points"):
                 summary_text = "; ".join(summary.get("key_discussion_points", []))
-            
-            # Build sentiment category
-            sentiment_category = sentiment.get("sentiment_category", "neutral").lower()
-            if sentiment_category not in ["positive", "negative", "neutral"]:
-                sentiment_category = "neutral"
+
+            # Map DB sentiment column to the full sentiment description (legacy parity)
+            sentiment_value = str(sentiment.get("sentiment_description") or "").strip()
             
             # Build key_points list
             key_points = []
@@ -2687,7 +2685,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 call_log_id=call_log_id,
                 tenant_id=tenant_id,
                 summary=summary_text,
-                sentiment=sentiment_category,
+                sentiment=sentiment_value,
                 key_points=key_points,
                 lead_extraction=lead_extraction,
                 raw_analysis=raw_analysis,
