@@ -275,7 +275,7 @@ class CallAnalytics:
             
             # Extract bullet points
             if in_points_section or re.match(r'^[•\-\*]\s+', line) or re.match(r'^\d+[\.\)]\s+', line):
-                point = re.sub(r'^[•\-\*\d+[\.\)]\s+', '', line).strip()
+                point = re.sub(r'^([•\-\*]|\d+[\.\)])\s+', '', line).strip()
                 if len(point) > 10:  # Only meaningful points
                     points.append(point)
             # Look for lines starting with keywords
@@ -311,7 +311,7 @@ class CallAnalytics:
                 question = line.strip()
                 if '?' in question and len(question) > 10:
                     # Clean up bullet points
-                    question = re.sub(r'^[•\-\*\d+[\.\)]\s+', '', question).strip()
+                    question = re.sub(r'^([•\-\*]|\d+[\.\)])\s+', '', question).strip()
                     if len(question) > 10:
                         questions.append(question)
         
@@ -350,7 +350,7 @@ class CallAnalytics:
             # Extract concerns
             if in_concerns_section:
                 concern = line.strip()
-                concern = re.sub(r'^[•\-\*\d+[\.\)]\s+', '', concern).strip()
+                concern = re.sub(r'^([•\-\*]|\d+[\.\)])\s+', '', concern).strip()
                 if len(concern) > 10:
                     concerns.append(concern)
         
@@ -388,7 +388,7 @@ class CallAnalytics:
             
             # Extract next steps (bullet points or numbered items)
             if in_next_steps_section or re.match(r'^[•\-\*]\s+', line) or re.match(r'^\d+[\.\)]\s+', line):
-                step = re.sub(r'^[•\-\*\d+[\.\)]\s+', '', line).strip()
+                step = re.sub(r'^([•\-\*]|\d+[\.\)])\s+', '', line).strip()
                 if len(step) > 10:  # Only meaningful steps
                     next_steps.append(step)
             # Look for lines starting with next step keywords
