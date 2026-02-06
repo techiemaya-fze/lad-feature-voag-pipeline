@@ -2018,7 +2018,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 "prospect_questions": [],
                 "prospect_concerns": [],
                 "next_steps": [],
-                "recommendations": "prospect does not provide enough conversation to make recommendation\n\nAnalytics Context:\n- Lead Score: 6.0/10 (Cold Lead)\n- Engagement: Low\n- Emotion: Neutral",
+                "recommendations": "Prospect doesn't provide enough response to make the recomendation\n--- AI ANALYTICS RECOMMENDATION SUMMARY ---\nOverall Lead Status: Cold Lead (6.0/10)\nEngagement Level: Low\nFarthest Stage Reached: greeting\nProspect Sentiment: Neutral",
                 "business_name": None,
                 "contact_person": None,
                 "phone_number": None
@@ -2032,7 +2032,7 @@ CONFIDENCE: [High/Medium/Low]"""
             
             default_disposition = {
                 "disposition": "NURTURE (7 DAYS)",
-                "recommended_action": "Check if valid number/retry later",
+                "recommended_action": "Attempt a follow-up call in 7 days to establish a two-way conversation .",
                 "reasoning": "No user response recorded",
                 "decision_confidence": "High"
             }
@@ -2065,13 +2065,19 @@ CONFIDENCE: [High/Medium/Low]"""
                 "quality_metrics": {
                     "overall_score": 0,
                     "engagement_level": "Low",
+                    "quality_rating": "Poor",
                     "clarity": "N/A",
-                    "objection_handling": "N/A"
+                    "objection_handling": "N/A",
+                    "conversation_turns": {"user_turns": 0, "bot_turns": 0},
+                    "response_rate": "0%",
+                    "avg_user_response_length": 0,
+                    "questions_asked_by_user": 0,
                 }, 
                 "stage_info": {
-                    "stage": "Connection",
-                    "is_qualified": False,
-                    "next_action": "Retry"
+                    "stages_reached": ["1_greeting"],
+                    "final_stage": "1_greeting",
+                    "stage_completion_percentage": "16.7%",
+                    "total_stages_reached": 1,
                 },
                 "lead_info": None,
                 "lead_info_path": None,
@@ -2515,14 +2521,15 @@ CONFIDENCE: [High/Medium/Low]"""
             }
             
              # Extract cost values - use USD directly (INR conversion removed)
-            cost_numeric = None
-            analysis_cost_value = None
-            if cost_data:
+            cost_numeric = 0.0
+            analysis_cost_value = 0.0
+            if cost_data is not None:
                 # Use cost_usd directly (INR was removed as legacy)
                 cost_usd = cost_data.get("cost_usd", 0.0)
-                if cost_usd and cost_usd > 0:
-                    cost_numeric = float(cost_usd)
-                    analysis_cost_value = cost_numeric
+                if cost_usd is None:
+                    cost_usd = 0.0
+                cost_numeric = float(cost_usd)
+                analysis_cost_value = cost_numeric
             # Prepare text fields for old columns (convert lists/dicts to text)
             def to_text(val):
                 if val is None:
@@ -2625,117 +2632,25 @@ CONFIDENCE: [High/Medium/Low]"""
             bool: True if saved successfully
         """
         if not STORAGE_CLASSES_AVAILABLE:
-            logger.error("CallAnalysisStorage not available - cannot save to lad_dev")
+            logger.error("DB config helpers not available - cannot save to lad_dev")
             return False
-        
-        try:
-            # Extract data from analysis dictionary
-            sentiment = analysis.get("sentiment", {})
-            summary = analysis.get("summary", {})
-            lead_score = analysis.get("lead_score", {})
-            disposition = analysis.get("lead_disposition", {})
-            cost_data = analysis.get("cost", {})
-            lead_info = analysis.get("lead_info")
-            
-            # Build summary text
-            summary_text = summary.get("call_summary", "")
-            if not summary_text and summary.get("key_discussion_points"):
-                summary_text = "; ".join(summary.get("key_discussion_points", []))
 
-            # Map DB sentiment column to the full sentiment description (legacy parity)
-            sentiment_value = str(sentiment.get("sentiment_description") or "").strip()
-            
-            # Build key_points list
-            key_points = []
-            if summary.get("key_discussion_points"):
-                key_points.extend(summary.get("key_discussion_points", []))
-            if summary.get("next_steps"):
-                key_points.extend([f"Next: {s}" for s in summary.get("next_steps", [])])
-            
-            # Build lead_extraction dict
-            lead_extraction = {}
-            if lead_info:
-                lead_extraction = lead_info
-            elif lead_score:
-                lead_extraction = {
-                    "lead_category": lead_score.get("lead_category"),
-                    "lead_score": lead_score.get("lead_score"),
-                    "priority": lead_score.get("priority"),
-                }
-            if disposition:
-                lead_extraction["disposition"] = disposition.get("disposition")
-                lead_extraction["recommended_action"] = disposition.get("recommended_action")
-            
-            # Build raw_analysis (full response for debugging)
-            raw_analysis = {
-                "sentiment": sentiment,
-                "summary": summary,
-                "lead_score": lead_score,
-                "lead_disposition": disposition,
-                "quality_metrics": analysis.get("quality_metrics"),
-                "stage_info": analysis.get("stage_info"),
-            }
-            
-            # Get analysis cost
-            analysis_cost = cost_data.get("cost_usd", 0.0) if cost_data else None
-            
-            # Use storage class
-            storage = CallAnalysisStorage()
-            analysis_id = await storage.upsert_analysis(
-                call_log_id=call_log_id,
-                tenant_id=tenant_id,
-                summary=summary_text,
-                sentiment=sentiment_value,
-                key_points=key_points,
-                lead_extraction=lead_extraction,
-                raw_analysis=raw_analysis,
-                analysis_cost=analysis_cost,
+        try:
+            from db.db_config import get_db_config
+
+            db_config = get_db_config()
+            analysis = dict(analysis or {})
+            analysis["tenant_id"] = tenant_id
+
+            # Full-column persistence into lad_dev.voice_call_analysis.
+            # This updates: disposition, lead_category, recommendations, key_phrases, etc.
+            return bool(
+                self.save_to_database(
+                    analysis=analysis,
+                    call_log_id=call_log_id,
+                    db_config=db_config,
+                )
             )
-            
-            if analysis_id:
-                logger.info(f"Analytics saved to lad_dev.voice_call_analysis (id={analysis_id})")
-                
-                # Update tags column in leads table with lead_category value
-                lead_category_value = lead_score.get("lead_category", "")
-                if lead_category_value:
-                    try:
-                        # Import LeadStorage to update tags
-                        from db.storage.leads import LeadStorage
-                        from db.storage.calls import CallStorage
-                        
-                        # Get lead_id from voice_call_logs
-                        call_storage = CallStorage()
-                        call_log = await call_storage.get_call_by_id(call_log_id)
-                        
-                        if call_log and call_log.get('lead_id'):
-                            lead_id_from_call = call_log.get('lead_id')
-                            
-                            # Update tags in leads table using direct SQL
-                            # (LeadStorage doesn't have a method to update just tags)
-                            import psycopg2
-                            import json
-                            from datetime import timezone
-                            from db.connection_pool import get_db_connection
-                            from db.db_config import get_db_config
-                            
-                            db_config = get_db_config()
-                            with get_db_connection(db_config) as conn:
-                                with conn.cursor() as cursor:
-                                    cursor.execute(
-                                        "UPDATE lad_dev.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
-                                        (json.dumps([lead_category_value]), datetime.now(timezone.utc), lead_id_from_call)
-                                    )
-                                    conn.commit()
-                                    logger.info(f"Updated tags column in leads table (lead_id: {lead_id_from_call}, tags: {[lead_category_value]})")
-                    except Exception as tag_update_error:
-                        logger.warning(f"Failed to update tags in leads table: {tag_update_error}")
-                        # Don't fail the whole operation if tag update fails
-                
-                return True
-            else:
-                logger.error("Failed to save analytics to lad_dev")
-                return False
-                
         except Exception as e:
             logger.error(f"lad_dev save failed: {e}", exc_info=True)
             return False
@@ -2774,7 +2689,7 @@ CONFIDENCE: [High/Medium/Low]"""
         # Quality Metrics
         if 'quality_metrics' in analysis:
             quality = analysis['quality_metrics']
-            print(f"\n📈 CONVERSATION QUALITY: {quality['quality_rating']}")
+            print(f"\nCONVERSATION QUALITY: {quality['quality_rating']}")
             print(f"   Engagement Level: {quality['engagement_level']}")
             print(f"   Turns: User={quality['conversation_turns']['user_turns']}, Bot={quality['conversation_turns']['bot_turns']}")
             print(f"   Response Rate: {quality['response_rate']}")
