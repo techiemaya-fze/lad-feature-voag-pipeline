@@ -638,16 +638,17 @@ class CallAnalytics:
         input_cost_usd = (self.cost_tracker['total_input_tokens'] / 1_000_000) * INPUT_COST_PER_1M_TOKENS
         output_cost_usd = (self.cost_tracker['total_output_tokens'] / 1_000_000) * OUTPUT_COST_PER_1M_TOKENS
         total_cost_usd = input_cost_usd + output_cost_usd
-        
-        # No INR conversion or rounding as requested by user
+
+        # Round to a fixed precision for clean DB + JSON values (avoid float tails like 0.0038954999999999997)
+        total_cost_usd = round(float(total_cost_usd), 5)
         
         return {
             "total_api_calls": self.cost_tracker['api_calls'],
             "input_tokens": self.cost_tracker['total_input_tokens'],
             "output_tokens": self.cost_tracker['total_output_tokens'],
             "total_tokens": self.cost_tracker['total_input_tokens'] + self.cost_tracker['total_output_tokens'],
-            "cost_usd": total_cost_usd, # No rounding
-            "cost_usd_formatted": f"${total_cost_usd:.10f}".rstrip('0').rstrip('.'), # Precise formatting
+            "cost_usd": total_cost_usd,
+            "cost_usd_formatted": f"${total_cost_usd:.5f}",
             "pricing_model": "Gemini 3 Flash Preview",
             "input_rate": "$0.50 per 1M tokens",
             "output_rate": "$3.00 per 1M tokens"
@@ -2528,7 +2529,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 cost_usd = cost_data.get("cost_usd", 0.0)
                 if cost_usd is None:
                     cost_usd = 0.0
-                cost_numeric = float(cost_usd)
+                cost_numeric = round(float(cost_usd), 5)
                 analysis_cost_value = cost_numeric
             # Prepare text fields for old columns (convert lists/dicts to text)
             def to_text(val):
