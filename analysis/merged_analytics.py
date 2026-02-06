@@ -51,7 +51,7 @@ except ImportError:
     DB_AVAILABLE = False
     logger.warning("psycopg2 not installed. Install with: pip install psycopg2-binary")
 
-
+import openai
 
 # Lead information extractor
 try:
@@ -2633,25 +2633,118 @@ CONFIDENCE: [High/Medium/Low]"""
             bool: True if saved successfully
         """
         if not STORAGE_CLASSES_AVAILABLE:
-            logger.error("DB config helpers not available - cannot save to lad_dev")
+            logger.error("CallAnalysisStorage not available - cannot save to lad_dev")
             return False
-
+        
         try:
-            from db.db_config import get_db_config
-
-            db_config = get_db_config()
-            analysis = dict(analysis or {})
-            analysis["tenant_id"] = tenant_id
-
-            # Full-column persistence into lad_dev.voice_call_analysis.
-            # This updates: disposition, lead_category, recommendations, key_phrases, etc.
-            return bool(
-                self.save_to_database(
-                    analysis=analysis,
-                    call_log_id=call_log_id,
-                    db_config=db_config,
-                )
+            # Extract data from analysis dictionary
+            sentiment = analysis.get("sentiment", {})
+            summary = analysis.get("summary", {})
+            lead_score = analysis.get("lead_score", {})
+            disposition = analysis.get("lead_disposition", {})
+            cost_data = analysis.get("cost", {})
+            lead_info = analysis.get("lead_info")
+            
+            # Build summary text
+            summary_text = summary.get("call_summary", "")
+            if not summary_text and summary.get("key_discussion_points"):
+                summary_text = "; ".join(summary.get("key_discussion_points", []))
+            
+            # Build sentiment category
+            sentiment_category = sentiment.get("sentiment_category", "neutral").lower()
+            if sentiment_category not in ["positive", "negative", "neutral"]:
+                sentiment_category = "neutral"
+            
+            # Build key_points list
+            key_points = []
+            if summary.get("key_discussion_points"):
+                key_points.extend(summary.get("key_discussion_points", []))
+            if summary.get("next_steps"):
+                key_points.extend([f"Next: {s}" for s in summary.get("next_steps", [])])
+            
+            # Build lead_extraction dict
+            lead_extraction = {}
+            if lead_info:
+                lead_extraction = lead_info
+            elif lead_score:
+                lead_extraction = {
+                    "lead_category": lead_score.get("lead_category"),
+                    "lead_score": lead_score.get("lead_score"),
+                    "priority": lead_score.get("priority"),
+                }
+            if disposition:
+                lead_extraction["disposition"] = disposition.get("disposition")
+                lead_extraction["recommended_action"] = disposition.get("recommended_action")
+            
+            # Build raw_analysis (full response for debugging)
+            raw_analysis = {
+                "sentiment": sentiment,
+                "summary": summary,
+                "lead_score": lead_score,
+                "lead_disposition": disposition,
+                "quality_metrics": analysis.get("quality_metrics"),
+                "stage_info": analysis.get("stage_info"),
+            }
+            
+            # Get analysis cost
+            analysis_cost = cost_data.get("cost_usd", 0.0) if cost_data else None
+            
+            # Use storage class
+            storage = CallAnalysisStorage()
+            analysis_id = await storage.upsert_analysis(
+                call_log_id=call_log_id,
+                tenant_id=tenant_id,
+                summary=summary_text,
+                sentiment=sentiment_category,
+                key_points=key_points,
+                lead_extraction=lead_extraction,
+                raw_analysis=raw_analysis,
+                analysis_cost=analysis_cost,
             )
+            
+            if analysis_id:
+                logger.info(f"Analytics saved to lad_dev.voice_call_analysis (id={analysis_id})")
+                
+                # Update tags column in leads table with lead_category value
+                lead_category_value = lead_score.get("lead_category", "")
+                if lead_category_value:
+                    try:
+                        # Import LeadStorage to update tags
+                        from db.storage.leads import LeadStorage
+                        from db.storage.calls import CallStorage
+                        
+                        # Get lead_id from voice_call_logs
+                        call_storage = CallStorage()
+                        call_log = await call_storage.get_call_by_id(call_log_id)
+                        
+                        if call_log and call_log.get('lead_id'):
+                            lead_id_from_call = call_log.get('lead_id')
+                            
+                            # Update tags in leads table using direct SQL
+                            # (LeadStorage doesn't have a method to update just tags)
+                            import psycopg2
+                            import json
+                            from datetime import timezone
+                            from db.connection_pool import get_db_connection
+                            from db.db_config import get_db_config
+                            
+                            db_config = get_db_config()
+                            with get_db_connection(db_config) as conn:
+                                with conn.cursor() as cursor:
+                                    cursor.execute(
+                                        "UPDATE lad_dev.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
+                                        (json.dumps([lead_category_value]), datetime.now(timezone.utc), lead_id_from_call)
+                                    )
+                                    conn.commit()
+                                    logger.info(f"Updated tags column in leads table (lead_id: {lead_id_from_call}, tags: {[lead_category_value]})")
+                    except Exception as tag_update_error:
+                        logger.warning(f"Failed to update tags in leads table: {tag_update_error}")
+                        # Don't fail the whole operation if tag update fails
+                
+                return True
+            else:
+                logger.error("Failed to save analytics to lad_dev")
+                return False
         except Exception as e:
             logger.error(f"lad_dev save failed: {e}", exc_info=True)
             return False
