@@ -646,8 +646,8 @@ class CallAnalytics:
             "input_tokens": self.cost_tracker['total_input_tokens'],
             "output_tokens": self.cost_tracker['total_output_tokens'],
             "total_tokens": self.cost_tracker['total_input_tokens'] + self.cost_tracker['total_output_tokens'],
-            "cost_usd": total_cost_usd, # No rounding
-            "cost_usd_formatted": f"${total_cost_usd:.10f}".rstrip('0').rstrip('.'), # Precise formatting
+            "cost_usd": total_cost_usd,
+            "cost_usd_formatted": f"${total_cost_usd:.5f}",
             "pricing_model": "Gemini 3 Flash Preview",
             "input_rate": "$0.50 per 1M tokens",
             "output_rate": "$3.00 per 1M tokens"
@@ -2520,14 +2520,15 @@ CONFIDENCE: [High/Medium/Low]"""
                 "cost_full": cost_data,
             }
             
-            #Extract cost values - use USD directly (INR conversion removed)
-            cost_numeric = None
-            analysis_cost_value = None
+            # Extract cost values - use USD directly (INR conversion removed)
+            # Default to 0.00 for no-user-speech calls (not NULL)
+            cost_numeric = 0.0
+            analysis_cost_value = 0.0
             if cost_data:
                 # Use cost_usd directly (INR was removed as legacy)
                 cost_usd = cost_data.get("cost_usd", 0.0)
-                if cost_usd and cost_usd > 0:
-                    cost_numeric = float(cost_usd)
+                if cost_usd is not None:
+                    cost_numeric = round(float(cost_usd), 5)
                     analysis_cost_value = cost_numeric
 
             # Prepare text fields for old columns (convert lists/dicts to text)
