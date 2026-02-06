@@ -639,16 +639,15 @@ class CallAnalytics:
         output_cost_usd = (self.cost_tracker['total_output_tokens'] / 1_000_000) * OUTPUT_COST_PER_1M_TOKENS
         total_cost_usd = input_cost_usd + output_cost_usd
 
-        # Round to a fixed precision for clean DB + JSON values (avoid float tails like 0.0038954999999999997)
-        total_cost_usd = round(float(total_cost_usd), 5)
+         # No INR conversion or rounding as requested by user
         
         return {
             "total_api_calls": self.cost_tracker['api_calls'],
             "input_tokens": self.cost_tracker['total_input_tokens'],
             "output_tokens": self.cost_tracker['total_output_tokens'],
             "total_tokens": self.cost_tracker['total_input_tokens'] + self.cost_tracker['total_output_tokens'],
-            "cost_usd": total_cost_usd,
-            "cost_usd_formatted": f"${total_cost_usd:.5f}",
+            "cost_usd": total_cost_usd, # No rounding
+            "cost_usd_formatted": f"${total_cost_usd:.10f}".rstrip('0').rstrip('.'), # Precise formatting
             "pricing_model": "Gemini 3 Flash Preview",
             "input_rate": "$0.50 per 1M tokens",
             "output_rate": "$3.00 per 1M tokens"
@@ -2521,16 +2520,16 @@ CONFIDENCE: [High/Medium/Low]"""
                 "cost_full": cost_data,
             }
             
-             # Extract cost values - use USD directly (INR conversion removed)
-            cost_numeric = 0.0
-            analysis_cost_value = 0.0
-            if cost_data is not None:
+            #Extract cost values - use USD directly (INR conversion removed)
+            cost_numeric = None
+            analysis_cost_value = None
+            if cost_data:
                 # Use cost_usd directly (INR was removed as legacy)
                 cost_usd = cost_data.get("cost_usd", 0.0)
-                if cost_usd is None:
-                    cost_usd = 0.0
-                cost_numeric = round(float(cost_usd), 5)
-                analysis_cost_value = cost_numeric
+                if cost_usd and cost_usd > 0:
+                    cost_numeric = float(cost_usd)
+                    analysis_cost_value = cost_numeric
+
             # Prepare text fields for old columns (convert lists/dicts to text)
             def to_text(val):
                 if val is None:
@@ -2650,10 +2649,10 @@ CONFIDENCE: [High/Medium/Low]"""
             if not summary_text and summary.get("key_discussion_points"):
                 summary_text = "; ".join(summary.get("key_discussion_points", []))
             
-            # Build sentiment category
-            sentiment_category = sentiment.get("sentiment_category", "neutral").lower()
-            if sentiment_category not in ["positive", "negative", "neutral"]:
-                sentiment_category = "neutral"
+            # Build sentiment description (full text, not category)
+            sentiment_value = str(sentiment.get("sentiment_description") or "").strip()
+            if not sentiment_value:
+                sentiment_value = "Neutral"
             
             # Build key_points list
             key_points = []
@@ -2695,7 +2694,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 call_log_id=call_log_id,
                 tenant_id=tenant_id,
                 summary=summary_text,
-                sentiment=sentiment_category,
+                sentiment=sentiment_value,
                 key_points=key_points,
                 lead_extraction=lead_extraction,
                 raw_analysis=raw_analysis,
