@@ -886,18 +886,18 @@ Return JSON only."""
             # Validate student_grade - only allow valid grades (9-12)
             if student_grade is not None:
                 if not isinstance(student_grade, int) or student_grade < 9 or student_grade > 12:
-                    # Only default to Grade 12 for GLINKS tenant
+                    # Only default to Grade 10 for GLINKS tenant
                     if tenant_id == GLINKS_TENANT_ID:
-                        logger.warning(f"Invalid student_grade {student_grade}, defaulting to Grade 12 for GLINKS tenant")
-                        student_grade = 12
+                        logger.warning(f"Invalid student_grade {student_grade}, defaulting to Grade 10 for GLINKS tenant")
+                        student_grade = 10
                     else:
                         logger.warning(f"Invalid student_grade {student_grade}, setting to None for non-GLINKS tenant")
                         student_grade = None
             else:
-                # Only default to Grade 12 for GLINKS tenant when no grade mentioned
+                # Only default to Grade 10 for GLINKS tenant when no grade mentioned
                 if tenant_id == GLINKS_TENANT_ID:
-                    logger.info("No grade mentioned, defaulting to Grade 12 for GLINKS tenant")
-                    student_grade = 12
+                    logger.info("No grade mentioned, defaulting to Grade 10 for GLINKS tenant")
+                    student_grade = 10
                 else:
                     logger.info("No grade mentioned, keeping as None for non-GLINKS tenant")
                     student_grade = None
