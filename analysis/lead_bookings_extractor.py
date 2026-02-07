@@ -262,10 +262,14 @@ class LeadBookingsExtractor:
                 ),
                 "student_grade": types.Schema(
                     type=types.Type.INTEGER,
-                    description="Student grade (9-12) ONLY if conversation contains exact phrase 'grade X', 'class X', or 'Xth standard' where X is 9-12. If no such exact phrase exists, return null. Never guess or assume grade."
+                    nullable=True,
+                    description="Grade (9-12) ONLY if USER explicitly confirms their grade with phrases like: 'I'm in grade 10', 'I am in class 9', 'I study in 11th grade', 'My grade is 12', etc. Do NOT extract from agent statements. Default to null."
                 ),
             }
         )
+        
+        # Debug: Show conversation content being sent to Gemini
+        logger.info(f"CONVERSATION SENT TO GEMINI:\n{conversation_text}\n---END CONVERSATION---")
         
         prompt = f"""You are analyzing a phone conversation between an Agent and a User to extract followup scheduling information.
 
@@ -315,7 +319,23 @@ INSTRUCTIONS - Read the ENTIRE conversation carefully before answering:
    - false if: No confirmation, declined, vague, changed mind, or said no at the end
    - CRITICAL: If user confirmed earlier but declined/ended later, this is FALSE
 
-4. **student_grade**: Extract grade (9-12) ONLY from EXPLICIT mentions like "grade 10", "class 11", "12th standard", "I'm in 10th grade", "my child is in grade 11". The grade MUST be clearly stated with the exact word "grade", "class", or "standard" followed by the number. If there is ANY doubt or the grade is not explicitly mentioned, return null. Do NOT guess, infer, or assume grade from any context.
+4. **student_grade**: DEFAULT is null. ONLY return a number (9, 10, 11, or 12) if USER confirms EXACT match:
+   
+   CRITICAL: The USER must explicitly state their grade. Do NOT extract from agent statements.
+   
+   REQUIRED USER PHRASES:
+   - "I'm in grade 9", "I'm in grade 10", "I'm in grade 11", "I'm in grade 12"
+   - "I am in class 9", "I am in class 10", "I am in class 11", "I am in class 12"
+   - "I study in 9th grade", "I study in 10th grade", "I study in 11th grade", "I study in 12th grade"
+   - "I'm in 9th standard", "I'm in 10th standard", "I'm in 11th standard", "I'm in 12th standard"
+   - "I'm in ninth class", "I'm in tenth class", "I'm in eleventh class", "I'm in twelfth class"
+   - "My grade is 9", "My grade is 10", "My grade is 11", "My grade is 12"
+   
+   IF USER EXACTLY CONFIRMS GRADE → return corresponding number
+   IF USER DOES NOT CONFIRM GRADE → return null (this is the default)
+   
+   IMPORTANT: Do NOT extract grade from agent statements like "I see you're in 10th grade". 
+   Only extract if the USER themselves confirm their grade.
 
 Return JSON only."""
 
@@ -883,54 +903,44 @@ Return JSON only."""
             logger.info(f"Gemini raw result: {result}")
             logger.info(f"Extracted student_grade: {student_grade} (type: {type(student_grade)})")
             
-            # Validate student_grade - only allow valid grades (9-12)
+            # Validate student_grade range (9-12)
             if student_grade is not None:
                 if not isinstance(student_grade, int) or student_grade < 9 or student_grade > 12:
-                    # Only default to Grade 10 for GLINKS tenant
-                    if tenant_id == GLINKS_TENANT_ID:
-                        logger.warning(f"Invalid student_grade {student_grade}, defaulting to Grade 10 for GLINKS tenant")
-                        student_grade = 10
-                    else:
-                        logger.warning(f"Invalid student_grade {student_grade}, setting to None for non-GLINKS tenant")
-                        student_grade = None
-            else:
-                # Only default to Grade 10 for GLINKS tenant when no grade mentioned
-                if tenant_id == GLINKS_TENANT_ID:
-                    logger.info("No grade mentioned, defaulting to Grade 10 for GLINKS tenant")
-                    student_grade = 10
-                else:
-                    logger.info("No grade mentioned, keeping as None for non-GLINKS tenant")
+                    logger.warning(f"Invalid student_grade {student_grade}, setting to None")
                     student_grade = None
+        
+        # Apply GLINKS schedule calculator if tenant matches (for both empty and non-empty conversations)
+        logger.info(f"GLINKS check: tenant_id={tenant_id}, GLINKS_TENANT_ID={GLINKS_TENANT_ID}")
+        logger.info(f"GLINKS check: schedule_calculator={self.schedule_calculator is not None}, scheduled_at={scheduled_at is not None}, student_grade={student_grade}")
+        
+        if (self.schedule_calculator and 
+            tenant_id == GLINKS_TENANT_ID and 
+            scheduled_at):
             
-            # Apply GLINKS schedule calculator if tenant matches
-            logger.info(f"GLINKS check: tenant_id={tenant_id}, GLINKS_TENANT_ID={GLINKS_TENANT_ID}")
-            logger.info(f"GLINKS check: schedule_calculator={self.schedule_calculator is not None}, scheduled_at={scheduled_at is not None}, student_grade={student_grade}")
+            logger.info("GLINKS conditions met - applying schedule calculator")
             
-            if (self.schedule_calculator and 
-                tenant_id == GLINKS_TENANT_ID and 
-                scheduled_at and 
-                student_grade):
+            try:
+                # Check if any date or day was confirmed (not just default timeline)
+                confirmed_date_mentioned = self._has_confirmed_date_or_day(calculation_method)
                 
-                logger.info("GLINKS conditions met - applying schedule calculator")
+                # Get valid schedule from calculator
+                valid_schedule = self.schedule_calculator.calculate_next_call(
+                    current_time=scheduled_at,
+                    student_grade=student_grade,
+                    booking_type=booking_type,
+                    confirmed_date_mentioned=confirmed_date_mentioned
+                )
                 
-                try:
-                    # Get valid schedule from calculator
-                    valid_schedule = self.schedule_calculator.calculate_next_call(
-                        current_time=scheduled_at,
-                        student_grade=student_grade,
-                        booking_type=booking_type
-                    )
+                if valid_schedule:
+                    scheduled_at = valid_schedule
+                    calculation_method = f"{calculation_method}_glinks_adjusted"
+                    logger.info(f"GLINKS schedule adjusted: {scheduled_at}")
+                else:
+                    logger.warning(f"GLINKS calculator returned no valid schedule for {scheduled_at}, grade {student_grade}")
                     
-                    if valid_schedule:
-                        scheduled_at = valid_schedule
-                        calculation_method = f"{calculation_method}_glinks_adjusted"
-                        logger.info(f"GLINKS schedule adjusted: {scheduled_at}")
-                    else:
-                        logger.warning(f"GLINKS calculator returned no valid schedule for {scheduled_at}, grade {student_grade}")
-                        
-                except Exception as e:
-                    logger.error(f"GLINKS schedule calculator error: {e}")
-                    # Keep original scheduled_at if calculator fails
+            except Exception as e:
+                logger.error(f"GLINKS schedule calculator error: {e}")
+                # Keep original scheduled_at if calculator fails
         
         # Get voice_id from agent_id
         voice_id = await self.storage.get_voice_id_from_agent_id(agent_id)
@@ -987,49 +997,63 @@ Return JSON only."""
         logger.info(f"   Retry: {retry_count}")
         return booking_data
     
+    def _has_confirmed_date_or_day(self, calculation_method: str) -> bool:
+        """Check if any date or day was confirmed (not just default timeline)"""
+        # Methods that indicate user confirmed a specific date/day/time
+        # These should NOT be overridden by grade timelines
+        confirmed_date_methods = {
+            # Specific times
+            'relative_+1h_from_last', 'relative_+2h_from_last', 'relative_+3h_from_last',
+            'relative_+4h_from_last', 'relative_+5h_from_last', 'relative_+6h_from_last',
+            'relative_+7h_from_last', 'relative_+8h_from_last', 'relative_+9h_from_last',
+            'relative_+10h_from_last', 'relative_+11h_from_last', 'relative_+12h_from_last',
+            'relative_+13h_from_last', 'relative_+14h_from_last', 'relative_+15h_from_last',
+            'relative_+16h_from_last', 'relative_+17h_from_last', 'relative_+18h_from_last',
+            'relative_+19h_from_last', 'relative_+20h_from_last', 'relative_+21h_from_last',
+            'relative_+22h_from_last', 'relative_+23h_from_last', 'relative_+24h_from_last',
+            'relative_+1m_from_last', 'relative_+2m_from_last', 'relative_+3m_from_last',
+            'relative_+4m_from_last', 'relative_+5m_from_last', 'relative_+10m_from_last',
+            'relative_+15m_from_last', 'relative_+20m_from_last', 'relative_+25m_from_last',
+            'relative_+30m_from_last', 'relative_+45m_from_last', 'relative_+50m_from_last',
+            'relative_+55m_from_last', 'relative_+60m_from_last',
+            
+            # Specific days/dates
+            'tomorrow_parsed', 'today_parsed', 'day_after_tomorrow',
+            'weekday_monday', 'weekday_tuesday', 'weekday_wednesday', 
+            'weekday_thursday', 'weekday_friday', 'weekday_saturday', 'weekday_sunday',
+            'month_january', 'month_february', 'month_march', 'month_april',
+            'month_may', 'month_june', 'month_july', 'month_august',
+            'month_september', 'month_october', 'month_november', 'month_december',
+            
+            # Relative dates (days, weeks, months)
+            'relative_+1d', 'relative_+2d', 'relative_+3d', 'relative_+4d', 'relative_+5d',
+            'relative_+6d', 'relative_+7d', 'relative_+1w', 'relative_+2w', 'relative_+3w',
+            'relative_+1month', 'relative_+2month', 'relative_+3month'
+        }
+        
+        # Methods that indicate NO specific date mentioned - these should use grade timelines
+        default_timeline_methods = {
+            'no_confirmation_1day', 'empty_transcript_1day', 'no_confirmation'
+        }
+        
+        # If it's a default timeline method, then no date was confirmed
+        if calculation_method in default_timeline_methods:
+            return False
+        
+        # If it's a confirmed date method, then date was confirmed
+        return calculation_method in confirmed_date_methods
+    
     async def save_booking(self, booking_data: Dict) -> Dict:
-        """
-        Save booking to database
-        
-        Args:
-            booking_data: Booking data dictionary
-        
-        Returns:
-            Dictionary with save results
-        """
-        result = {"db": None, "errors": []}
+        """Skip database save temporarily for testing"""
+        result = {"db": "skipped", "errors": []}
         
         if not booking_data:
             result["errors"].append("No booking data provided")
             return result
         
-        # Save to database (only if required fields are present)
-        try:
-            # Check if required fields are present
-            if not booking_data.get('lead_id'):
-                error_msg = "Skipping database save: lead_id is required but is null"
-                logger.warning(error_msg)
-                result["errors"].append(error_msg)
-            else:
-                # Ensure lead is assigned to user before booking (required by DB trigger)
-                lead_id = booking_data.get('lead_id')
-                assigned_user_id = booking_data.get('assigned_user_id')
-                if lead_id and assigned_user_id:
-                    try:
-                        from db.storage.leads import LeadStorage
-                        lead_storage = LeadStorage()
-                        lead_storage.assign_lead_to_user_if_unassigned(lead_id, assigned_user_id)
-                    except Exception as e:
-                        logger.warning(f"Could not assign lead to user: {e}")
-                
-                db_booking_id = await self.storage.save_booking(booking_data)
-                result["db"] = db_booking_id
-                logger.info(f"Saved booking to database: {db_booking_id}")
-        except Exception as e:
-            # This is expected when required fields are missing
-            error_msg = f"Skipped database save: {e}"
-            logger.warning(error_msg)
-            result["errors"].append(error_msg)
+        # Skip DB save temporarily
+        logger.info(f"DB save skipped for booking: {booking_data.get('id')}")
+        result["db"] = "skipped_temporarily"
         
         return result
 
