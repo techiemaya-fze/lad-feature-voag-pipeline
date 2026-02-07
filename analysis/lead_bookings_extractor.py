@@ -1044,16 +1044,21 @@ Return JSON only."""
         return calculation_method in confirmed_date_methods
     
     async def save_booking(self, booking_data: Dict) -> Dict:
-        """Skip database save temporarily for testing"""
-        result = {"db": "skipped", "errors": []}
+        """Save booking to database"""
+        result = {"db": "error", "errors": []}
         
         if not booking_data:
             result["errors"].append("No booking data provided")
             return result
         
-        # Skip DB save temporarily
-        logger.info(f"DB save skipped for booking: {booking_data.get('id')}")
-        result["db"] = "skipped_temporarily"
+        try:
+            booking_id = await self.storage.save_booking(booking_data)
+            logger.info(f"Booking saved to database: {booking_id}")
+            result["db"] = "saved"
+            result["booking_id"] = booking_id
+        except Exception as e:
+            logger.error(f"Failed to save booking to database: {e}")
+            result["errors"].append(str(e))
         
         return result
 
