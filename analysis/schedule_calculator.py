@@ -25,13 +25,24 @@ UAE_PUBLIC_HOLIDAYS = [
     (12, 3),   # National Day (2nd day)
 ]
 
-# Grade-based timeline (days to add for followup)
+# Grade-based timeline (frequency-based followup)
 GRADE_TIMELINE = {
-    12: 1,   # Grade 12: +1 day (most urgent)
-    11: 2,   # Grade 11: +2 days
-    10: 3,   # Grade 10: +3 days
-    9: 4,    # Grade 9:  +4 days
+    12: 2,   # Grade 12: 3 times per week = every ~2 days
+    11: 3,   # Grade 11: 2 times per week = every ~3 days  
+    10: 3,   # Grade 10: 2 times per week = every ~3 days
+    9: 5,    # Grade 9: 1 time per week = every ~5 days
+    8: 5,    # Grade 8: 1 time per week = every ~5 days
+    7: 5,    # Grade 7: 1 time per week = every ~5 days
+    6: 5,    # Grade 6: 1 time per week = every ~5 days
+    5: 5,    # Grade 5: 1 time per week = every ~5 days
+    4: 5,    # Grade 4: 1 time per week = every ~5 days
+    3: 5,    # Grade 3: 1 time per week = every ~5 days
+    2: 5,    # Grade 2: 1 time per week = every ~5 days
+    1: 5,    # Grade 1: 1 time per week = every ~5 days
 }
+
+# Default timeline when no grade mentioned
+DEFAULT_TIMELINE = 2  # After 2 days when no grade mentioned
 
 
 class ScheduleCalculator:
@@ -42,9 +53,7 @@ class ScheduleCalculator:
         self.public_holidays = public_holidays or UAE_PUBLIC_HOLIDAYS
     
     def is_working_day(self, date: datetime) -> bool:
-        """Check if working day (no Mondays, no holidays)"""
-        if date.weekday() == 0:  # Monday
-            return False
+        """Check if working day (no holidays)"""
         if (date.month, date.day) in self.public_holidays:
             return False
         return True
@@ -86,36 +95,49 @@ class ScheduleCalculator:
         self,
         current_time: datetime,
         student_grade: int = 12,
-        booking_type: str = "auto_followup"
+        booking_type: str = "auto_followup",
+        confirmed_date_mentioned: bool = False
     ) -> datetime:
         """
-        Calculate next call time with grade-based timeline + working hours/days validation
+        Calculate the next call datetime based on grade and working days.
         
         Args:
-            current_time: Reference time (first transcription timestamp)
-            student_grade: Student grade (9-12), default 12
-            booking_type: auto_followup or auto_consultation
-        
+            current_time: The base time to calculate from
+            student_grade: Student grade (9-12) for timeline calculation
+            booking_type: Type of booking (auto_followup, consultation, etc.)
+            confirmed_date_mentioned: If True, skip grade timeline and use given date/day
+            
         Returns:
             Next valid call datetime
         """
-        # Get days to add based on grade
-        days_to_add = GRADE_TIMELINE.get(student_grade, 1)
-        
-        # Add working days (skips Mondays and holidays)
-        next_call = self.add_working_days(current_time, days_to_add)
-        
-        # Preserve original time from current_time
-        next_call = next_call.replace(
-            hour=current_time.hour,
-            minute=current_time.minute,
-            second=0,
-            microsecond=0
-        )
+        if confirmed_date_mentioned:
+            # Date/day confirmed - use given time, only validate working hours/days
+            logger.info(f"Confirmed date/day mentioned - using {current_time} directly")
+            next_call = current_time
+            grade_display = "confirmed_date"
+        else:
+            # No date/day confirmed - apply grade timeline
+            if student_grade is None:
+                days_to_add = DEFAULT_TIMELINE
+                grade_display = "None (default)"
+            else:
+                days_to_add = GRADE_TIMELINE.get(student_grade, DEFAULT_TIMELINE)
+                grade_display = str(student_grade)
+            
+            # Add working days (skips Mondays and holidays)
+            next_call = self.add_working_days(current_time, days_to_add)
+            
+            # Preserve original time from current_time
+            next_call = next_call.replace(
+                hour=current_time.hour,
+                minute=current_time.minute,
+                second=0,
+                microsecond=0
+            )
+            
+            logger.info(f"Grade {grade_display}: +{days_to_add} working days -> {next_call}")
         
         # Validate working hours and days
         next_call = self.get_next_working_datetime(next_call)
-        
-        logger.info(f"Grade {student_grade}: +{days_to_add} working days -> {next_call}")
         
         return next_call
