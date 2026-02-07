@@ -403,29 +403,60 @@ Return JSON only."""
             'morning': (9, 0),
             'noon': (12, 0),
             'afternoon': (14, 0),
-            'after lunch': (14, 0),
             'evening': (18, 0),
             'night': (20, 0),
             'midnight': (0, 0),
+            'after lunch': (14, 0),  # Put after lunch last to avoid conflicts
         }
         for keyword_name, (h, m) in time_of_day.items():
-            if keyword_name in keyword:
-                # Check if there's a specific time after the keyword (e.g., "evening 5:30")
+            # Use word boundaries to avoid partial matches (e.g., "noon" in "afternoon")
+            import re
+            if re.search(rf'\b{re.escape(keyword_name)}\b', keyword):
+                # Check if there's a specific time after the keyword (e.g., "morning at 10", "afternoon at 3", "evening 5", "midnight at 11")
                 import re
                 remaining = keyword[keyword.index(keyword_name) + len(keyword_name):].strip()
-                time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?', remaining)
+                
+                # Remove "at" if present and then match time
+                remaining_clean = remaining.replace('at', '').strip()
+                
+                # Convert written numbers to digits for any time
+                word_to_num = {
+                    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+                    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+                    'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14,
+                    'fifteen': 15, 'sixteen': 16, 'seventeen': 17, 'eighteen': 18,
+                    'nineteen': 19, 'twenty': 20, 'twenty one': 21, 'twenty-two': 22,
+                    'twenty three': 23, 'twenty-four': 24
+                }
+                for word, num in word_to_num.items():
+                    remaining_clean = re.sub(rf'\b{word}\b', str(num), remaining_clean)
+                
+                # Match any time pattern (1-24 hours, optional minutes, optional AM/PM)
+                time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?', remaining_clean)
                 if time_match:
                     hour = int(time_match.group(1))
                     minute = int(time_match.group(2)) if time_match.group(2) else 0
                     am_pm = time_match.group(3)
+                    
+                    # Handle AM/PM
                     if am_pm and am_pm.replace('.', '') == 'pm' and hour != 12:
                         hour += 12
                     elif am_pm and am_pm.replace('.', '') == 'am' and hour == 12:
                         hour = 0
-                    # For "evening 5" -> assume PM if hour < 12 and keyword is evening/night
+                    # For time-of-day keywords, assume PM for evening/night/afternoon if no AM/PM specified
                     elif not am_pm and keyword_name in ('evening', 'night', 'afternoon') and hour < 12:
                         hour += 12
+                    # For morning, assume AM if no AM/PM specified and hour <= 12
+                    elif not am_pm and keyword_name == 'morning' and hour <= 12:
+                        hour = hour  # Keep as AM
+                    # For noon/midnight, handle special cases
+                    elif keyword_name == 'noon' and hour > 12:
+                        hour = 12  # Force to noon
+                    elif keyword_name == 'midnight' and hour != 0:
+                        hour = 0  # Force to midnight
+                    
                     return hour, minute
+                # Only return default if no specific time found
                 return h, m
         return None, None
     
@@ -434,7 +465,6 @@ Return JSON only."""
         month = dt.month + months
         year = dt.year + (month - 1) // 12
         month = (month - 1) % 12 + 1
-        # Clamp day to max days in target month
         import calendar
         max_day = calendar.monthrange(year, month)[1]
         day = min(dt.day, max_day)
@@ -967,6 +997,9 @@ Return JSON only."""
         if scheduled_at:
             buffer_until = scheduled_at + timedelta(minutes=15)
         
+        # Get current timestamp for created_at and updated_at
+        now = datetime.now(GST).replace(microsecond=0)
+        
         booking_data = {
             "id": booking_id,
             "tenant_id": tenant_id,
@@ -985,6 +1018,8 @@ Return JSON only."""
                 "call_id": call_id
             },
             "created_by": initiated_by_user_id,
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
             "is_deleted": False,
             "buffer_until": buffer_until.strftime("%Y-%m-%d %H:%M:%S") if buffer_until else None
         }
@@ -1011,24 +1046,70 @@ Return JSON only."""
             'relative_+16h_from_last', 'relative_+17h_from_last', 'relative_+18h_from_last',
             'relative_+19h_from_last', 'relative_+20h_from_last', 'relative_+21h_from_last',
             'relative_+22h_from_last', 'relative_+23h_from_last', 'relative_+24h_from_last',
+            # All minutes from 1-60
             'relative_+1m_from_last', 'relative_+2m_from_last', 'relative_+3m_from_last',
-            'relative_+4m_from_last', 'relative_+5m_from_last', 'relative_+10m_from_last',
-            'relative_+15m_from_last', 'relative_+20m_from_last', 'relative_+25m_from_last',
-            'relative_+30m_from_last', 'relative_+45m_from_last', 'relative_+50m_from_last',
-            'relative_+55m_from_last', 'relative_+60m_from_last',
+            'relative_+4m_from_last', 'relative_+5m_from_last', 'relative_+6m_from_last',
+            'relative_+7m_from_last', 'relative_+8m_from_last', 'relative_+9m_from_last',
+            'relative_+10m_from_last', 'relative_+11m_from_last', 'relative_+12m_from_last',
+            'relative_+13m_from_last', 'relative_+14m_from_last', 'relative_+15m_from_last',
+            'relative_+16m_from_last', 'relative_+17m_from_last', 'relative_+18m_from_last',
+            'relative_+19m_from_last', 'relative_+20m_from_last', 'relative_+21m_from_last',
+            'relative_+22m_from_last', 'relative_+23m_from_last', 'relative_+24m_from_last',
+            'relative_+25m_from_last', 'relative_+26m_from_last', 'relative_+27m_from_last',
+            'relative_+28m_from_last', 'relative_+29m_from_last', 'relative_+30m_from_last',
+            'relative_+31m_from_last', 'relative_+32m_from_last', 'relative_+33m_from_last',
+            'relative_+34m_from_last', 'relative_+35m_from_last', 'relative_+36m_from_last',
+            'relative_+37m_from_last', 'relative_+38m_from_last', 'relative_+39m_from_last',
+            'relative_+40m_from_last', 'relative_+41m_from_last', 'relative_+42m_from_last',
+            'relative_+43m_from_last', 'relative_+44m_from_last', 'relative_+45m_from_last',
+            'relative_+46m_from_last', 'relative_+47m_from_last', 'relative_+48m_from_last',
+            'relative_+49m_from_last', 'relative_+50m_from_last', 'relative_+51m_from_last',
+            'relative_+52m_from_last', 'relative_+53m_from_last', 'relative_+54m_from_last',
+            'relative_+55m_from_last', 'relative_+56m_from_last', 'relative_+57m_from_last',
+            'relative_+58m_from_last', 'relative_+59m_from_last', 'relative_+60m_from_last',
             
             # Specific days/dates
             'tomorrow_parsed', 'today_parsed', 'day_after_tomorrow',
             'weekday_monday', 'weekday_tuesday', 'weekday_wednesday', 
             'weekday_thursday', 'weekday_friday', 'weekday_saturday', 'weekday_sunday',
+            
+            # Next/This/Last weekday variations
+            'next_monday', 'next_tuesday', 'next_wednesday', 'next_thursday', 'next_friday', 'next_saturday', 'next_sunday',
+            'this_monday', 'this_tuesday', 'this_wednesday', 'this_thursday', 'this_friday', 'this_saturday', 'this_sunday',
+            'last_monday', 'last_tuesday', 'last_wednesday', 'last_thursday', 'last_friday', 'last_saturday', 'last_sunday',
+            
+            # Month names
             'month_january', 'month_february', 'month_march', 'month_april',
             'month_may', 'month_june', 'month_july', 'month_august',
             'month_september', 'month_october', 'month_november', 'month_december',
             
             # Relative dates (days, weeks, months)
             'relative_+1d', 'relative_+2d', 'relative_+3d', 'relative_+4d', 'relative_+5d',
-            'relative_+6d', 'relative_+7d', 'relative_+1w', 'relative_+2w', 'relative_+3w',
-            'relative_+1month', 'relative_+2month', 'relative_+3month'
+            'relative_+6d', 'relative_+7d', 'relative_+8d', 'relative_+9d', 'relative_+10d',
+            'relative_+11d', 'relative_+12d', 'relative_+13d', 'relative_+14d', 'relative_+15d',
+            'relative_+16d', 'relative_+17d', 'relative_+18d', 'relative_+19d', 'relative_+20d',
+            'relative_+21d', 'relative_+22d', 'relative_+23d', 'relative_+24d', 'relative_+25d',
+            'relative_+26d', 'relative_+27d', 'relative_+28d', 'relative_+29d', 'relative_+30d',
+            
+            # Weeks (1-52 weeks for complete year coverage)
+            'relative_+1w', 'relative_+2w', 'relative_+3w', 'relative_+4w', 'relative_+5w',
+            'relative_+6w', 'relative_+7w', 'relative_+8w', 'relative_+9w', 'relative_+10w',
+            'relative_+11w', 'relative_+12w', 'relative_+13w', 'relative_+14w', 'relative_+15w',
+            'relative_+16w', 'relative_+17w', 'relative_+18w', 'relative_+19w', 'relative_+20w',
+            'relative_+21w', 'relative_+22w', 'relative_+23w', 'relative_+24w', 'relative_+25w',
+            'relative_+26w', 'relative_+27w', 'relative_+28w', 'relative_+29w', 'relative_+30w',
+            'relative_+31w', 'relative_+32w', 'relative_+33w', 'relative_+34w', 'relative_+35w',
+            'relative_+36w', 'relative_+37w', 'relative_+38w', 'relative_+39w', 'relative_+40w',
+            'relative_+41w', 'relative_+42w', 'relative_+43w', 'relative_+44w', 'relative_+45w',
+            'relative_+46w', 'relative_+47w', 'relative_+48w', 'relative_+49w', 'relative_+50w',
+            'relative_+51w', 'relative_+52w',
+            
+            # Months (1-24 months for 2-year coverage)
+            'relative_+1month', 'relative_+2month', 'relative_+3month', 'relative_+4month', 'relative_+5month',
+            'relative_+6month', 'relative_+7month', 'relative_+8month', 'relative_+9month', 'relative_+10month',
+            'relative_+11month', 'relative_+12month', 'relative_+13month', 'relative_+14month', 'relative_+15month',
+            'relative_+16month', 'relative_+17month', 'relative_+18month', 'relative_+19month', 'relative_+20month',
+            'relative_+21month', 'relative_+22month', 'relative_+23month', 'relative_+24month'
         }
         
         # Methods that indicate NO specific date mentioned - these should use grade timelines
@@ -1044,7 +1125,7 @@ Return JSON only."""
         return calculation_method in confirmed_date_methods
     
     async def save_booking(self, booking_data: Dict) -> Dict:
-        """Save booking to database"""
+        """Save booking to database with lead assignment logic"""
         result = {"db": "error", "errors": []}
         
         if not booking_data:
@@ -1052,10 +1133,29 @@ Return JSON only."""
             return result
         
         try:
-            booking_id = await self.storage.save_booking(booking_data)
-            logger.info(f"Booking saved to database: {booking_id}")
-            result["db"] = "saved"
-            result["booking_id"] = booking_id
+            # Check if required fields are present
+            if not booking_data.get('lead_id'):
+                error_msg = "Skipping database save: lead_id is required but is null"
+                logger.warning(error_msg)
+                result["errors"].append(error_msg)
+                return result
+            else:
+                # Ensure lead is assigned to user before booking (required by DB trigger)
+                lead_id = booking_data.get('lead_id')
+                assigned_user_id = booking_data.get('assigned_user_id')
+                if lead_id and assigned_user_id:
+                    try:
+                        from db.storage.leads import LeadStorage
+                        lead_storage = LeadStorage()
+                        lead_storage.assign_lead_to_user_if_unassigned(lead_id, assigned_user_id)
+                        logger.info(f"Attempted to assign lead {lead_id} to user {assigned_user_id}")
+                    except Exception as e:
+                        logger.warning(f"Could not assign lead to user: {e}")
+                
+                booking_id = await self.storage.save_booking(booking_data)
+                logger.info(f"Booking saved to database: {booking_id}")
+                result["db"] = "saved"
+                result["booking_id"] = booking_id
         except Exception as e:
             logger.error(f"Failed to save booking to database: {e}")
             result["errors"].append(str(e))
