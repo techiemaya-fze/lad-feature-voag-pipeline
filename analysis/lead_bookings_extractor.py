@@ -27,6 +27,13 @@ if str(_PROJECT_ROOT) not in sys.path:
 from analysis.gemini_client import generate_with_schema_async, IMPROVED_BOOKING_SCHEMA
 from google.genai import types
 
+# Import Gemini configuration
+from analysis.gemini_config import (
+    DEFAULT_TEMPERATURE,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    MAX_RETRIES
+)
+
 # Import database storage
 from db.storage.lead_bookings import LeadBookingsStorage, LeadBookingsStorageError
 
@@ -326,8 +333,8 @@ Return JSON only."""
             result = await generate_with_schema_async(
                 prompt=prompt,
                 schema=schema,
-                temperature=0.1,
-                max_output_tokens=2048
+                temperature=DEFAULT_TEMPERATURE,
+                max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS
             )
             
             if not result:
