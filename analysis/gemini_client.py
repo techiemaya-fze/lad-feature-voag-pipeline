@@ -9,7 +9,7 @@ import os
 import json
 import logging
 import asyncio
-from typing import Optional, Dict, Any, Type
+from typing import Optional, Dict, Any, Type, Tuple, Union
 from google import genai
 from google.genai import types
 
@@ -459,37 +459,6 @@ LEAD_INFO_SCHEMA = types.Schema(
 )
 
 # -----------------------------------------------------------------------------
-# BOOKING INFO SCHEMA (lead_bookings_extractor.py)
-# Required: booking_type. Mixed types including INTEGER and BOOLEAN
-# -----------------------------------------------------------------------------
-BOOKING_INFO_SCHEMA = types.Schema(
-    type=types.Type.OBJECT,
-    required=["booking_type"],
-    properties={
-        "booking_type": types.Schema(
-            type=types.Type.STRING, 
-            description="auto_consultation or auto_followup"
-        ),
-        "scheduled_at": types.Schema(
-            type=types.Type.STRING, 
-            description="Time phrase like 'after 15 mins', 'tomorrow 3 PM', 'Sunday 11 AM' or null"
-        ),
-        "student_grade": types.Schema(
-            type=types.Type.INTEGER, 
-            description="Student grade as integer (9-12) or null"
-        ),
-        "call_id": types.Schema(
-            type=types.Type.STRING, 
-            description="Call ID if mentioned"
-        ),
-        "has_future_discussion": types.Schema(
-            type=types.Type.BOOLEAN, 
-            description="true if conversation mentions future followup/consultation/callback"
-        ),
-    },
-)
-
-# -----------------------------------------------------------------------------
 # SENTIMENT ANALYSIS SCHEMA (merged_analytics.py - _calculate_sentiment_with_llm)
 # Required: category, sentiment_score, confidence. All NUMBER types for scores
 # -----------------------------------------------------------------------------
@@ -644,4 +613,31 @@ STUDENT_EXTRACTOR_SCHEMA = types.Schema(
         "status": types.Schema(type=types.Type.STRING, description="Status"),
         "counsellor_email": types.Schema(type=types.Type.STRING, description="Counsellor email"),
     },
+)
+# -----------------------------------------------------------------------------
+# IMPROVED BOOKING INFO SCHEMA (lead_bookings_extractor.py - current implementation)
+# Required: booking_type, user_confirmed. Better validation and focused fields
+# -----------------------------------------------------------------------------
+IMPROVED_BOOKING_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    required=["booking_type", "user_confirmed"],
+    properties={
+        "booking_type": types.Schema(
+            type=types.Type.STRING,
+            description="auto_consultation or auto_followup"
+        ),
+        "time_phrase": types.Schema(
+            type=types.Type.STRING,
+            description="Time phrase extracted (e.g., 'after 5 minutes', 'tomorrow 3 PM')"
+        ),
+        "user_confirmed": types.Schema(
+            type=types.Type.BOOLEAN,
+            description="true if user explicitly confirmed the followup time"
+        ),
+        "student_grade": types.Schema(
+            type=types.Type.INTEGER,
+            nullable=True,
+            description="Grade (9-12) ONLY if USER explicitly confirms their grade with phrases like: 'I am in grade 10', 'I am in class 9', 'I study in 11th grade', 'My grade is 12', etc. Do NOT extract from agent statements. Default to null."
+        ),
+    }
 )
