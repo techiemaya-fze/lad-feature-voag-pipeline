@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 # Import connection pool manager
 from db.connection_pool import get_db_connection, return_connection, USE_CONNECTION_POOLING
+from db.schema_constants import EMAIL_TEMPLATES_FULL
 
 load_dotenv()
 
@@ -53,12 +54,12 @@ class EmailTemplateStorage:
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
-                        """
+                        f"""
                         SELECT id, name, template_key, category, subject_template,
                                text_body_template, html_body_template, placeholders,
                                description, is_active, is_builtin, created_by,
                                agent_id, created_at, updated_at
-                        FROM lad_dev.communication_templates
+                        FROM {EMAIL_TEMPLATES_FULL}
                         WHERE id = %s AND is_active = TRUE
                         LIMIT 1
                         """,
@@ -90,12 +91,12 @@ class EmailTemplateStorage:
                     if agent_id is not None:
                         # Try agent-specific first
                         cur.execute(
-                            """
+                            f"""
                             SELECT id, name, template_key, category, subject_template,
                                    text_body_template, html_body_template, placeholders,
                                    description, is_active, is_builtin, created_by,
                                    agent_id, created_at, updated_at
-                            FROM lad_dev.communication_templates
+                            FROM {EMAIL_TEMPLATES_FULL}
                             WHERE template_key = %s
                               AND is_active = TRUE
                               AND (agent_id = %s OR agent_id IS NULL)
@@ -107,12 +108,12 @@ class EmailTemplateStorage:
                     else:
                         # Global templates only
                         cur.execute(
-                            """
+                            f"""
                             SELECT id, name, template_key, category, subject_template,
                                    text_body_template, html_body_template, placeholders,
                                    description, is_active, is_builtin, created_by,
                                    agent_id, created_at, updated_at
-                            FROM lad_dev.communication_templates
+                            FROM {EMAIL_TEMPLATES_FULL}
                             WHERE template_key = %s
                               AND is_active = TRUE
                               AND agent_id IS NULL
@@ -169,7 +170,7 @@ class EmailTemplateStorage:
                         SELECT id, name, template_key, category, subject_template,
                                placeholders, description, is_active, is_builtin,
                                agent_id, created_at
-                        FROM lad_dev.communication_templates
+                        FROM {EMAIL_TEMPLATES_FULL}
                         WHERE {where_clause}
                         ORDER BY is_builtin DESC, name ASC
                         """,
@@ -217,8 +218,8 @@ class EmailTemplateStorage:
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
-                        """
-                        INSERT INTO lad_dev.communication_templates
+                        f"""
+                        INSERT INTO {EMAIL_TEMPLATES_FULL}
                             (name, template_key, category, subject_template,
                              text_body_template, html_body_template, placeholders,
                              description, is_builtin, created_by, agent_id)
@@ -289,7 +290,7 @@ class EmailTemplateStorage:
 
                     cur.execute(
                         f"""
-                        UPDATE lad_dev.communication_templates
+                        UPDATE {EMAIL_TEMPLATES_FULL}
                         SET {set_clause}, updated_at = CURRENT_TIMESTAMP
                         WHERE id = %s
                         RETURNING id, name, template_key, category, subject_template,
@@ -319,8 +320,8 @@ class EmailTemplateStorage:
                 with conn.cursor() as cur:
                     if soft_delete:
                         cur.execute(
-                            """
-                            UPDATE lad_dev.communication_templates
+                            f"""
+                            UPDATE {EMAIL_TEMPLATES_FULL}
                             SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
                             WHERE id = %s AND is_builtin = FALSE
                             """,
@@ -328,8 +329,8 @@ class EmailTemplateStorage:
                         )
                     else:
                         cur.execute(
-                            """
-                            DELETE FROM lad_dev.communication_templates
+                            f"""
+                            DELETE FROM {EMAIL_TEMPLATES_FULL}
                             WHERE id = %s AND is_builtin = FALSE
                             """,
                             (template_id,),

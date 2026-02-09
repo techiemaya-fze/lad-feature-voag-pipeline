@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 # Import connection pool manager
 from db.connection_pool import get_db_connection, return_connection, USE_CONNECTION_POOLING
+from db.schema_constants import USERS_FULL, USER_IDENTITIES_FULL
 
 load_dotenv()
 
@@ -62,7 +63,7 @@ class UserTokenStorage:
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
-                        "SELECT id, email, first_name, last_name FROM lad_dev.users WHERE id = %s",
+                        f"SELECT id, email, first_name, last_name FROM {USERS_FULL} WHERE id = %s",
                         (user_id,),
                     )
                     row = cur.fetchone()
@@ -90,7 +91,7 @@ class UserTokenStorage:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT primary_tenant_id FROM lad_dev.users WHERE id = %s",
+                        f"SELECT primary_tenant_id FROM {USERS_FULL} WHERE id = %s",
                         (user_id,),
                     )
                     row = cur.fetchone()
@@ -115,10 +116,10 @@ class UserTokenStorage:
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
-                        """SELECT id, user_id, provider, provider_user_id,
+                        f"""SELECT id, user_id, provider, provider_user_id,
                                   access_token, refresh_token, token_expires_at,
                                   provider_data, created_at, updated_at
-                           FROM lad_dev.user_identities
+                           FROM {USER_IDENTITIES_FULL}
                            WHERE user_id = %s AND provider = %s""",
                         (user_id, provider),
                     )
@@ -157,7 +158,7 @@ class UserTokenStorage:
                 with conn.cursor() as cur:
                     # Upsert: insert or update on conflict
                     cur.execute(
-                        """INSERT INTO lad_dev.user_identities 
+                        f"""INSERT INTO {USER_IDENTITIES_FULL} 
                                (user_id, provider, provider_user_id, provider_data, updated_at)
                            VALUES (%s, %s, %s, %s, NOW())
                            ON CONFLICT (user_id, provider) DO UPDATE SET
@@ -202,7 +203,7 @@ class UserTokenStorage:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "DELETE FROM lad_dev.user_identities WHERE user_id = %s AND provider = %s",
+                        f"DELETE FROM {USER_IDENTITIES_FULL} WHERE user_id = %s AND provider = %s",
                         (user_id, "google"),
                     )
                 conn.commit()
@@ -243,12 +244,12 @@ class UserTokenStorage:
                     # Use JSONB merge (||) to preserve existing data like booking_config
                     # New data takes precedence for overlapping keys
                     cur.execute(
-                        """INSERT INTO lad_dev.user_identities 
+                        f"""INSERT INTO {USER_IDENTITIES_FULL} 
                                (user_id, provider, provider_user_id, provider_data, updated_at)
                            VALUES (%s, %s, %s, %s::jsonb, NOW())
                            ON CONFLICT (user_id, provider) DO UPDATE SET
                                provider_user_id = EXCLUDED.provider_user_id,
-                               provider_data = lad_dev.user_identities.provider_data || EXCLUDED.provider_data,
+                               provider_data = {USER_IDENTITIES_FULL}.provider_data || EXCLUDED.provider_data,
                                updated_at = NOW()""",
                         (user_id, provider, provider_user_id, json.dumps(provider_data)),
                     )
@@ -279,7 +280,7 @@ class UserTokenStorage:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "DELETE FROM lad_dev.user_identities WHERE user_id = %s AND provider = %s",
+                        f"DELETE FROM {USER_IDENTITIES_FULL} WHERE user_id = %s AND provider = %s",
                         (user_id, "microsoft"),
                     )
                 conn.commit()
@@ -316,7 +317,7 @@ class UserTokenStorage:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        """UPDATE lad_dev.user_identities 
+                        f"""UPDATE {USER_IDENTITIES_FULL} 
                            SET provider_data = %s, updated_at = NOW()
                            WHERE user_id = %s AND provider = %s""",
                         (json.dumps(provider_data), user_id, "microsoft"),

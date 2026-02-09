@@ -26,6 +26,11 @@ from livekit.agents.llm import function_tool
 # Import DB connection utilities at top level
 from db.db_config import get_db_config
 from db.connection_pool import get_db_connection
+from db.schema_constants import (
+    TENANT_FEATURES_FULL,
+    KNOWLEDGE_BASE_CATALOG_FULL,
+    EMAIL_TEMPLATES_FULL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -303,9 +308,9 @@ async def get_template_instructions_for_tenant(tenant_id: str) -> str:
         # Query active templates for this tenant
         with storage._get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT template_key, category, description, placeholders
-                    FROM lad_dev.communication_templates
+                    FROM {EMAIL_TEMPLATES_FULL}
                     WHERE tenant_id = %s AND is_active = true
                     ORDER BY category, template_key
                 """, (tenant_id,))
@@ -432,9 +437,9 @@ async def _get_tools_from_tenant_features(tenant_id: str | None) -> tuple["ToolC
         config = get_db_config()
         with get_db_connection(config) as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT feature_key, enabled, config
-                    FROM lad_dev.tenant_features
+                    FROM {TENANT_FEATURES_FULL}
                     WHERE tenant_id = %s
                       AND feature_key LIKE 'voice-agent-tool-%%'
                 """, (tenant_id,))
@@ -502,9 +507,9 @@ async def _get_tenant_kb_stores(tenant_id: str) -> list[str]:
         db_config = get_db_config()
         with get_db_connection(db_config) as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT gemini_store_name
-                    FROM lad_dev.knowledge_base_catalog
+                    FROM {KNOWLEDGE_BASE_CATALOG_FULL}
                     WHERE tenant_id = %s 
                       AND is_default = true
                       AND is_active = true

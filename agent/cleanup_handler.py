@@ -592,15 +592,16 @@ async def _submit_analysis_to_main_api(
         "lead_id": str(lead_id) if lead_id else None,
     }
     
-    # Fire-and-forget: send request without waiting for response
-    # Worker should not block on analysis - just submit and move on
-    asyncio.create_task(_fire_analysis_request(
+    # Await the request to ensure it's sent before worker exits
+    # This fixes the issue where single call analysis was never triggered
+    # because the event loop exited before the fire-and-forget task ran
+    await _fire_analysis_request(
         endpoint=endpoint,
         payload_json=json.dumps(payload, default=json_serial),
         internal_frontend_id=os.getenv("INTERNAL_FRONTEND_ID", "dev"),
         internal_api_key=os.getenv("INTERNAL_API_KEY", os.getenv("DEV_API_KEY", "")),
         call_log_id=call_log_id,
-    ))
+    )
 
 
 async def _fire_analysis_request(
@@ -788,10 +789,18 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
         except Exception:
             pass
     
-    # 6. Run post-call analysis (FIRE-AND-FORGET - via Main API)
-    # Instead of running in a daemon thread (which dies with worker process),
-    # we send the analysis request to the main API which runs in a stable,
-    # long-running process. This ensures analysis completes even after worker exits.
+    # 6. Stop background audio (quick operation)
+    await stop_background_audio(ctx)
+    
+    # 7. Release semaphore FIRST - worker can now accept new calls
+    # Analysis submission will continue in parallel with any new calls
+    if ctx.acquired_call_slot and ctx.call_semaphore:
+        ctx.call_semaphore.release()
+        logger.info("Released semaphore for job %s - worker now available", ctx.job_id)
+    
+    # 8. Run post-call analysis (via Main API)
+    # Worker is already available for new calls - this runs in parallel
+    # We await to ensure the HTTP request is sent before cleanup exits
     await _submit_analysis_to_main_api(
         call_log_id=ctx.call_log_id,
         transcription_data=transcription_data,
@@ -801,14 +810,6 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
         lead_id=ctx.lead_id,
     )
     logger.info("Post-call analysis submitted to main API for call_log_id=%s", ctx.call_log_id)
-    
-    # 7. Stop background audio
-    await stop_background_audio(ctx)
-    
-    # 8. Release semaphore
-    if ctx.acquired_call_slot and ctx.call_semaphore:
-        ctx.call_semaphore.release()
-        logger.info("Released semaphore for job %s", ctx.job_id)
     
     # 9. Update batch entry status and check for batch completion
     # If cleanup_and_save is called, the call completed normally -> status is "ended"

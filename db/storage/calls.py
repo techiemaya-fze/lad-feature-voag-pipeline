@@ -24,15 +24,16 @@ from dotenv import load_dotenv
 from db.connection_pool import get_db_connection, return_connection, USE_CONNECTION_POOLING
 # Import centralized DB config (respects USE_LOCAL_DB toggle)
 from db.db_config import get_db_config, validate_db_config
+# Import schema constants for configurable schema name
+from db.schema_constants import SCHEMA, CALL_LOGS_FULL
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Schema and table constants
-SCHEMA = "lad_dev"
+# Table constants - use centralized schema
 TABLE = "voice_call_logs"
-FULL_TABLE = f"{SCHEMA}.{TABLE}"
+FULL_TABLE = CALL_LOGS_FULL
 
 
 class DatabaseError(Exception):

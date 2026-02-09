@@ -63,6 +63,7 @@ from db.schema_constants import (
     LEADS_FULL,
     BATCHES_FULL,
     BATCH_ENTRIES_FULL,
+    USERS_FULL,
 )
 
 # Configure logging
@@ -236,7 +237,7 @@ async def _get_oauth_user_connected_gmail(user_id: Optional[int] = None) -> Opti
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT email FROM lad_dev.users WHERE id = %s",
+                f"SELECT email FROM {USERS_FULL} WHERE id = %s",
                 (oauth_user_id,)
             )
             row = cur.fetchone()
@@ -329,7 +330,7 @@ async def get_batch_info(batch_id: str) -> Optional[Dict]:
                     b.agent_id, b.initiated_by_user_id,
                     u.primary_tenant_id
                 FROM {BATCHES_FULL} b
-                LEFT JOIN lad_dev.users u ON u.id = b.initiated_by_user_id
+                LEFT JOIN {USERS_FULL} u ON u.id = b.initiated_by_user_id
                 WHERE b.id = %s::uuid
             """, (str(batch_id),))
             

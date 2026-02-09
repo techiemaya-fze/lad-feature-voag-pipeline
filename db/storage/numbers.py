@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 # Import connection pool manager (context manager pattern)
 from db.connection_pool import get_db_connection
+from db.schema_constants import NUMBERS_FULL
 
 # Load environment variables
 load_dotenv()
@@ -62,9 +63,9 @@ class NumberStorage:
                     # Search by country_code and base_number with optional tenant_id filter
                     if country_code and tenant_id:
                         cursor.execute(
-                            """
+                            f"""
                             SELECT id
-                            FROM lad_dev.voice_agent_numbers
+                            FROM {NUMBERS_FULL}
                             WHERE country_code = %s AND base_number = %s AND tenant_id = %s
                             LIMIT 1
                             """,
@@ -73,9 +74,9 @@ class NumberStorage:
                     elif country_code:
                         # Fallback without tenant_id (legacy)
                         cursor.execute(
-                            """
+                            f"""
                             SELECT id
-                            FROM lad_dev.voice_agent_numbers
+                            FROM {NUMBERS_FULL}
                             WHERE country_code = %s AND base_number = %s
                             LIMIT 1
                             """,
@@ -83,9 +84,9 @@ class NumberStorage:
                         )
                     elif tenant_id:
                         cursor.execute(
-                            """
+                            f"""
                             SELECT id
-                            FROM lad_dev.voice_agent_numbers
+                            FROM {NUMBERS_FULL}
                             WHERE base_number = %s AND tenant_id = %s
                             LIMIT 1
                             """,
@@ -94,9 +95,9 @@ class NumberStorage:
                     else:
                         # Only base_number known (legacy fallback)
                         cursor.execute(
-                            """
+                            f"""
                             SELECT id
-                            FROM lad_dev.voice_agent_numbers
+                            FROM {NUMBERS_FULL}
                             WHERE base_number = %s
                             LIMIT 1
                             """,
@@ -173,9 +174,9 @@ class NumberStorage:
                 with conn.cursor() as cursor:
                     # Try to find an active outbound number
                     cursor.execute(
-                        """
+                        f"""
                         SELECT id
-                        FROM lad_dev.voice_agent_numbers
+                        FROM {NUMBERS_FULL}
                         WHERE type = 'outbound' AND status = 'active'
                         ORDER BY created_at DESC
                         LIMIT 1
@@ -188,9 +189,9 @@ class NumberStorage:
                     if not result:
                         logger.warning("No active outbound number found, trying any active number")
                         cursor.execute(
-                            """
+                            f"""
                             SELECT id
-                            FROM lad_dev.voice_agent_numbers
+                            FROM {NUMBERS_FULL}
                             WHERE status = 'active'
                             ORDER BY created_at DESC
                             LIMIT 1
@@ -226,9 +227,9 @@ class NumberStorage:
                 with conn.cursor() as cursor:
                     if country_code:
                         cursor.execute(
-                            """
+                            f"""
                             SELECT default_agent
-                            FROM lad_dev.voice_agent_numbers
+                            FROM {NUMBERS_FULL}
                             WHERE country_code = %s AND base_number = %s
                             LIMIT 1
                             """,
@@ -236,9 +237,9 @@ class NumberStorage:
                         )
                     else:
                         cursor.execute(
-                            """
+                            f"""
                             SELECT default_agent
-                            FROM lad_dev.voice_agent_numbers
+                            FROM {NUMBERS_FULL}
                             WHERE base_number = %s
                             LIMIT 1
                             """,

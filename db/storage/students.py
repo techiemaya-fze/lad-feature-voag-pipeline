@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from db.connection_pool import get_db_connection
 # Import centralized DB config (respects USE_LOCAL_DB toggle)
 from db.db_config import get_db_config
+from db.schema_constants import STUDENTS_FULL
 
 # Load environment variables
 load_dotenv()
@@ -50,12 +51,12 @@ class StudentStorage:
             with get_db_connection(self.db_config) as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                     cursor.execute(
-                        """
+                        f"""
                         SELECT id, student_name, parent_name, parent_contact, email,
                                country_of_residence, grade_year, school_name,
                                counsellor_meeting_link, tags, stage, status,
                                counsellor_email, created_at
-                        FROM lad_dev.education_students
+                        FROM {STUDENTS_FULL}
                         WHERE parent_contact = %s
                         LIMIT 1
                         """,
@@ -113,8 +114,8 @@ class StudentStorage:
             with get_db_connection(self.db_config) as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
-                        """
-                        INSERT INTO lad_dev.education_students 
+                        f"""
+                        INSERT INTO {STUDENTS_FULL} 
                         (parent_contact, student_name, parent_name, email, 
                          country_of_residence, lead_source, counsellor_meeting_link,
                          grade_year, school_name, tags)
@@ -178,8 +179,8 @@ class StudentStorage:
             with get_db_connection(self.db_config) as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
-                        """
-                        UPDATE lad_dev.education_students
+                        f"""
+                        UPDATE {STUDENTS_FULL}
                         SET student_name = %s
                         WHERE id = %s::uuid
                         AND (student_name IS NULL OR LENGTH(TRIM(student_name)) = 0)
@@ -267,12 +268,12 @@ class StudentStorage:
             with get_db_connection(self.db_config) as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                     cursor.execute(
-                        """
+                        f"""
                         SELECT id, student_name, parent_name, parent_contact, email,
                                country_of_residence, grade_year, school_name,
                                counsellor_meeting_link, tags, stage, status,
                                counsellor_email, created_at
-                        FROM lad_dev.education_students
+                        FROM {STUDENTS_FULL}
                         WHERE id = %s::uuid
                         """,
                         (student_id,)
@@ -338,7 +339,7 @@ class StudentStorage:
             params.append(student_id)
             
             query = f"""
-                UPDATE lad_dev.education_students
+                UPDATE {STUDENTS_FULL}
                 SET {', '.join(set_clauses)}
                 WHERE id = %s::uuid
             """

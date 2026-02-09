@@ -3,13 +3,16 @@ Schema constants for voice agent tables.
 
 Phase 13: All tables now use the lad_dev schema.
 The old voice_agent schema is deprecated and no longer used.
+Phase 19: Schema is now configurable via DB_SCHEMA env variable.
 """
 
+import os
+
 # =============================================================================
-# SCHEMA NAME - lad_dev only
+# SCHEMA NAME - Configurable via DB_SCHEMA env variable
 # =============================================================================
 
-SCHEMA = "lad_dev"
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
 
 
 # =============================================================================
@@ -102,6 +105,9 @@ VOICES_FULL = f"{SCHEMA}.{VOICES_TABLE}"
 USERS_TABLE = "users"
 USERS_FULL = f"{SCHEMA}.{USERS_TABLE}"
 
+USER_IDENTITIES_TABLE = "user_identities"
+USER_IDENTITIES_FULL = f"{SCHEMA}.{USER_IDENTITIES_TABLE}"
+
 
 # =============================================================================
 # TABLE NAMES - Pricing
@@ -109,6 +115,28 @@ USERS_FULL = f"{SCHEMA}.{USERS_TABLE}"
 
 PRICING_TABLE = "voice_agent_pricing"
 PRICING_FULL = f"{SCHEMA}.{PRICING_TABLE}"
+
+BILLING_PRICING_CATALOG_TABLE = "billing_pricing_catalog"
+BILLING_PRICING_CATALOG_FULL = f"{SCHEMA}.{BILLING_PRICING_CATALOG_TABLE}"
+
+
+# =============================================================================
+# TABLE NAMES - Tenants & Features
+# =============================================================================
+
+TENANTS_TABLE = "tenants"
+TENANTS_FULL = f"{SCHEMA}.{TENANTS_TABLE}"
+
+TENANT_FEATURES_TABLE = "tenant_features"
+TENANT_FEATURES_FULL = f"{SCHEMA}.{TENANT_FEATURES_TABLE}"
+
+
+# =============================================================================
+# TABLE NAMES - Knowledge Base
+# =============================================================================
+
+KNOWLEDGE_BASE_CATALOG_TABLE = "knowledge_base_catalog"
+KNOWLEDGE_BASE_CATALOG_FULL = f"{SCHEMA}.{KNOWLEDGE_BASE_CATALOG_TABLE}"
 
 
 # =============================================================================
