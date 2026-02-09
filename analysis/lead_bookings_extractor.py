@@ -24,7 +24,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 # Import Gemini client
-from analysis.gemini_client import generate_with_schema_async
+from analysis.gemini_client import generate_with_schema_async, IMPROVED_BOOKING_SCHEMA
 from google.genai import types
 
 # Import database storage
@@ -243,30 +243,8 @@ class LeadBookingsExtractor:
             }
         """
         
-        # Define schema
-        schema = types.Schema(
-            type=types.Type.OBJECT,
-            required=["booking_type", "user_confirmed"],
-            properties={
-                "booking_type": types.Schema(
-                    type=types.Type.STRING,
-                    description="auto_consultation or auto_followup"
-                ),
-                "time_phrase": types.Schema(
-                    type=types.Type.STRING,
-                    description="Time phrase extracted (e.g., 'after 5 minutes', 'tomorrow 3 PM')"
-                ),
-                "user_confirmed": types.Schema(
-                    type=types.Type.BOOLEAN,
-                    description="true if user explicitly confirmed the followup time"
-                ),
-                "student_grade": types.Schema(
-                    type=types.Type.INTEGER,
-                    nullable=True,
-                    description="Grade (9-12) ONLY if USER explicitly confirms their grade with phrases like: 'I'm in grade 10', 'I am in class 9', 'I study in 11th grade', 'My grade is 12', etc. Do NOT extract from agent statements. Default to null."
-                ),
-            }
-        )
+        # Use improved schema from Google client
+        schema = IMPROVED_BOOKING_SCHEMA
         
         # Debug: Show conversation content being sent to Gemini
         logger.info(f"CONVERSATION SENT TO GEMINI:\n{conversation_text}\n---END CONVERSATION---")
@@ -279,13 +257,16 @@ CONVERSATION:
 INSTRUCTIONS - Read the ENTIRE conversation carefully before answering:
 
 1. **booking_type** - Determine the type based on the FINAL outcome of the conversation:
-   - "auto_consultation": User EXPLICITLY confirms a booking/appointment/session/meeting
+   - "auto_consultation": User EXPLICITLY confirms a booking/appointment/session/meeting OR agrees to a specific time
      * Clear confirmations: "Yes I'll attend", "Book it", "Confirmed", "I'll be there", "Sure, book the session"
-     * User agrees to attend something at a specific place/time
+     * Scheduling intent: "Can we schedule", "Let's book", "Schedule for", "Book a consultation"
+     * Time agreement: User agrees to ANY specific time/place (even if vague like "tomorrow", "next week")
+     * Keywords indicating consultation: "schedule", "book", "appointment", "session", "meeting", "consultation"
+     * Examples: "Tomorrow at 3 PM works", "Next Tuesday 10 AM", "Schedule for Friday", "Can we schedule tomorrow?"
    - "auto_followup": Everything else - callback requests, declined, no confirmation, vague
      * Callback: "Call me back", "Call me tomorrow", "Call me later", "I'll call you"
      * Declined: "No thank you", "Not interested", "Maybe later", "I'll think about it", "End the call"
-     * Vague: "That one", "Hmm okay", no clear yes/no
+     * Vague: "That one", "Hmm okay", no clear yes/no, "I'm not sure"
      * Agent notes: "without booking", "will follow up"
    - DEFAULT: auto_followup (when unclear)
 
@@ -296,10 +277,12 @@ INSTRUCTIONS - Read the ENTIRE conversation carefully before answering:
    - Extract the phrase AS-IS from conversation (e.g., "after 15 mins", "tomorrow 3 PM", "Sunday 11 AM", "evening", "noon", "day after tomorrow")
    - Include day/date when mentioned ("Friday noon" not just "noon")
    - Return null if:
-     * User declines at the end ("No", "Not interested", "End the call")
-     * No time/date is discussed at all
-     * User is vague and never confirms ("maybe", "I'll think about it")
+     * User declines at the end ("No", "Not interested", "End the call", "I can't make it", "Let's not schedule")
+     * User says "That one" without being specific about which option
+     * User is vague and never confirms ("maybe", "I'll think about it", "I'm not sure", "Hmm okay")
+     * User says "Maybe later" without specific time
      * Only PAST events are discussed with no future followup
+     * User responds with single words like "Okay", "Sure" without time context
    - Edge case examples:
      * Agent: "How about 3 PM?" User: "No, make it 5 PM" User: "Yes" -> "5 PM"
      * Agent: "Sunday 11 AM?" User: "That one" Later User: "End the call" -> null
@@ -370,6 +353,16 @@ Return JSON only."""
         time_phrase = result.get("time_phrase")
         user_confirmed = result.get("user_confirmed", False)
         student_grade = result.get("student_grade")
+        
+        # Post-process to handle string vs None issues
+        if time_phrase == "null" or time_phrase == "":
+            time_phrase = None
+        
+        # Validate student_grade range (9-12)
+        if student_grade is not None:
+            if not isinstance(student_grade, int) or student_grade < 9 or student_grade > 12:
+                logger.warning(f"Invalid student_grade {student_grade}, setting to None")
+                student_grade = None
         
         logger.info(f"Extraction: type={booking_type}, phrase='{time_phrase}', confirmed={user_confirmed}")
         
@@ -907,6 +900,7 @@ Return JSON only."""
             booking_type = "auto_followup"
             calculation_method = "empty_transcript_1day"
             student_grade = None
+            # Skip Gemini extraction for empty conversation to prevent hallucination
         else:
             # Extract timestamps
             first_timestamp = self.extract_first_timestamp(transcripts)
