@@ -160,6 +160,15 @@ async def global_exception_handler(request, exc):
 if __name__ == "__main__":
     import uvicorn
     
+    # Suppress health check access logs (Docker pings /healthz every 30s)
+    class _HealthCheckFilter(logging.Filter):
+        _SUPPRESSED = {"/healthz", "/readyz", "/"}
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            return not any(f'"{path} ' in msg or f" {path} " in msg for path in self._SUPPRESSED)
+    
+    logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
+    
     port = int(os.getenv("PORT", "8000"))
     workers = int(os.getenv("UVICORN_WORKERS", "1"))
     
