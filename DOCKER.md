@@ -25,14 +25,16 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 | File/Folder | Purpose | Mount Point in Container |
 |-------------|---------|--------------------------|
 | `.env` | All environment variables | Loaded via `env_file` |
-| `secrets/` | GCS credentials JSON | `/app/secrets/` |
+| `secrets/salesmaya-yts-*.json` | GCS service account | `/app/secrets/` |
+| `secrets/google_oauth_client_secret.json` | Google OAuth client | `/app/secrets/` |
 
 ### Directory Structure
 ```
 v2/
 ├── .env                    # Environment variables (required)
-├── secrets/                # GCS credentials (required)
-│   └── salesmaya-yts-*.json
+├── secrets/                # Credentials (required, mounted at runtime)
+│   ├── salesmaya-yts-*.json              # GCS recordings
+│   └── google_oauth_client_secret.json   # Google OAuth
 ├── docker-compose.yml      # Base compose file
 ├── docker-compose.prod.yml # Production overrides
 ├── Dockerfile.api          # API image
@@ -224,11 +226,12 @@ docker logs vonage-voice-agent-worker
 docker exec vonage-voice-agent-worker ls -la /app/secrets/
 ```
 
-### GCS Credentials Error
+### GCS / OAuth Credentials Error
 Ensure:
-1. `secrets/` folder exists with the JSON file
+1. `secrets/` folder exists with **both** JSON files
 2. Volume mount is correct: `./secrets:/app/secrets:ro`
-3. `GCS_CREDENTIALS_JSON` points to `/app/secrets/<filename>.json`
+3. `GCS_CREDENTIALS_JSON` points to `/app/secrets/salesmaya-yts-6b49f7694826.json`
+4. `GOOGLE_OAUTH_CLIENT_SECRETS` points to `/app/secrets/google_oauth_client_secret.json`
 
 ### Recording Issues
 - Check LiveKit Cloud dashboard for egress status
@@ -261,3 +264,41 @@ docker stop -t 18000 vonage-voice-agent-worker
 ```
 
 The `docker-compose.prod.yml` includes `stop_grace_period: 5h` automatically.
+
+---
+
+## CI/CD Deployment (GitHub Actions)
+
+A workflow at `.github/workflows/deploy.yml` handles automatic deployment on push to `main`.
+
+### How It Works
+1. Code is copied to the server via SCP (no git required on VM)
+2. `.env` and `secrets/` must be **manually placed** on the server beforehand
+3. Docker containers are rebuilt and restarted
+4. Health checks verify the API is up
+
+### Required GitHub Secrets
+
+| Secret | Value |
+|--------|-------|
+| `DO_HOST` | DigitalOcean droplet IP |
+| `DO_USERNAME` | SSH username (e.g. `sahil`) |
+| `DO_SSH_KEY` | Private SSH key for the server |
+
+### First-Time Server Setup
+```bash
+# SSH into the server
+ssh sahil@<server-ip>
+
+# Create app directory
+mkdir -p ~/voag-pipeline/v2
+
+# Copy .env and secrets manually (from local machine)
+scp .env sahil@<server-ip>:~/voag-pipeline/v2/.env
+scp -r secrets/ sahil@<server-ip>:~/voag-pipeline/v2/secrets/
+
+# Install Docker if not present
+# https://docs.docker.com/engine/install/ubuntu/
+```
+
+After this, every push to `main` will auto-deploy.

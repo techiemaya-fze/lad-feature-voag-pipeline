@@ -26,8 +26,9 @@ services:
       - .env
     environment:
       - PORT=8000
-      # Override GCS credentials path for container (mounted at /app/secrets)
+      # Override secrets paths for container (mounted at /app/secrets)
       - GCS_CREDENTIALS_JSON=/app/secrets/salesmaya-yts-6b49f7694826.json
+      - GOOGLE_OAUTH_CLIENT_SECRETS=/app/secrets/google_oauth_client_secret.json
     volumes:
       # Mount secrets folder for GCS credentials (read-only)
       - ./secrets:/app/secrets:ro
@@ -53,8 +54,9 @@ services:
       - .env
     environment:
       - MAX_CONCURRENT_CALLS=${MAX_CONCURRENT_CALLS:-1}
-      # Override GCS credentials path for container (mounted at /app/secrets)
+      # Override secrets paths for container (mounted at /app/secrets)
       - GCS_CREDENTIALS_JSON=/app/secrets/salesmaya-yts-6b49f7694826.json
+      - GOOGLE_OAUTH_CLIENT_SECRETS=/app/secrets/google_oauth_client_secret.json
     # For development: bridge network with exposed health port
     ports:
       - "8081:8081"

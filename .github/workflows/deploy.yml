@@ -1,0 +1,77 @@
+name: Deploy to VOAG Stage
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Copy Files to Server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USERNAME }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          source: "."
+          target: "/home/sahil/voag-pipeline"
+          rm: false
+          # Exclude files that should not be deployed
+          # .env and secrets/ are manually placed on the server
+          strip_components: 0
+
+      - name: Rebuild and Restart Docker
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USERNAME }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          script_stop: true
+          command_timeout: 15m
+          script: |
+            cd ~/voag-pipeline/v2
+
+            # Verify required files exist on server
+            echo "=== Checking required files ==="
+            if [ ! -f .env ]; then
+              echo "ERROR: .env file not found! Place it manually at ~/voag-pipeline/v2/.env"
+              exit 1
+            fi
+            if [ ! -d secrets ]; then
+              echo "ERROR: secrets/ folder not found! Place it manually at ~/voag-pipeline/v2/secrets/"
+              exit 1
+            fi
+            if [ ! -f secrets/salesmaya-yts-6b49f7694826.json ]; then
+              echo "ERROR: GCS credentials not found in secrets/"
+              exit 1
+            fi
+            if [ ! -f secrets/google_oauth_client_secret.json ]; then
+              echo "ERROR: Google OAuth client secret not found in secrets/"
+              exit 1
+            fi
+            echo "All required files present ✓"
+
+            # Build and restart containers
+            echo "=== Building and starting containers ==="
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --force-recreate
+
+            # Wait for health checks
+            echo "=== Waiting for services to be healthy ==="
+            sleep 10
+
+            # Verify API is up
+            if curl -sf http://localhost:8000/healthz > /dev/null; then
+              echo "API health check passed ✓"
+            else
+              echo "WARNING: API health check failed"
+              docker logs --tail 20 vonage-voice-agent-api
+            fi
+
+            # Clean up old images
+            docker image prune -f
+
+            echo "=== Deployment complete ==="
