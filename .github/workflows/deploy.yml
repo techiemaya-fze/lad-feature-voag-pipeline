@@ -20,8 +20,6 @@ jobs:
           source: "."
           target: "/home/sahil/voag-pipeline/v2"
           rm: false
-          # Exclude files that should not be deployed
-          # .env and secrets/ are manually placed on the server
           strip_components: 0
 
       - name: Rebuild and Restart Docker
@@ -54,13 +52,18 @@ jobs:
             fi
             echo "All required files present ✓"
 
-            # Build and restart containers
+            # Read worker replicas from .env (default: 1)
+            WORKER_REPLICAS=$(grep -E '^WORKER_REPLICAS=' .env 2>/dev/null | cut -d= -f2 | tr -d ' \r' || echo "1")
+            WORKER_REPLICAS=${WORKER_REPLICAS:-1}
+            echo "Worker replicas: ${WORKER_REPLICAS}"
+
+            # Build and restart containers with configured worker count
             echo "=== Building and starting containers ==="
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --force-recreate
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --force-recreate --scale worker=${WORKER_REPLICAS}
 
             # Wait for health checks
             echo "=== Waiting for services to be healthy ==="
-            sleep 10
+            sleep 15
 
             # Verify API is up
             if curl -sf http://localhost:8000/healthz > /dev/null; then
@@ -69,6 +72,10 @@ jobs:
               echo "WARNING: API health check failed"
               docker logs --tail 20 vonage-voice-agent-api
             fi
+
+            # Show running containers
+            echo "=== Running containers ==="
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
 
             # Clean up old images
             docker image prune -f

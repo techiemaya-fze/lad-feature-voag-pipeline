@@ -6,9 +6,12 @@
 # Usage:
 #   Development:  docker compose up --build
 #   Production:   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   Scale workers: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --scale worker=3
 #
 # IMPORTANT: For production, the Worker should use --network host
 # This file uses bridge networking for development convenience
+#
+# Configure WORKER_REPLICAS in .env to control how many workers to run
 # =============================================================================
 
 services:
@@ -41,15 +44,15 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Worker Service - LiveKit Agent
+  # Worker Service - LiveKit Agent (scalable)
   # ---------------------------------------------------------------------------
   # NOTE: In production, use --network host for best WebRTC performance
-  # This bridge network config is for development/testing only
+  # Scale with: --scale worker=N  or set WORKER_REPLICAS in .env
+  # No container_name set - allows scaling to multiple instances
   worker:
     build:
       context: .
       dockerfile: Dockerfile.worker
-    container_name: vonage-voice-agent-worker
     env_file:
       - .env
     environment:
@@ -57,16 +60,14 @@ services:
       # Override secrets paths for container (mounted at /app/secrets)
       - GCS_CREDENTIALS_JSON=/app/secrets/salesmaya-yts-6b49f7694826.json
       - GOOGLE_OAUTH_CLIENT_SECRETS=/app/secrets/google_oauth_client_secret.json
-    # For development: bridge network with exposed health port
-    ports:
-      - "8081:8081"
     volumes:
-      # Mount secrets folder for GCS credentials (read-only)
+      # Mount secrets folder for credentials (read-only)
       - ./secrets:/app/secrets:ro
       # Model cache persistence across container restarts
       - model_cache:/app/.model_cache
+    # Process-based health check (works with multiple workers on host network)
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8081/" ]
+      test: [ "CMD-SHELL", "pgrep -f 'agent.worker' || exit 1" ]
       interval: 30s
       timeout: 10s
       retries: 3

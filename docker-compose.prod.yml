@@ -3,6 +3,9 @@
 # =============================================================================
 # Use with: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
+# Scale workers: --scale worker=${WORKER_REPLICAS:-1}
+#   or set WORKER_REPLICAS in .env
+#
 # This override enables:
 # - Host networking for Worker (required for WebRTC/SIP)
 # - Production-optimized settings
@@ -30,19 +33,17 @@ services:
         max-file: "3"
 
   # ---------------------------------------------------------------------------
-  # Worker Service - Production with Host Networking
+  # Worker Service - Production with Host Networking (scalable)
   # ---------------------------------------------------------------------------
   worker:
     # CRITICAL: Use host networking for LiveKit WebRTC/SIP
     # This bypasses Docker NAT for UDP media ports (10000-60000)
     network_mode: host
-    # Remove port mapping (not needed with host network)
-    ports: []
     restart: always
     deploy:
       resources:
         limits:
-          # 4 CPU cores, 8GB RAM as recommended by LiveKit for voice AI
+          # Per-worker limits: 4 CPU cores, 8GB RAM
           cpus: '4'
           memory: 8G
         reservations:
