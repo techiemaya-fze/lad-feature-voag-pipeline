@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any
 
 from db.connection_pool import get_db_connection
+from db.schema_constants import NUMBERS_FULL
 
 logger = logging.getLogger(__name__)
 
@@ -275,32 +276,32 @@ def get_number_rules(from_number: str, db_config: dict, tenant_id: str | None = 
             with conn.cursor() as cur:
                 # Build query with optional tenant_id filter
                 if parsed.country_code and tenant_id:
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT provider, rules
-                        FROM lad_dev.voice_agent_numbers
+                        FROM {NUMBERS_FULL}
                         WHERE country_code = %s AND base_number = %s AND tenant_id = %s
                         LIMIT 1
                     """, (parsed.country_code, int(parsed.base_number) if parsed.base_number.isdigit() else 0, tenant_id))
                 elif parsed.country_code:
                     # Fallback without tenant_id (legacy calls)
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT provider, rules
-                        FROM lad_dev.voice_agent_numbers
+                        FROM {NUMBERS_FULL}
                         WHERE country_code = %s AND base_number = %s
                         LIMIT 1
                     """, (parsed.country_code, int(parsed.base_number) if parsed.base_number.isdigit() else 0))
                 elif tenant_id:
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT provider, rules
-                        FROM lad_dev.voice_agent_numbers
+                        FROM {NUMBERS_FULL}
                         WHERE base_number = %s AND tenant_id = %s
                         LIMIT 1
                     """, (int(parsed.base_number) if parsed.base_number.isdigit() else 0, tenant_id))
                 else:
                     # Fallback - just base_number
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT provider, rules
-                        FROM lad_dev.voice_agent_numbers
+                        FROM {NUMBERS_FULL}
                         WHERE base_number = %s
                         LIMIT 1
                     """, (int(parsed.base_number) if parsed.base_number.isdigit() else 0,))

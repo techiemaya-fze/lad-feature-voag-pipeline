@@ -1,0 +1,79 @@
+# =============================================================================
+# VONAGE VOICE AGENT - DOCKER COMPOSE
+# =============================================================================
+# Orchestrates API and Worker containers for development and testing
+#
+# Usage:
+#   Development:  docker compose up --build
+#   Production:   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# IMPORTANT: For production, the Worker should use --network host
+# This file uses bridge networking for development convenience
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # API Service - FastAPI REST endpoints
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: vonage-voice-agent-api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      - PORT=8000
+      # Override GCS credentials path for container (mounted at /app/secrets)
+      - GCS_CREDENTIALS_JSON=/app/secrets/salesmaya-yts-6b49f7694826.json
+    volumes:
+      # Mount secrets folder for GCS credentials (read-only)
+      - ./secrets:/app/secrets:ro
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/healthz" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Worker Service - LiveKit Agent
+  # ---------------------------------------------------------------------------
+  # NOTE: In production, use --network host for best WebRTC performance
+  # This bridge network config is for development/testing only
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: vonage-voice-agent-worker
+    env_file:
+      - .env
+    environment:
+      - MAX_CONCURRENT_CALLS=${MAX_CONCURRENT_CALLS:-1}
+      # Override GCS credentials path for container (mounted at /app/secrets)
+      - GCS_CREDENTIALS_JSON=/app/secrets/salesmaya-yts-6b49f7694826.json
+    # For development: bridge network with exposed health port
+    ports:
+      - "8081:8081"
+    volumes:
+      # Mount secrets folder for GCS credentials (read-only)
+      - ./secrets:/app/secrets:ro
+      # Model cache persistence across container restarts
+      - model_cache:/app/.model_cache
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8081/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    # Increase shared memory for audio processing
+    shm_size: '256m'
+
+# Persistent volumes
+volumes:
+  model_cache:
+    name: vonage-voice-agent-model-cache

@@ -1,0 +1,57 @@
+# =============================================================================
+# VONAGE VOICE AGENT - PRODUCTION DOCKER COMPOSE OVERRIDE
+# =============================================================================
+# Use with: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# This override enables:
+# - Host networking for Worker (required for WebRTC/SIP)
+# - Production-optimized settings
+# - Resource limits
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # API Service - Production settings
+  # ---------------------------------------------------------------------------
+  api:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # Worker Service - Production with Host Networking
+  # ---------------------------------------------------------------------------
+  worker:
+    # CRITICAL: Use host networking for LiveKit WebRTC/SIP
+    # This bypasses Docker NAT for UDP media ports (10000-60000)
+    network_mode: host
+    # Remove port mapping (not needed with host network)
+    ports: []
+    restart: always
+    deploy:
+      resources:
+        limits:
+          # 4 CPU cores, 8GB RAM as recommended by LiveKit for voice AI
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    # Extended shutdown time for graceful call completion (5 hours)
+    stop_grace_period: 5h
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"

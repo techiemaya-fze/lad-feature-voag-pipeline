@@ -6,6 +6,8 @@ Legacy Glinks support:
 - Now resolves vertical from "organization slug" (e.g. education-glinks -> education)
 """
 
+from db.schema_constants import TENANTS_FULL
+
 # Legacy Glinks organization ID
 LEGACY_GLINKS_ORG_ID = "f6de7991-df4f-43de-9f40-298fcda5f723"
 
@@ -78,7 +80,7 @@ async def get_tenant_slug(tenant_id: str) -> str | None:
         with storage._get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT slug FROM lad_dev.tenants WHERE id = %s",
+                    f"SELECT slug FROM {TENANTS_FULL} WHERE id = %s",
                     (tenant_id,)
                 )
                 row = cur.fetchone()
@@ -91,7 +93,7 @@ async def is_education_tenant(tenant_id: str | None) -> bool:
     """
     Check if tenant belongs to education vertical by tenant_id.
     
-    Phase 18: Queries lad_dev.tenants for slug and determines vertical.
+    Phase 18: Queries tenants table for slug and determines vertical.
     
     Args:
         tenant_id: Tenant UUID
@@ -122,7 +124,7 @@ def get_vertical_from_tenant_id_sync(tenant_id: str | None) -> str:
         with storage._get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT slug FROM lad_dev.tenants WHERE id = %s",
+                    f"SELECT slug FROM {TENANTS_FULL} WHERE id = %s",
                     (tenant_id,)
                 )
                 row = cur.fetchone()
@@ -130,4 +132,5 @@ def get_vertical_from_tenant_id_sync(tenant_id: str | None) -> str:
                 return get_vertical_from_slug(slug)
     except Exception:
         return "general"
+
 

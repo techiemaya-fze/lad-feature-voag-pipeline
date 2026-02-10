@@ -162,6 +162,84 @@ class NumberStorage:
         
         return None, None
     
+    def get_provider_by_phone(self, phone_number: str, tenant_id: str | None = None) -> Optional[str]:
+        """
+        Get telephony provider for a phone number from voice_agent_numbers.
+        
+        Args:
+            phone_number: Phone number to look up (e.g., "+971545335200")
+            tenant_id: Optional tenant ID for multi-tenant filtering
+            
+        Returns:
+            Provider string (e.g., 'vonage', 'twilio') if found, None otherwise
+        """
+        if not phone_number:
+            return None
+        
+        try:
+            country_code, base_number = self._split_phone_number(phone_number)
+            
+            if base_number is None:
+                logger.debug(f"Could not parse phone number for provider lookup: {phone_number}")
+                return None
+            
+            with get_db_connection(self.db_config) as conn:
+                with conn.cursor() as cursor:
+                    if country_code and tenant_id:
+                        cursor.execute(
+                            f"""
+                            SELECT provider
+                            FROM {NUMBERS_FULL}
+                            WHERE country_code = %s AND base_number = %s AND tenant_id = %s
+                            LIMIT 1
+                            """,
+                            (country_code, base_number, tenant_id)
+                        )
+                    elif country_code:
+                        cursor.execute(
+                            f"""
+                            SELECT provider
+                            FROM {NUMBERS_FULL}
+                            WHERE country_code = %s AND base_number = %s
+                            LIMIT 1
+                            """,
+                            (country_code, base_number)
+                        )
+                    elif tenant_id:
+                        cursor.execute(
+                            f"""
+                            SELECT provider
+                            FROM {NUMBERS_FULL}
+                            WHERE base_number = %s AND tenant_id = %s
+                            LIMIT 1
+                            """,
+                            (base_number, tenant_id)
+                        )
+                    else:
+                        cursor.execute(
+                            f"""
+                            SELECT provider
+                            FROM {NUMBERS_FULL}
+                            WHERE base_number = %s
+                            LIMIT 1
+                            """,
+                            (base_number,)
+                        )
+                    
+                    result = cursor.fetchone()
+                    
+                    if result and result[0]:
+                        provider = str(result[0])
+                        logger.info(f"Resolved provider '{provider}' for phone {phone_number[:4]}***")
+                        return provider
+                    else:
+                        logger.debug(f"No provider found for phone: {phone_number[:4]}***")
+                        return None
+                
+        except Exception as e:
+            logger.error(f"Error getting provider for phone {phone_number[:4]}***: {e}", exc_info=True)
+            return None
+    
     async def get_default_outbound_number(self) -> Optional[int]:
         """
         Get the default outbound number for calls

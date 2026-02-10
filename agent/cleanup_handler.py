@@ -58,6 +58,7 @@ class CleanupContext:
         batch_id: str | None = None,  # Batch call tracking
         entry_id: str | None = None,  # Batch entry tracking
         audit_trail: Any = None,  # Tool audit trail for metadata
+        from_number: str | None = None,  # For provider-based telephony costing
     ):
         self.call_recorder = call_recorder
         self.call_log_id = call_log_id
@@ -75,6 +76,7 @@ class CleanupContext:
         self.batch_id = batch_id
         self.entry_id = entry_id
         self.audit_trail = audit_trail
+        self.from_number = from_number
 
 
 # =============================================================================
@@ -242,6 +244,38 @@ async def save_audit_trail(ctx: CleanupContext) -> None:
 # COST CALCULATION
 # =============================================================================
 
+def _resolve_telephony_provider(
+    from_number: str | None,
+    tenant_id: str | None = None,
+) -> str:
+    """
+    Resolve the telephony provider for a from_number by looking up
+    voice_agent_numbers.provider and matching against billing_pricing_catalog.
+    
+    Falls back to 'vonage' if no match found.
+    """
+    if not from_number:
+        logger.debug("No from_number provided, defaulting telephony provider to 'vonage'")
+        return "vonage"
+    
+    try:
+        from db.storage.numbers import NumberStorage
+        number_storage = NumberStorage()
+        provider = number_storage.get_provider_by_phone(from_number, tenant_id)
+        
+        if provider:
+            # Normalize to lowercase for pricing catalog matching
+            normalized = provider.strip().lower()
+            logger.info(f"Resolved telephony provider for {from_number[:4]}***: raw='{provider}', normalized='{normalized}'")
+            return normalized
+        else:
+            logger.info(f"No provider found for {from_number[:4]}***, defaulting to 'vonage'")
+            return "vonage"
+    except Exception as e:
+        logger.warning(f"Error resolving telephony provider for {from_number[:4]}***: {e}, defaulting to 'vonage'")
+        return "vonage"
+
+
 async def calculate_and_save_cost(
     ctx: CleanupContext,
     duration_seconds: float | None,
@@ -272,7 +306,9 @@ async def calculate_and_save_cost(
         logger.info(f"UsageCollector state: is_empty={usage_collector.is_empty()}, summary={usage_collector.get_summary()}")
         
         if duration_seconds and duration_seconds > 0:
-            usage_collector.add_telephony_seconds(duration_seconds, provider="vonage")
+            # Resolve telephony provider from from_number -> voice_agent_numbers
+            telephony_provider = _resolve_telephony_provider(ctx.from_number, ctx.tenant_id)
+            usage_collector.add_telephony_seconds(duration_seconds, provider=telephony_provider)
             usage_collector.add_vm_infrastructure_seconds(duration_seconds, provider="digitalocean")
         
         try:

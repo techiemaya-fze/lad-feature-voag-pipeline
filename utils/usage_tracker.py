@@ -267,19 +267,19 @@ async def calculate_call_cost(
         logger.warning("No pricing rates available, cannot calculate cost")
         return Decimal("0"), []
     
-    # Build lookup dict
+    # Build lookup dict (lowercase keys for case-insensitive matching)
     rate_lookup: dict[tuple[str, str, str], Any] = {}
     for rate in pricing_rates:
         if isinstance(rate, dict):
-            key = (rate["component"], rate["provider"], rate["model"])
+            key = (rate["component"].lower(), rate["provider"].lower(), rate["model"].lower())
             rate_lookup[key] = rate
-            fallback_key = (rate["component"], rate["provider"], "*")
+            fallback_key = (rate["component"].lower(), rate["provider"].lower(), "*")
             if fallback_key not in rate_lookup:
                 rate_lookup[fallback_key] = rate
         else:
-            key = (rate.component, rate.provider, rate.model)
+            key = (rate.component.lower(), rate.provider.lower(), rate.model.lower())
             rate_lookup[key] = rate
-            fallback_key = (rate.component, rate.provider, "*")
+            fallback_key = (rate.component.lower(), rate.provider.lower(), "*")
             if fallback_key not in rate_lookup:
                 rate_lookup[fallback_key] = rate
     
@@ -292,9 +292,10 @@ async def calculate_call_cost(
         model = record["model"]
         amount = Decimal(str(record["amount"]))
         
-        rate = rate_lookup.get((component, provider, model))
+        # Lowercase for case-insensitive lookup
+        rate = rate_lookup.get((component.lower(), provider.lower(), model.lower()))
         if not rate:
-            rate = rate_lookup.get((component, provider, "*"))
+            rate = rate_lookup.get((component.lower(), provider.lower(), "*"))
         
         if rate:
             if isinstance(rate, dict):

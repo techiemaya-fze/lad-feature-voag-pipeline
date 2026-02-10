@@ -1030,6 +1030,7 @@ async def entrypoint(ctx: agents.JobContext):
         batch_id=batch_id,  # For batch completion tracking
         entry_id=entry_id,  # For batch entry status update
         audit_trail=audit_trail,  # Tool usage audit trail
+        from_number=from_number,  # For provider-based telephony costing
     )
     
     # Background audio cleanup holders (populated later)

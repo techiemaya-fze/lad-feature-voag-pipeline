@@ -1,0 +1,82 @@
+# =============================================================================
+# VONAGE VOICE AGENT - DOCKERIGNORE
+# =============================================================================
+# Prevents unnecessary files from being copied into the Docker image
+
+# Python virtual environments (must be created fresh inside container)
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Environment and secrets (NEVER include in image - inject at runtime)
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+*.json
+google_oauth_client_secret.json
+salesmaya-yts-*.json
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Test files and coverage
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Documentation (not needed at runtime)
+docs/
+*.md
+!README.md
+
+# Development scripts and tools
+scripts/benchmarks/
+scripts/setup/
+
+# Local data directories (ephemeral)
+recordings_buffer/
+analysis/logs/
+analysis/exports/
+analysis/json_exports/
+local_db/
+
+# Temporary files
+*.log
+*.tmp
+debug_output.txt
+
+# Reference code (not part of runtime)
+crawl4ai-main/
+
+# UV cache and lock (lock is copied explicitly)
+.uv_cache/
+
+# Model cache (will be downloaded at runtime or mounted)
+.model_cache/

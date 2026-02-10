@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 # Import connection pool manager
 from db.connection_pool import get_db_connection, return_connection, USE_CONNECTION_POOLING
+from db.schema_constants import VOICES_FULL
 
 load_dotenv()
 
@@ -54,7 +55,7 @@ class VoiceStorage:
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
-                        "SELECT * FROM lad_dev.voice_agent_voices WHERE id = %s LIMIT 1",
+                        f"SELECT * FROM {VOICES_FULL} WHERE id = %s LIMIT 1",
                         (voice_id,),
                     )
                     row = cur.fetchone()
