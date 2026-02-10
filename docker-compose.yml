@@ -65,9 +65,9 @@ services:
       - ./secrets:/app/secrets:ro
       # Model cache persistence across container restarts
       - model_cache:/app/.model_cache
-    # Process-based health check (works with multiple workers on host network)
+    # Health check: verify main process is running (no extra packages needed)
     healthcheck:
-      test: [ "CMD-SHELL", "pgrep -f 'agent.worker' || exit 1" ]
+      test: [ "CMD-SHELL", "grep -qa agent.worker /proc/1/cmdline" ]
       interval: 30s
       timeout: 10s
       retries: 3

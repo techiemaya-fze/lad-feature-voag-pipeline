@@ -53,8 +53,10 @@ jobs:
             echo "All required files present ✓"
 
             # Read worker replicas from .env (default: 1)
-            WORKER_REPLICAS=$(grep -E '^WORKER_REPLICAS=' .env 2>/dev/null | cut -d= -f2 | tr -d ' \r' || echo "1")
-            WORKER_REPLICAS=${WORKER_REPLICAS:-1}
+            WORKER_REPLICAS=$(grep -oP '^WORKER_REPLICAS=\K.*' .env 2>/dev/null | tr -d ' \r\n')
+            if [ -z "$WORKER_REPLICAS" ] || [ "$WORKER_REPLICAS" -lt 1 ] 2>/dev/null; then
+              WORKER_REPLICAS=1
+            fi
             echo "Worker replicas: ${WORKER_REPLICAS}"
 
             # Build and restart containers with configured worker count
