@@ -1,0 +1,56 @@
+# =============================================================================
+# UAE VM - WORKER-ONLY DOCKER COMPOSE
+# =============================================================================
+# Runs only LiveKit agent workers (no API) on the uae-vm alongside
+# a self-hosted LiveKit server and SIP trunk.
+#
+# Usage:
+#   docker compose -f docker-compose.worker.yml up -d
+#   docker compose -f docker-compose.worker.yml logs -f
+#   docker compose -f docker-compose.worker.yml down
+#
+# Scale: change WORKER_REPLICAS in .env (default: 3)
+# =============================================================================
+
+services:
+  worker:
+    image: vonage-worker:latest
+    env_file:
+      - .env
+    environment:
+      - MAX_CONCURRENT_CALLS=${MAX_CONCURRENT_CALLS:-1}
+      - GCS_CREDENTIALS_JSON=/app/secrets/salesmaya-yts-6b49f7694826.json
+      - GOOGLE_OAUTH_CLIENT_SECRETS=/app/secrets/google_oauth_client_secret.json
+    volumes:
+      - ./secrets:/app/secrets:ro
+      - model_cache:/app/.model_cache
+    # Host networking for LiveKit WebRTC/SIP (required)
+    network_mode: host
+    healthcheck:
+      test: [ "CMD-SHELL", "grep -qa agent.worker /proc/1/cmdline" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: always
+    deploy:
+      mode: replicated
+      replicas: ${WORKER_REPLICAS:-3}
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    stop_grace_period: 5h
+    shm_size: '256m'
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  model_cache:
+    name: uae-worker-model-cache
