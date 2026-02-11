@@ -2592,7 +2592,6 @@ CONFIDENCE: [High/Medium/Low]"""
                 try:
                     import json
                     # Update tags column in leads table as JSON array
-                    from datetime import timezone
                     cursor.execute(
                         "UPDATE lad_dev.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
                         (json.dumps([lead_category_value]), datetime.now(timezone.utc), lead_id_from_call)
@@ -2606,7 +2605,7 @@ CONFIDENCE: [High/Medium/Low]"""
             # Update leads table if user transcriptions are present
             try:
                 if lead_id_from_call:
-                    self.update_leads_for_user_transcription(call_log_id_value, lead_id_from_call, db_config)
+                    self.update_leads_for_user_transcription(call_log_id_value, lead_id_from_call, db_config, conn, cursor, None)
             except Exception as leads_update_error:
                 logger.warning(f"Failed to update leads table for user transcription: {leads_update_error}")
                 # Don't fail the whole operation if leads update fails
@@ -2765,7 +2764,8 @@ CONFIDENCE: [High/Medium/Low]"""
         
         print("="*60)
 
-    def update_leads_for_user_transcription(self, call_log_id: str, lead_id: str, db_config: Dict) -> bool:
+    def update_leads_for_user_transcription(self, call_log_id: str, lead_id: str, db_config: Dict, 
+                                           conn=None, cursor=None, transcripts=None) -> bool:
         """
         Update leads table when user transcriptions are present in voice_call_logs.
         
@@ -2779,11 +2779,19 @@ CONFIDENCE: [High/Medium/Low]"""
         
         Args:
             call_log_id: UUID of the voice call log
-            lead_id: UUID of the lead (already fetched from database)
-            db_config: Database connection config
+            lead_id: UUID of the lead to update
+            db_config: Database configuration dictionary
+            conn: Optional existing database connection (for reusing transactions)
+            cursor: Optional existing cursor (for reusing transactions)
+            transcripts: Optional transcripts data (to avoid duplicate DB query)
             
         Returns:
             bool: True if update was successful, False otherwise
+            
+        Note:
+            If conn/cursor are provided, this function will reuse the existing connection
+            and not create a new one. If transcripts are provided, it will use them directly
+            instead of querying the database again.
         """
         if not DB_AVAILABLE:
             logger.warning("Database not available - cannot update leads table")
@@ -2805,26 +2813,50 @@ CONFIDENCE: [High/Medium/Low]"""
         else:
             logger.error(f"call_log_id must be a string UUID, got {type(call_log_id)}")
             return False
+        
+        # System messages to filter out (voicemail prompts, etc.)
+        SYSTEM_MESSAGES = [
+            "call has been forwarded to voice mail",
+            "the person you're trying to reach is not available",
+            "at the tone", "please record your message",
+            "to leave a callback number", "press",
+            "hang up", "send a numeric page", "to repeat this message"
+        ]
             
-        conn = None
-        cursor = None
+        # Use existing connection or create new one
+        should_close_connection = False
+        local_conn = None
+        local_cursor = None
+        
         try:
-            conn = psycopg2.connect(**db_config)
-            cursor = conn.cursor()
+            # Use provided connection/cursor or create new ones
+            if conn is not None and cursor is not None:
+                local_conn = conn
+                local_cursor = cursor
+                should_close_connection = False
+            else:
+                local_conn = psycopg2.connect(**db_config)
+                local_cursor = local_conn.cursor()
+                should_close_connection = True
                 
-            # Get transcripts from voice_call_logs
-            cursor.execute("""
-                SELECT transcripts 
-                FROM lad_dev.voice_call_logs 
-                WHERE id = %s::uuid
-            """, (call_log_id,))
-            
-            result = cursor.fetchone()
-            if not result:
-                logger.warning(f"No voice call log found for ID: {call_log_id}")
-                return False
+            # Use provided transcripts or fetch from database
+            if transcripts is not None:
+                # Use provided transcripts directly
+                pass
+            else:
+                # Get transcripts from voice_call_logs
+                local_cursor.execute("""
+                    SELECT transcripts 
+                    FROM lad_dev.voice_call_logs 
+                    WHERE id = %s::uuid
+                """, (call_log_id,))
                 
-            transcripts = result[0]
+                result = local_cursor.fetchone()
+                if not result:
+                    logger.warning(f"No voice call log found for ID: {call_log_id}")
+                    return False
+                    
+                transcripts = result[0]
                 
             # Check if user transcriptions are present
             has_user_transcription = False
@@ -2837,14 +2869,7 @@ CONFIDENCE: [High/Medium/Low]"""
                         text = segment.get('text', '').strip()
                         if speaker == 'user' and text:
                             # Filter out system messages
-                            system_messages = [
-                                "call has been forwarded to voice mail",
-                                "the person you're trying to reach is not available",
-                                "at the tone", "please record your message",
-                                 "to leave a callback number", "press",
-                                "hang up", "send a numeric page", "to repeat this message"
-                            ]
-                            is_system = any(sys_msg in text.lower() for sys_msg in system_messages)
+                            is_system = any(sys_msg in text.lower() for sys_msg in SYSTEM_MESSAGES)
                             if not is_system:
                                 has_user_transcription = True
                                 break
@@ -2870,14 +2895,7 @@ CONFIDENCE: [High/Medium/Low]"""
                                 text = segment.get('text', '').strip()
                                 if speaker == 'user' and text:
                                     # Filter out system messages
-                                    system_messages = [
-                                        "call has been forwarded to voice mail",
-                                        "the person you're trying to reach is not available",
-                                        "at the tone", "please record your message",
-                                         "to leave a callback number", "press",
-                                        "hang up", "send a numeric page", "to repeat this message"
-                                    ]
-                                    is_system = any(sys_msg in text.lower() for sys_msg in system_messages)
+                                    is_system = any(sys_msg in text.lower() for sys_msg in SYSTEM_MESSAGES)
                                     if not is_system:
                                         has_user_transcription = True
                                         break
@@ -2896,14 +2914,7 @@ CONFIDENCE: [High/Medium/Low]"""
                                 # Non-empty text content, assume it's user transcription
                                 # Filter out system messages
                                 text_content = str(parsed_transcripts).strip()
-                                system_messages = [
-                                    "call has been forwarded to voice mail",
-                                    "the person you're trying to reach is not available",
-                                    "at the tone", "please record your message",
-                                     "to leave a callback number", "press",
-                                    "hang up", "send a numeric page", "to repeat this message"
-                                ]
-                                is_system = any(sys_msg in text_content.lower() for sys_msg in system_messages)
+                                is_system = any(sys_msg in text_content.lower() for sys_msg in SYSTEM_MESSAGES)
                                 if not is_system:
                                     has_user_transcription = True
                     except (json.JSONDecodeError, ValueError):
@@ -2912,14 +2923,7 @@ CONFIDENCE: [High/Medium/Low]"""
                             # Non-empty text content, assume it's user transcription
                             # Filter out system messages
                             text_content = transcripts.strip()
-                            system_messages = [
-                                "call has been forwarded to voice mail",
-                                "the person you're trying to reach is not available",
-                                "at the tone", "please record your message",
-                                 "to leave a callback number", "press",
-                                "hang up", "send a numeric page", "to repeat this message"
-                            ]
-                            is_system = any(sys_msg in text_content.lower() for sys_msg in system_messages)
+                            is_system = any(sys_msg in text_content.lower() for sys_msg in SYSTEM_MESSAGES)
                             if not is_system:
                                 has_user_transcription = True
             
@@ -2928,7 +2932,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 return False
             
             # Update leads table
-            cursor.execute("""
+            local_cursor.execute("""
                 UPDATE lad_dev.leads 
                 SET source = %s, 
                     status = %s, 
@@ -2943,20 +2947,24 @@ CONFIDENCE: [High/Medium/Low]"""
                 lead_id
             ))
             
-            conn.commit()
+            # Only commit if we created the connection ourselves
+            if should_close_connection:
+                local_conn.commit()
             logger.info(f"Updated leads table for lead_id: {lead_id} (source=voice_agent, status=success, stage=contacted)")
             return True
             
         except Exception as e:
             logger.error(f"Error updating leads table: {e}")
-            if conn:
-                conn.rollback()
+            if local_conn and should_close_connection:
+                local_conn.rollback()
             return False
         finally:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
+            # Only close if we created the connection ourselves
+            if should_close_connection:
+                if local_cursor:
+                    local_cursor.close()
+                if local_conn:
+                    local_conn.close()
 
 analytics = CallAnalytics()
 
@@ -3158,21 +3166,14 @@ class StandaloneAnalytics:
             db_call_id, transcripts, started_at, ended_at, duration_seconds_db = call_data[:5]
             recording_url = call_data[5] if len(call_data) > 5 else None
             
-            # Get tenant_id for save_to_lad_dev
+            # Get tenant_id and lead_id in single query
             cursor.execute(
-                "SELECT tenant_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
+                "SELECT tenant_id, lead_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
                 (str(db_call_id),)
             )
-            tenant_result = cursor.fetchone()
-            tenant_id = tenant_result[0] if tenant_result else None
-            
-            # Get lead_id for leads table update
-            cursor.execute(
-                "SELECT lead_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
-                (str(db_call_id),)
-            )
-            lead_result = cursor.fetchone()
-            lead_id = lead_result[0] if lead_result else None
+            result = cursor.fetchone()
+            tenant_id = result[0] if result and result[0] else None
+            lead_id = result[1] if result and result[1] else None
             
             # Get transcript from transcripts column
             # Handle both JSONB (dict/list) and text formats
@@ -3240,7 +3241,7 @@ class StandaloneAnalytics:
                     # Update leads table if user transcriptions are present
                     try:
                         if lead_id:
-                            self.analytics.update_leads_for_user_transcription(str(db_call_id), lead_id, leads_db_config)
+                            self.analytics.update_leads_for_user_transcription(str(db_call_id), lead_id, leads_db_config, None, None, transcripts)
                     except Exception as leads_update_error:
                         logger.warning(f"Failed to update leads table for user transcription: {leads_update_error}")
                         # Don't fail the whole operation if leads update fails
