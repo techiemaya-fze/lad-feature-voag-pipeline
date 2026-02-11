@@ -2598,6 +2598,13 @@ CONFIDENCE: [High/Medium/Low]"""
                     logger.warning(f"Failed to update tags in leads table: {tag_update_error}")
                     # Don't fail the whole operation if tag update fails
             
+            # Update leads table if user transcriptions are present
+            try:
+                self.update_leads_for_user_transcription(str(call_log_id), db_config)
+            except Exception as leads_update_error:
+                logger.warning(f"Failed to update leads table for user transcription: {leads_update_error}")
+                # Don't fail the whole operation if leads update fails
+            
             logger.info(f"Analytics saved to database (call_log_id: {call_log_id})")
             return True
             
@@ -2751,6 +2758,118 @@ CONFIDENCE: [High/Medium/Low]"""
             print(f"\nSummary Error: {analysis['summary']['error']}")
         
         print("="*60)
+
+    def update_leads_for_user_transcription(self, call_log_id: str, db_config: Dict) -> bool:
+        """
+        Update leads table when user transcriptions are present in voice_call_logs.
+        
+        Updates the leads table columns:
+        - source: 'voice_agent' 
+        - status: 'success'
+        - stage: 'contacted'
+        
+        Only updates if user transcriptions are present (not just agent transcriptions).
+        Will override existing values for the same lead_id.
+        
+        Args:
+            call_log_id: UUID of the voice call log
+            db_config: Database connection config
+            
+        Returns:
+            bool: True if update was successful, False otherwise
+        """
+        if not DB_AVAILABLE:
+            logger.warning("Database not available - cannot update leads table")
+            return False
+            
+        conn = None
+        try:
+            conn = psycopg2.connect(**db_config)
+            cursor = conn.cursor()
+            
+            # Get transcripts and lead_id from voice_call_logs
+            cursor.execute("""
+                SELECT transcripts, lead_id 
+                FROM lad_dev.voice_call_logs 
+                WHERE id = %s::uuid
+            """, (call_log_id,))
+            
+            result = cursor.fetchone()
+            if not result:
+                logger.warning(f"No voice call log found for ID: {call_log_id}")
+                return False
+                
+            transcripts, lead_id = result
+            
+            if not lead_id:
+                logger.warning(f"No lead_id found for call log: {call_log_id}")
+                return False
+                
+            # Check if user transcriptions are present
+            has_user_transcription = False
+            
+            if transcripts:
+                if isinstance(transcripts, dict) and 'segments' in transcripts:
+                    # VoiceAgent segments format
+                    for segment in transcripts['segments']:
+                        speaker = segment.get('speaker', '').lower()
+                        text = segment.get('text', '').strip()
+                        if speaker == 'user' and text:
+                            # Filter out system messages
+                            system_messages = [
+                                "call has been forwarded to voice mail",
+                                "the person you're trying to reach is not available",
+                                "at the tone", "please record your message",
+                                 "to leave a callback number", "press",
+                                "hang up", "send a numeric page", "to repeat this message"
+                            ]
+                            is_system = any(sys_msg in text.lower() for sys_msg in system_messages)
+                            if not is_system:
+                                has_user_transcription = True
+                                break
+                elif isinstance(transcripts, list):
+                    # List format
+                    for item in transcripts:
+                        if isinstance(item, dict):
+                            speaker = item.get('speaker', '').lower()
+                            text = item.get('text', '').strip()
+                            if speaker == 'user' and text:
+                                has_user_transcription = True
+                                break
+            
+            if not has_user_transcription:
+                logger.info(f"No user transcriptions found for call log: {call_log_id} - skipping leads update")
+                return False
+            
+            # Update leads table
+            from datetime import timezone
+            cursor.execute("""
+                UPDATE lad_dev.leads 
+                SET source = %s, 
+                    status = %s, 
+                    stage = %s, 
+                    updated_at = %s
+                WHERE id = %s::uuid
+            """, (
+                'voice_agent',
+                'success', 
+                'contacted',
+                datetime.now(timezone.utc),
+                lead_id
+            ))
+            
+            conn.commit()
+            logger.info(f"Updated leads table for lead_id: {lead_id} (source=voice_agent, status=success, stage=contacted)")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating leads table: {e}")
+            if conn:
+                conn.rollback()
+            return False
+        finally:
+            if conn:
+                conn.close()
 
 analytics = CallAnalytics()
 
@@ -3019,6 +3138,8 @@ class StandaloneAnalytics:
                 
                 if success:
                     logger.info("Analytics saved to database successfully!")
+                    # Update leads table if user transcriptions are present
+                    self.analytics.update_leads_for_user_transcription(str(db_call_id), self.db_config)
                 else:
                     logger.error("Failed to save analytics to database")
             
