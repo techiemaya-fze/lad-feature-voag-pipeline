@@ -8,7 +8,7 @@ import json
 import asyncio
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
@@ -2600,7 +2600,8 @@ CONFIDENCE: [High/Medium/Low]"""
             
             # Update leads table if user transcriptions are present
             try:
-                self.update_leads_for_user_transcription(str(call_log_id), db_config)
+                if 'lead_id_from_call' in locals() and lead_id_from_call:
+                    self.update_leads_for_user_transcription(call_log_id_value, lead_id_from_call, db_config)
             except Exception as leads_update_error:
                 logger.warning(f"Failed to update leads table for user transcription: {leads_update_error}")
                 # Don't fail the whole operation if leads update fails
@@ -2759,7 +2760,7 @@ CONFIDENCE: [High/Medium/Low]"""
         
         print("="*60)
 
-    def update_leads_for_user_transcription(self, call_log_id: str, db_config: Dict) -> bool:
+    def update_leads_for_user_transcription(self, call_log_id: str, lead_id: str, db_config: Dict) -> bool:
         """
         Update leads table when user transcriptions are present in voice_call_logs.
         
@@ -2773,6 +2774,7 @@ CONFIDENCE: [High/Medium/Low]"""
         
         Args:
             call_log_id: UUID of the voice call log
+            lead_id: UUID of the lead (already fetched from database)
             db_config: Database connection config
             
         Returns:
@@ -2782,14 +2784,32 @@ CONFIDENCE: [High/Medium/Low]"""
             logger.warning("Database not available - cannot update leads table")
             return False
             
+        if not lead_id:
+            logger.warning(f"No lead_id provided for call log: {call_log_id}")
+            return False
+        
+        # Validate call_log_id UUID format
+        if isinstance(call_log_id, str):
+            import uuid as uuid_lib
+            try:
+                # Validate UUID format
+                uuid_lib.UUID(call_log_id)
+            except ValueError:
+                logger.error(f"Invalid call_log_id UUID format: {call_log_id}")
+                return False
+        else:
+            logger.error(f"call_log_id must be a string UUID, got {type(call_log_id)}")
+            return False
+            
         conn = None
+        cursor = None
         try:
             conn = psycopg2.connect(**db_config)
             cursor = conn.cursor()
-            
-            # Get transcripts and lead_id from voice_call_logs
+                
+            # Get transcripts from voice_call_logs
             cursor.execute("""
-                SELECT transcripts, lead_id 
+                SELECT transcripts 
                 FROM lad_dev.voice_call_logs 
                 WHERE id = %s::uuid
             """, (call_log_id,))
@@ -2799,11 +2819,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 logger.warning(f"No voice call log found for ID: {call_log_id}")
                 return False
                 
-            transcripts, lead_id = result
-            
-            if not lead_id:
-                logger.warning(f"No lead_id found for call log: {call_log_id}")
-                return False
+            transcripts = result[0]
                 
             # Check if user transcriptions are present
             has_user_transcription = False
@@ -2842,7 +2858,6 @@ CONFIDENCE: [High/Medium/Low]"""
                 return False
             
             # Update leads table
-            from datetime import timezone
             cursor.execute("""
                 UPDATE lad_dev.leads 
                 SET source = %s, 
@@ -2868,6 +2883,8 @@ CONFIDENCE: [High/Medium/Low]"""
                 conn.rollback()
             return False
         finally:
+            if cursor:
+                cursor.close()
             if conn:
                 conn.close()
 
@@ -3079,6 +3096,14 @@ class StandaloneAnalytics:
             tenant_result = cursor.fetchone()
             tenant_id = tenant_result[0] if tenant_result else None
             
+            # Get lead_id for leads table update
+            cursor.execute(
+                "SELECT lead_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
+                (str(db_call_id),)
+            )
+            lead_result = cursor.fetchone()
+            lead_id = lead_result[0] if lead_result else None
+            
             # Get transcript from transcripts column
             # Handle both JSONB (dict/list) and text formats
             if transcripts:
@@ -3139,7 +3164,12 @@ class StandaloneAnalytics:
                 if success:
                     logger.info("Analytics saved to database successfully!")
                     # Update leads table if user transcriptions are present
-                    self.analytics.update_leads_for_user_transcription(str(db_call_id), self.db_config)
+                    try:
+                        if lead_id:
+                            self.analytics.update_leads_for_user_transcription(str(db_call_id), lead_id, self.db_config)
+                    except Exception as leads_update_error:
+                        logger.warning(f"Failed to update leads table for user transcription: {leads_update_error}")
+                        # Don't fail the whole operation if leads update fails
                 else:
                     logger.error("Failed to save analytics to database")
             
