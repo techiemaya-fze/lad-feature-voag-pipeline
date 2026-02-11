@@ -1322,6 +1322,8 @@ if __name__ == "__main__":
             agents.WorkerOptions(
                 entrypoint_fnc=entrypoint,
                 agent_name=os.getenv("VOICE_AGENT_NAME", "inbound-agent"),
+                # port=0 → auto-pick available port (avoids conflicts when scaling)
+                port=0,
                 initialize_process_timeout=60.0,
                 shutdown_process_timeout=60.0,
                 load_fnc=calculate_worker_load,
