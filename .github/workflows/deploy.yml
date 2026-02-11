@@ -59,15 +59,17 @@ jobs:
             fi
             echo "Worker replicas: ${WORKER_REPLICAS}"
 
-            # Build images first (doesn't stop running containers)
+            # Build images first (containers keep running during build)
             echo "=== Building images ==="
             docker compose -f docker-compose.yml -f docker-compose.prod.yml build
 
-            # Recreate containers with 120s stop timeout
-            # -t 120 overrides the 5h stop_grace_period ONLY during deployment
-            # This prevents the deploy from hanging when workers are in graceful shutdown
-            echo "=== Restarting containers (${WORKER_REPLICAS} workers) ==="
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d -t 120 --force-recreate --scale worker=${WORKER_REPLICAS}
+            # Clean stop → remove → start (avoids container name conflicts)
+            # -t 120 gives active calls up to 2 minutes to finish before force-kill
+            echo "=== Stopping old containers ==="
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml down -t 120
+
+            echo "=== Starting containers (${WORKER_REPLICAS} workers) ==="
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --scale worker=${WORKER_REPLICAS}
 
             # Wait for health checks
             echo "=== Waiting for services to be healthy ==="
