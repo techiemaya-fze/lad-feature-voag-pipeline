@@ -8,7 +8,7 @@ import json
 import asyncio
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
@@ -2572,31 +2572,43 @@ CONFIDENCE: [High/Medium/Low]"""
             cursor.execute(query, values)
             conn.commit()
             
-            # Update tags column in leads table with lead_category value
-            lead_category_value = lead.get("lead_category", "")
-            if lead_category_value and call_log_id_value:
+            # Get lead_id from voice_call_logs for leads table update (independent of lead_category)
+            lead_id_from_call = None
+            if call_log_id_value:
                 try:
-                    import json
-                    # Get lead_id from voice_call_logs using call_log_id
                     cursor.execute(
                         "SELECT lead_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
                         (call_log_id_value,)
                     )
                     lead_result = cursor.fetchone()
-                    
                     if lead_result and lead_result[0]:
                         lead_id_from_call = lead_result[0]
-                        # Update tags column in leads table as JSON array
-                        from datetime import timezone
-                        cursor.execute(
-                            "UPDATE lad_dev.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
-                            (json.dumps([lead_category_value]), datetime.now(timezone.utc), lead_id_from_call)
-                        )
-                        conn.commit()
-                        logger.info(f"Updated tags column in leads table (lead_id: {lead_id_from_call}, tags: {[lead_category_value]})")
+                except Exception as lead_fetch_error:
+                    logger.warning(f"Failed to fetch lead_id: {lead_fetch_error}")
+            
+            # Update tags column in leads table with lead_category value
+            lead_category_value = lead.get("lead_category", "")
+            if lead_category_value and call_log_id_value and lead_id_from_call:
+                try:
+                    import json
+                    # Update tags column in leads table as JSON array
+                    cursor.execute(
+                        "UPDATE lad_dev.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
+                        (json.dumps([lead_category_value]), datetime.now(timezone.utc), lead_id_from_call)
+                    )
+                    conn.commit()
+                    logger.info(f"Updated tags column in leads table (lead_id: {lead_id_from_call}, tags: {[lead_category_value]})")
                 except Exception as tag_update_error:
                     logger.warning(f"Failed to update tags in leads table: {tag_update_error}")
                     # Don't fail the whole operation if tag update fails
+            
+            # Update leads table if user transcriptions are present
+            try:
+                if lead_id_from_call:
+                    self.update_leads_for_user_transcription(call_log_id_value, lead_id_from_call, db_config, conn, cursor, None)
+            except Exception as leads_update_error:
+                logger.warning(f"Failed to update leads table for user transcription: {leads_update_error}")
+                # Don't fail the whole operation if leads update fails
             
             logger.info(f"Analytics saved to database (call_log_id: {call_log_id})")
             return True
@@ -2751,6 +2763,208 @@ CONFIDENCE: [High/Medium/Low]"""
             print(f"\nSummary Error: {analysis['summary']['error']}")
         
         print("="*60)
+
+    def update_leads_for_user_transcription(self, call_log_id: str, lead_id: str, db_config: Dict, 
+                                           conn=None, cursor=None, transcripts=None) -> bool:
+        """
+        Update leads table when user transcriptions are present in voice_call_logs.
+        
+        Updates the leads table columns:
+        - source: 'voice_agent' 
+        - status: 'success'
+        - stage: 'contacted'
+        
+        Only updates if user transcriptions are present (not just agent transcriptions).
+        Will override existing values for the same lead_id.
+        
+        Args:
+            call_log_id: UUID of the voice call log
+            lead_id: UUID of the lead to update
+            db_config: Database configuration dictionary
+            conn: Optional existing database connection (for reusing transactions)
+            cursor: Optional existing cursor (for reusing transactions)
+            transcripts: Optional transcripts data (to avoid duplicate DB query)
+            
+        Returns:
+            bool: True if update was successful, False otherwise
+            
+        Note:
+            If conn/cursor are provided, this function will reuse the existing connection
+            and not create a new one. If transcripts are provided, it will use them directly
+            instead of querying the database again.
+        """
+        if not DB_AVAILABLE:
+            logger.warning("Database not available - cannot update leads table")
+            return False
+            
+        if not lead_id:
+            logger.warning(f"No lead_id provided for call log: {call_log_id}")
+            return False
+        
+        # Validate call_log_id UUID format
+        if isinstance(call_log_id, str):
+            import uuid as uuid_lib
+            try:
+                # Validate UUID format
+                uuid_lib.UUID(call_log_id)
+            except ValueError:
+                logger.error(f"Invalid call_log_id UUID format: {call_log_id}")
+                return False
+        else:
+            logger.error(f"call_log_id must be a string UUID, got {type(call_log_id)}")
+            return False
+        
+        # System messages to filter out (voicemail prompts, etc.)
+        SYSTEM_MESSAGES = [
+            "call has been forwarded to voice mail",
+            "the person you're trying to reach is not available",
+            "at the tone", "please record your message",
+            "to leave a callback number", "press",
+            "hang up", "send a numeric page", "to repeat this message"
+        ]
+            
+        # Use existing connection or create new one
+        should_close_connection = False
+        local_conn = None
+        local_cursor = None
+        
+        try:
+            # Use provided connection/cursor or create new ones
+            if conn is not None and cursor is not None:
+                local_conn = conn
+                local_cursor = cursor
+                should_close_connection = False
+            else:
+                local_conn = psycopg2.connect(**db_config)
+                local_cursor = local_conn.cursor()
+                should_close_connection = True
+                
+            # Use provided transcripts or fetch from database
+            if transcripts is not None:
+                # Use provided transcripts directly
+                pass
+            else:
+                # Get transcripts from voice_call_logs
+                local_cursor.execute("""
+                    SELECT transcripts 
+                    FROM lad_dev.voice_call_logs 
+                    WHERE id = %s::uuid
+                """, (call_log_id,))
+                
+                result = local_cursor.fetchone()
+                if not result:
+                    logger.warning(f"No voice call log found for ID: {call_log_id}")
+                    return False
+                    
+                transcripts = result[0]
+                
+            # Check if user transcriptions are present
+            has_user_transcription = False
+            
+            if transcripts:
+                if isinstance(transcripts, dict) and 'segments' in transcripts:
+                    # VoiceAgent segments format
+                    for segment in transcripts['segments']:
+                        speaker = segment.get('speaker', '').lower()
+                        text = segment.get('text', '').strip()
+                        if speaker == 'user' and text:
+                            # Filter out system messages
+                            is_system = any(sys_msg in text.lower() for sys_msg in SYSTEM_MESSAGES)
+                            if not is_system:
+                                has_user_transcription = True
+                                break
+                elif isinstance(transcripts, list):
+                    # List format
+                    for item in transcripts:
+                        if isinstance(item, dict):
+                            speaker = item.get('speaker', '').lower()
+                            text = item.get('text', '').strip()
+                            if speaker == 'user' and text:
+                                has_user_transcription = True
+                                break
+                elif isinstance(transcripts, str):
+                    # String format - could be plain text or JSON string
+                    import json
+                    try:
+                        # Try to parse as JSON first
+                        parsed_transcripts = json.loads(transcripts)
+                        if isinstance(parsed_transcripts, dict) and 'segments' in parsed_transcripts:
+                            # JSON string with segments format
+                            for segment in parsed_transcripts['segments']:
+                                speaker = segment.get('speaker', '').lower()
+                                text = segment.get('text', '').strip()
+                                if speaker == 'user' and text:
+                                    # Filter out system messages
+                                    is_system = any(sys_msg in text.lower() for sys_msg in SYSTEM_MESSAGES)
+                                    if not is_system:
+                                        has_user_transcription = True
+                                        break
+                        elif isinstance(parsed_transcripts, list):
+                            # JSON string with list format
+                            for item in parsed_transcripts:
+                                if isinstance(item, dict):
+                                    speaker = item.get('speaker', '').lower()
+                                    text = item.get('text', '').strip()
+                                    if speaker == 'user' and text:
+                                        has_user_transcription = True
+                                        break
+                        else:
+                            # JSON but not a recognized format, treat as plain text
+                            if parsed_transcripts and str(parsed_transcripts).strip():
+                                # Non-empty text content, assume it's user transcription
+                                # Filter out system messages
+                                text_content = str(parsed_transcripts).strip()
+                                is_system = any(sys_msg in text_content.lower() for sys_msg in SYSTEM_MESSAGES)
+                                if not is_system:
+                                    has_user_transcription = True
+                    except (json.JSONDecodeError, ValueError):
+                        # Not valid JSON, treat as plain text
+                        if transcripts.strip():
+                            # Non-empty text content, assume it's user transcription
+                            # Filter out system messages
+                            text_content = transcripts.strip()
+                            is_system = any(sys_msg in text_content.lower() for sys_msg in SYSTEM_MESSAGES)
+                            if not is_system:
+                                has_user_transcription = True
+            
+            if not has_user_transcription:
+                logger.info(f"No user transcriptions found for call log: {call_log_id} - skipping leads update")
+                return False
+            
+            # Update leads table
+            local_cursor.execute("""
+                UPDATE lad_dev.leads 
+                SET source = %s, 
+                    status = %s, 
+                    stage = %s, 
+                    updated_at = %s
+                WHERE id = %s::uuid
+            """, (
+                'voice_agent',
+                'success', 
+                'contacted',
+                datetime.now(timezone.utc),
+                lead_id
+            ))
+            
+            # Only commit if we created the connection ourselves
+            if should_close_connection:
+                local_conn.commit()
+            logger.info(f"Updated leads table for lead_id: {lead_id} (source=voice_agent, status=success, stage=contacted)")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating leads table: {e}")
+            if local_conn and should_close_connection:
+                local_conn.rollback()
+            return False
+        finally:
+            # Only close if we created the connection ourselves
+            if should_close_connection:
+                if local_cursor:
+                    local_cursor.close()
+                if local_conn:
+                    local_conn.close()
 
 analytics = CallAnalytics()
 
@@ -2952,13 +3166,14 @@ class StandaloneAnalytics:
             db_call_id, transcripts, started_at, ended_at, duration_seconds_db = call_data[:5]
             recording_url = call_data[5] if len(call_data) > 5 else None
             
-            # Get tenant_id for save_to_lad_dev
+            # Get tenant_id and lead_id in single query
             cursor.execute(
-                "SELECT tenant_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
+                "SELECT tenant_id, lead_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
                 (str(db_call_id),)
             )
-            tenant_result = cursor.fetchone()
-            tenant_id = tenant_result[0] if tenant_result else None
+            result = cursor.fetchone()
+            tenant_id = result[0] if result and result[0] else None
+            lead_id = result[1] if result and result[1] else None
             
             # Get transcript from transcripts column
             # Handle both JSONB (dict/list) and text formats
@@ -3013,12 +3228,23 @@ class StandaloneAnalytics:
                 if tenant_id and STORAGE_CLASSES_AVAILABLE:
                     logger.info("Saving analytics to lad_dev.voice_call_analysis table...")
                     success = await self.analytics.save_to_lad_dev(result, str(db_call_id), str(tenant_id))
+                    # Use the same db_config for leads update
+                    from db.db_config import get_db_config
+                    leads_db_config = get_db_config()
                 else:
                     logger.info("Saving analytics to post_call_analysis_voiceagent table (legacy)...")
                     success = self.analytics.save_to_database(result, db_call_id, self.db_config)
+                    leads_db_config = self.db_config
                 
                 if success:
                     logger.info("Analytics saved to database successfully!")
+                    # Update leads table if user transcriptions are present
+                    try:
+                        if lead_id:
+                            self.analytics.update_leads_for_user_transcription(str(db_call_id), lead_id, leads_db_config, None, None, transcripts)
+                    except Exception as leads_update_error:
+                        logger.warning(f"Failed to update leads table for user transcription: {leads_update_error}")
+                        # Don't fail the whole operation if leads update fails
                 else:
                     logger.error("Failed to save analytics to database")
             
