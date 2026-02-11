@@ -168,7 +168,7 @@ The heart of the voice agent system. Handles LiveKit integration, conversation f
 | `instruction_builder.py` | Agent prompt generation - builds system instructions from templates | worker.py |
 | `cleanup_handler.py` | Post-call cleanup - saves transcripts, calculates costs, updates call status | worker.py |
 
-#### VoiceAssistant Key Features
+#### VoiceAssistant Key  Features
 
 | Feature | Description |
 |---------|-------------|
