@@ -2572,35 +2572,40 @@ CONFIDENCE: [High/Medium/Low]"""
             cursor.execute(query, values)
             conn.commit()
             
-            # Update tags column in leads table with lead_category value
-            lead_category_value = lead.get("lead_category", "")
-            if lead_category_value and call_log_id_value:
+            # Get lead_id from voice_call_logs for leads table update (independent of lead_category)
+            lead_id_from_call = None
+            if call_log_id_value:
                 try:
-                    import json
-                    # Get lead_id from voice_call_logs using call_log_id
                     cursor.execute(
                         "SELECT lead_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
                         (call_log_id_value,)
                     )
                     lead_result = cursor.fetchone()
-                    
                     if lead_result and lead_result[0]:
                         lead_id_from_call = lead_result[0]
-                        # Update tags column in leads table as JSON array
-                        from datetime import timezone
-                        cursor.execute(
-                            "UPDATE lad_dev.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
-                            (json.dumps([lead_category_value]), datetime.now(timezone.utc), lead_id_from_call)
-                        )
-                        conn.commit()
-                        logger.info(f"Updated tags column in leads table (lead_id: {lead_id_from_call}, tags: {[lead_category_value]})")
+                except Exception as lead_fetch_error:
+                    logger.warning(f"Failed to fetch lead_id: {lead_fetch_error}")
+            
+            # Update tags column in leads table with lead_category value
+            lead_category_value = lead.get("lead_category", "")
+            if lead_category_value and call_log_id_value and lead_id_from_call:
+                try:
+                    import json
+                    # Update tags column in leads table as JSON array
+                    from datetime import timezone
+                    cursor.execute(
+                        "UPDATE lad_dev.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
+                        (json.dumps([lead_category_value]), datetime.now(timezone.utc), lead_id_from_call)
+                    )
+                    conn.commit()
+                    logger.info(f"Updated tags column in leads table (lead_id: {lead_id_from_call}, tags: {[lead_category_value]})")
                 except Exception as tag_update_error:
                     logger.warning(f"Failed to update tags in leads table: {tag_update_error}")
                     # Don't fail the whole operation if tag update fails
             
             # Update leads table if user transcriptions are present
             try:
-                if 'lead_id_from_call' in locals() and lead_id_from_call:
+                if lead_id_from_call:
                     self.update_leads_for_user_transcription(call_log_id_value, lead_id_from_call, db_config)
             except Exception as leads_update_error:
                 logger.warning(f"Failed to update leads table for user transcription: {leads_update_error}")
@@ -2852,6 +2857,71 @@ CONFIDENCE: [High/Medium/Low]"""
                             if speaker == 'user' and text:
                                 has_user_transcription = True
                                 break
+                elif isinstance(transcripts, str):
+                    # String format - could be plain text or JSON string
+                    import json
+                    try:
+                        # Try to parse as JSON first
+                        parsed_transcripts = json.loads(transcripts)
+                        if isinstance(parsed_transcripts, dict) and 'segments' in parsed_transcripts:
+                            # JSON string with segments format
+                            for segment in parsed_transcripts['segments']:
+                                speaker = segment.get('speaker', '').lower()
+                                text = segment.get('text', '').strip()
+                                if speaker == 'user' and text:
+                                    # Filter out system messages
+                                    system_messages = [
+                                        "call has been forwarded to voice mail",
+                                        "the person you're trying to reach is not available",
+                                        "at the tone", "please record your message",
+                                         "to leave a callback number", "press",
+                                        "hang up", "send a numeric page", "to repeat this message"
+                                    ]
+                                    is_system = any(sys_msg in text.lower() for sys_msg in system_messages)
+                                    if not is_system:
+                                        has_user_transcription = True
+                                        break
+                        elif isinstance(parsed_transcripts, list):
+                            # JSON string with list format
+                            for item in parsed_transcripts:
+                                if isinstance(item, dict):
+                                    speaker = item.get('speaker', '').lower()
+                                    text = item.get('text', '').strip()
+                                    if speaker == 'user' and text:
+                                        has_user_transcription = True
+                                        break
+                        else:
+                            # JSON but not a recognized format, treat as plain text
+                            if parsed_transcripts and str(parsed_transcripts).strip():
+                                # Non-empty text content, assume it's user transcription
+                                # Filter out system messages
+                                text_content = str(parsed_transcripts).strip()
+                                system_messages = [
+                                    "call has been forwarded to voice mail",
+                                    "the person you're trying to reach is not available",
+                                    "at the tone", "please record your message",
+                                     "to leave a callback number", "press",
+                                    "hang up", "send a numeric page", "to repeat this message"
+                                ]
+                                is_system = any(sys_msg in text_content.lower() for sys_msg in system_messages)
+                                if not is_system:
+                                    has_user_transcription = True
+                    except (json.JSONDecodeError, ValueError):
+                        # Not valid JSON, treat as plain text
+                        if transcripts.strip():
+                            # Non-empty text content, assume it's user transcription
+                            # Filter out system messages
+                            text_content = transcripts.strip()
+                            system_messages = [
+                                "call has been forwarded to voice mail",
+                                "the person you're trying to reach is not available",
+                                "at the tone", "please record your message",
+                                 "to leave a callback number", "press",
+                                "hang up", "send a numeric page", "to repeat this message"
+                            ]
+                            is_system = any(sys_msg in text_content.lower() for sys_msg in system_messages)
+                            if not is_system:
+                                has_user_transcription = True
             
             if not has_user_transcription:
                 logger.info(f"No user transcriptions found for call log: {call_log_id} - skipping leads update")
@@ -3157,16 +3227,20 @@ class StandaloneAnalytics:
                 if tenant_id and STORAGE_CLASSES_AVAILABLE:
                     logger.info("Saving analytics to lad_dev.voice_call_analysis table...")
                     success = await self.analytics.save_to_lad_dev(result, str(db_call_id), str(tenant_id))
+                    # Use the same db_config for leads update
+                    from db.db_config import get_db_config
+                    leads_db_config = get_db_config()
                 else:
                     logger.info("Saving analytics to post_call_analysis_voiceagent table (legacy)...")
                     success = self.analytics.save_to_database(result, db_call_id, self.db_config)
+                    leads_db_config = self.db_config
                 
                 if success:
                     logger.info("Analytics saved to database successfully!")
                     # Update leads table if user transcriptions are present
                     try:
                         if lead_id:
-                            self.analytics.update_leads_for_user_transcription(str(db_call_id), lead_id, self.db_config)
+                            self.analytics.update_leads_for_user_transcription(str(db_call_id), lead_id, leads_db_config)
                     except Exception as leads_update_error:
                         logger.warning(f"Failed to update leads table for user transcription: {leads_update_error}")
                         # Don't fail the whole operation if leads update fails
