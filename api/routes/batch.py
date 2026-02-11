@@ -584,7 +584,7 @@ async def get_batch_status(batch_id: str) -> BatchStatusResponse:
         total_calls=batch_record["total_calls"],
         completed_calls=batch_record["completed_calls"],
         failed_calls=batch_record["failed_calls"],
-        cancelled_calls=batch_record["cancelled_calls"],
+        cancelled_calls=batch_record.get("cancelled_calls", 0),
         pending_calls=pending,
         running_calls=running,
         initiated_by=batch_record.get("initiated_by"),

@@ -262,7 +262,7 @@ class BatchStatusResponse(BaseModel):
     total_calls: int
     completed_calls: int
     failed_calls: int
-    cancelled_calls: int
+    cancelled_calls: int = 0
     pending_calls: int
     running_calls: int
     initiated_by: str | None = None  # UUID
