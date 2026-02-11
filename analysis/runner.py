@@ -133,6 +133,15 @@ async def run_post_call_analysis(
         logger.error("Saving analytics failed for call_log_id=%s: %s", call_log_id, exc, exc_info=True)
         return False
 
+    # Update leads table if user transcriptions are present
+    if saved and lead_id:
+        try:
+            analytics.update_leads_for_user_transcription(str(call_log_id), lead_id, dict(db_config))
+            logger.info("Leads table update completed for call_log_id=%s", call_log_id)
+        except Exception as leads_exc:  # noqa: BLE001
+            logger.warning("Leads table update failed for call_log_id=%s: %s", call_log_id, leads_exc, exc_info=True)
+            # Don't fail the whole operation if leads update fails
+
     # ===== VERTICAL ROUTING =====
     # Route lead extraction to vertical-specific tables based on tenant
     if saved and tenant_id and VERTICAL_ROUTING_AVAILABLE:
