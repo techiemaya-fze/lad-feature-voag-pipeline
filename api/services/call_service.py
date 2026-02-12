@@ -103,6 +103,9 @@ def _normalize_tts_provider(value: Optional[str]) -> Optional[str]:
         "smallest_ai": "smallestai",
         "smallest-ai": "smallestai",
         "waves": "smallestai",
+        "sarvam_tts": "sarvam",
+        "sarvam-ai": "sarvam",
+        "sarvam_ai": "sarvam",
     }
     if normalized in alias_map:
         return alias_map[normalized]
@@ -348,6 +351,38 @@ def _resolve_voice_context(voice_id: str, voice_record: Optional[Mapping[str, An
         similarity = provider_config.get("similarity_boost") or provider_config.get("similarity")
         if similarity is not None:
             tts_overrides["similarity_boost"] = str(similarity)
+        
+        # Sarvam-specific parameters
+        pace = provider_config.get("pace")
+        if pace is not None:
+            tts_overrides["pace"] = str(pace)
+        
+        loudness = provider_config.get("loudness")
+        if loudness is not None:
+            tts_overrides["loudness"] = str(loudness)
+        
+        target_language_code = provider_config.get("target_language_code")
+        if target_language_code is not None:
+            tts_overrides["target_language_code"] = str(target_language_code)
+        
+        speaker = provider_config.get("speaker")
+        if speaker is not None:
+            tts_overrides["speaker"] = str(speaker)
+        
+        # Model override (critical: allows DB to override default model, e.g. bulbul:v3)
+        model = provider_config.get("model")
+        if model is not None:
+            tts_overrides["model"] = str(model)
+        
+        # Audio quality: speech_sample_rate (8000=telephony, 16000, 22050, 24000)
+        speech_sample_rate = provider_config.get("speech_sample_rate")
+        if speech_sample_rate is not None:
+            tts_overrides["speech_sample_rate"] = str(speech_sample_rate)
+        
+        # Text preprocessing toggle
+        enable_preprocessing = provider_config.get("enable_preprocessing")
+        if enable_preprocessing is not None:
+            tts_overrides["enable_preprocessing"] = str(enable_preprocessing)
     
     return VoiceContext(
         db_voice_id=str(db_id) if db_id else None,
