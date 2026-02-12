@@ -188,7 +188,7 @@ The heart of the voice agent system. Handles LiveKit integration, conversation f
 
 ### 2. `api/` - REST API Layer
 
-FastAPI-based REST API for external integrations and frontend communication.
+FastAPI-based REST API for external integrations  and frontend communication.
 
 | File | Purpose |
 |------|---------|
