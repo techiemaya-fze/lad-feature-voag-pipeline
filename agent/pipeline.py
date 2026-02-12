@@ -5,7 +5,7 @@ Handles TTS engine configuration, LLM provider setup, and language mapping.
 Extracted from entry.py for modular architecture.
 
 Components:
-- TTS Engine Builders: Cartesia, Google, Gemini, ElevenLabs, Rime, SmallestAI  
+- TTS Engine Builders: Cartesia, Google, Gemini, ElevenLabs, Rime, SmallestAI, Sarvam  
 - LLM Configuration: Provider resolution, model selection
 - Language Mapping: Accent to language code conversion
 """
@@ -36,6 +36,11 @@ try:
     from livekit.plugins import smallestai
 except ImportError:
     smallestai = None
+
+try:
+    from livekit.plugins import sarvam
+except ImportError:
+    sarvam = None
 
 try:
     from livekit.plugins import groq as groq_plugin
@@ -430,6 +435,8 @@ def build_tts_engine(
         "rime_tts": "rime", "rime-ai": "rime",
         "smallestai": "smallestai", "smallest_ai": "smallestai",
         "smallest-ai": "smallestai", "waves": "smallestai",
+        "sarvam_tts": "sarvam", "sarvam-ai": "sarvam",
+        "sarvam_ai": "sarvam",
     }
     normalized = alias_map.get(normalized, normalized)
     
@@ -565,6 +572,71 @@ def build_tts_engine(
         
         details.update({"model": model, "voice": voice_id, "language": language})
         return smallestai.TTS(**kwargs_smallest), details
+    
+    # Sarvam
+    if normalized == "sarvam":
+        if sarvam is None:
+            raise RuntimeError("Sarvam plugin not installed. Run: uv add livekit-plugins-sarvam")
+        
+        model = _pick(overrides.get("model"), os.getenv("SARVAM_TTS_MODEL"), default="bulbul:v2")
+        speaker = _pick(overrides.get("speaker"), overrides.get("voice"), os.getenv("SARVAM_TTS_SPEAKER"), default="anushka")
+        target_language_code = _pick(
+            overrides.get("target_language_code"),
+            overrides.get("language"),
+            os.getenv("SARVAM_TTS_LANGUAGE"),
+            default="hi-IN",
+        )
+        
+        kwargs_sarvam: dict[str, Any] = {
+            "model": model,
+            "speaker": speaker,
+            "target_language_code": target_language_code,
+        }
+        
+        api_key = _pick(overrides.get("api_key"), os.getenv("SARVAM_API_KEY"))
+        if api_key:
+            kwargs_sarvam["api_key"] = api_key
+        
+        # Speech sample rate: 8000 (telephony), 16000, 22050 (default), 24000
+        speech_sample_rate = _coerce_int(overrides.get("speech_sample_rate"))
+        if speech_sample_rate is None:
+            env_rate = os.getenv("SARVAM_TTS_SAMPLE_RATE")
+            speech_sample_rate = _coerce_int(env_rate)
+        if speech_sample_rate is not None and speech_sample_rate in (8000, 16000, 22050, 24000):
+            kwargs_sarvam["speech_sample_rate"] = speech_sample_rate
+        
+        # Enable text preprocessing
+        enable_preprocessing_raw = overrides.get("enable_preprocessing")
+        if enable_preprocessing_raw is not None:
+            kwargs_sarvam["enable_preprocessing"] = str(enable_preprocessing_raw).lower() in ("true", "1", "yes")
+        
+        pitch = _coerce_float(overrides.get("pitch"))
+        if pitch is not None:
+            kwargs_sarvam["pitch"] = max(-20.0, min(20.0, pitch))
+        
+        pace = _coerce_float(overrides.get("pace"))
+        if pace is not None:
+            kwargs_sarvam["pace"] = max(0.5, min(2.0, pace))
+        
+        loudness = _coerce_float(overrides.get("loudness"))
+        if loudness is not None:
+            kwargs_sarvam["loudness"] = max(0.5, min(2.0, loudness))
+        
+        details.update({
+            "model": model,
+            "speaker": speaker,
+            "language": target_language_code,
+        })
+        if speech_sample_rate is not None:
+            details["speech_sample_rate"] = str(speech_sample_rate)
+        if pitch is not None:
+            details["pitch"] = str(pitch)
+        if pace is not None:
+            details["pace"] = str(pace)
+        if loudness is not None:
+            details["loudness"] = str(loudness)
+        
+        return sarvam.TTS(**kwargs_sarvam), details
     
     # Default: Cartesia
     if normalized not in {"cartesia"}:

@@ -55,6 +55,9 @@ PROVIDER_ALIASES: dict[str, str] = {
     "smallest_ai": "smallestai",
     "smallest-ai": "smallestai",
     "waves": "smallestai",
+    "sarvam_tts": "sarvam",
+    "sarvam-ai": "sarvam",
+    "sarvam_ai": "sarvam",
 }
 
 # Cartesia voice language hints
@@ -432,6 +435,83 @@ def create_smallestai(overrides: dict[str, str] | None = None) -> tuple[Any, dic
 
 
 # =============================================================================
+# SARVAM PROVIDER
+# =============================================================================
+
+def create_sarvam(overrides: dict[str, str] | None = None) -> tuple[Any, dict[str, str]]:
+    """Create Sarvam TTS instance for Indian language synthesis."""
+    try:
+        from livekit.plugins import sarvam
+    except ImportError:
+        raise RuntimeError("Sarvam plugin not installed. Run: uv add livekit-plugins-sarvam")
+    
+    overrides = overrides or {}
+    
+    model = _pick(overrides.get("model"), os.getenv("SARVAM_TTS_MODEL"), default="bulbul:v2")
+    speaker = _pick(overrides.get("speaker"), overrides.get("voice"), os.getenv("SARVAM_TTS_SPEAKER"), default="anushka")
+    target_language_code = _pick(
+        overrides.get("target_language_code"),
+        overrides.get("language"),
+        os.getenv("SARVAM_TTS_LANGUAGE"),
+        default="hi-IN",
+    )
+    
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "speaker": speaker,
+        "target_language_code": target_language_code,
+    }
+    
+    api_key = os.getenv("SARVAM_API_KEY")
+    if api_key:
+        kwargs["api_key"] = api_key
+    
+    # Speech sample rate: 8000 (telephony), 16000, 22050 (default), 24000
+    speech_sample_rate = _coerce_int(overrides.get("speech_sample_rate"))
+    if speech_sample_rate is None:
+        env_rate = os.getenv("SARVAM_TTS_SAMPLE_RATE")
+        speech_sample_rate = _coerce_int(env_rate)
+    if speech_sample_rate is not None and speech_sample_rate in (8000, 16000, 22050, 24000):
+        kwargs["speech_sample_rate"] = speech_sample_rate
+    
+    # Enable text preprocessing (number normalization, code-mixed text handling)
+    enable_preprocessing_raw = overrides.get("enable_preprocessing")
+    if enable_preprocessing_raw is not None:
+        kwargs["enable_preprocessing"] = str(enable_preprocessing_raw).lower() in ("true", "1", "yes")
+    
+    # Optional float parameters
+    pitch = _coerce_float(overrides.get("pitch"))
+    if pitch is not None:
+        kwargs["pitch"] = max(-20.0, min(20.0, pitch))
+    
+    pace = _coerce_float(overrides.get("pace"))
+    if pace is not None:
+        kwargs["pace"] = max(0.5, min(2.0, pace))
+    
+    loudness = _coerce_float(overrides.get("loudness"))
+    if loudness is not None:
+        kwargs["loudness"] = max(0.5, min(2.0, loudness))
+    
+    details: dict[str, str] = {
+        "provider": "sarvam",
+        "model": model,
+        "speaker": speaker,
+        "language": target_language_code,
+    }
+    if speech_sample_rate is not None:
+        details["speech_sample_rate"] = str(speech_sample_rate)
+    if pitch is not None:
+        details["pitch"] = str(pitch)
+    if pace is not None:
+        details["pace"] = str(pace)
+    if loudness is not None:
+        details["loudness"] = str(loudness)
+    
+    logger.info("Creating Sarvam TTS: %s, speaker=%s, lang=%s, sample_rate=%s", model, speaker, target_language_code, kwargs.get("speech_sample_rate", 22050))
+    return sarvam.TTS(**kwargs), details
+
+
+# =============================================================================
 # FACTORY FUNCTION
 # =============================================================================
 
@@ -472,6 +552,8 @@ def create_tts(
         return create_rime(overrides)
     elif normalized == "smallestai":
         return create_smallestai(overrides)
+    elif normalized == "sarvam":
+        return create_sarvam(overrides)
     else:
         # Default to Cartesia
         if normalized not in {"cartesia"}:
@@ -494,6 +576,7 @@ __all__ = [
     "create_elevenlabs",
     "create_rime",
     "create_smallestai",
+    "create_sarvam",
     # Utilities
     "normalize_provider",
     "derive_language",

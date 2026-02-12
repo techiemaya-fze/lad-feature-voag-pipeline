@@ -6,7 +6,7 @@ Supports runtime switching - each call creates a fresh instance.
 
 Modules:
 - llm_builder: Groq, Google Gemini, OpenAI
-- tts_builder: Cartesia, Google, Chirp, Gemini, ElevenLabs, Rime, SmallestAI
+- tts_builder: Cartesia, Google, Chirp, Gemini, ElevenLabs, Rime, SmallestAI, Sarvam
 """
 
 from agent.providers.llm_builder import (
@@ -27,6 +27,7 @@ from agent.providers.tts_builder import (
     create_elevenlabs,
     create_rime,
     create_smallestai,
+    create_sarvam,
     normalize_provider as normalize_tts_provider,
 )
 
@@ -47,5 +48,6 @@ __all__ = [
     "create_elevenlabs",
     "create_rime",
     "create_smallestai",
+    "create_sarvam",
     "normalize_tts_provider",
 ]

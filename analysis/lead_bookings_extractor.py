@@ -729,7 +729,7 @@ Return JSON only."""
                     day = 1
                 
                 # Remove day number and weekday from remaining text for time parsing
-                remaining = re.sub(r'\d{1,2}(?:st|nd|rd|th)?', '', remaining).strip()
+                remaining = re.sub(r'\d{1,2}(?:st|nd|rd|th)\b', '', remaining).strip()
                 # Remove weekday names
                 weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
                 for weekday in weekdays:
