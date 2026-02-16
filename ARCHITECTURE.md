@@ -2,7 +2,7 @@
 
 ## Overview
 
-The **v2** folder contains the modular, production-ready implementation of the Vonage Voice Agent system. This architecture separates concerns into distinct modules for maintainability, testability, and scalability.
+The **v2**  folder contains the modular, production-ready implementation of the Vonage Voice Agent system. This architecture separates concerns into distinct modules for maintainability, testability, and scalability.
 
 ---
 
