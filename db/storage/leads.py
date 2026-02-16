@@ -10,6 +10,7 @@ Updated for lad_dev schema (Phase 12):
 - Added: tenant_id (required), source, email, etc.
 """
 
+import os
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime

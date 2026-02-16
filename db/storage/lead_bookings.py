@@ -5,6 +5,7 @@ Database storage for lead bookings extraction from voice_call_logs transcription
 Uses psycopg2 with connection pooling (v2 pattern).
 """
 
+import os
 import json
 import logging
 from typing import Any, Dict, List, Optional

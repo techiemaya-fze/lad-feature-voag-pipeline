@@ -10,6 +10,7 @@ Updated for lad_dev schema (Phase 12):
 - Changed: entry uses lead_id (UUID FK) instead of lead_name
 """
 
+import os
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Any

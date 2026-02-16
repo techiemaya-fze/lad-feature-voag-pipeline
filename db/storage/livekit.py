@@ -9,6 +9,7 @@ Usage:
     config = await storage.get_livekit_config(config_id)
 """
 
+import os
 import logging
 from typing import Any, Optional
 from datetime import datetime

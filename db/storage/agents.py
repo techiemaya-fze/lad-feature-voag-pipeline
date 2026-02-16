@@ -7,6 +7,7 @@ Updated for lad_dev schema (Phase 12):
 - Uses voice_permissions for org lookup (was org_permissions_voiceagent)
 """
 
+import os
 import logging
 from typing import Any, Optional
 
