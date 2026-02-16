@@ -219,6 +219,11 @@ async def _wait_for_wave_completion(
             logger.info("Batch %s wave %d: All entries completed", job_id, wave_num)
             return {"completed": True, "timeout_results": None}
         
+        # Check if batch was cancelled — exit early instead of waiting 20 min
+        if await batch_storage.is_batch_stopped(batch_id):
+            logger.info("Batch %s wave %d: Batch stopped/cancelled, exiting wave wait", job_id, wave_num)
+            return {"completed": False, "timeout_results": None, "cancelled": True}
+        
         # Check timeout
         elapsed = asyncio.get_event_loop().time() - start_time
         if elapsed > BATCH_WAVE_TIMEOUT:
@@ -454,6 +459,10 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
         total = len(entries)
         wave_num = 0
         
+        # Mark batch as running BEFORE dispatching (avoids race with entry_completed_callback
+        # which can mark batch 'completed' before this loop finishes)
+        await batch_storage.update_batch_status(batch_id, "running")
+        
         for wave_start in range(0, total, BATCH_WAVE_SIZE):
             wave_num += 1
             wave_end = min(wave_start + BATCH_WAVE_SIZE, total)
@@ -507,13 +516,78 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
             
             # Wait for this wave to complete before starting next
             if dispatched_entry_ids:
-                await _wait_for_wave_completion(batch_id, dispatched_entry_ids, wave_num, job_id)
+                wave_result = await _wait_for_wave_completion(batch_id, dispatched_entry_ids, wave_num, job_id)
+                
+                # If timeout occurred and entries were reset to queued, re-dispatch them
+                timeout_results = wave_result.get("timeout_results")
+                
+                # Increment batch counters for entries resolved by timeout handler
+                if timeout_results:
+                    timeout_failed = (
+                        timeout_results.get("failed_max_retries", 0)
+                        + timeout_results.get("failed_ringing", 0)
+                        + timeout_results.get("failed_ongoing_stuck", 0)
+                        + timeout_results.get("recovered_failed", 0)
+                    )
+                    timeout_completed = timeout_results.get("recovered_completed", 0)
+                    if timeout_failed > 0:
+                        await batch_storage.increment_batch_counters(batch_id, failed_delta=timeout_failed)
+                        logger.info("Batch %s wave %d: Incremented failed_calls by %d (timeout failures)", job_id, wave_num, timeout_failed)
+                    if timeout_completed > 0:
+                        await batch_storage.increment_batch_counters(batch_id, completed_delta=timeout_completed)
+                        logger.info("Batch %s wave %d: Incremented completed_calls by %d (recovered from call_logs)", job_id, wave_num, timeout_completed)
+                
+                if timeout_results and timeout_results.get("reset_to_queued", 0) > 0:
+                    retry_entries = await batch_storage.get_queued_entries_for_wave(
+                        str(batch_id), wave_size=timeout_results["reset_to_queued"]
+                    )
+                    if retry_entries:
+                        logger.info(
+                            "Batch %s wave %d: Re-dispatching %d retried entries",
+                            job_id, wave_num, len(retry_entries)
+                        )
+                        retry_entry_ids = []
+                        for retry_entry in retry_entries:
+                            rid = str(retry_entry["id"])
+                            try:
+                                await batch_storage.update_batch_entry_status(rid, "running")
+                                result = await call_service.dispatch_call(
+                                    job_id=job_id,
+                                    voice_id=resolved_voice_id,
+                                    voice_context=voice_context,
+                                    from_number=clean_from_number,
+                                    to_number=retry_entry["to_phone"],
+                                    context=retry_entry.get("metadata", {}).get("context") or clean_context,
+                                    initiated_by=initiator_id,
+                                    agent_id=assigned_agent_id,
+                                    llm_provider=llm_provider_override,
+                                    llm_model=llm_model_override,
+                                    knowledge_base_store_ids=retry_entry.get("metadata", {}).get("knowledge_base_store_ids"),
+                                    lead_name=retry_entry.get("metadata", {}).get("lead_name"),
+                                    lead_id_override=retry_entry.get("lead_id"),
+                                    batch_id=str(batch_id),
+                                    entry_id=rid,
+                                )
+                                await batch_storage.update_batch_entry_call_log(batch_id, rid, result.call_log_id)
+                                await batch_storage.update_batch_entry_status(rid, "dispatched")
+                                retry_entry_ids.append(rid)
+                            except Exception as exc:
+                                logger.exception("Retry dispatch failed for entry %s: %s", rid, exc)
+                                await batch_storage.update_batch_entry_status(rid, "failed", error_message=str(exc)[:500])
+                                await batch_storage.increment_batch_counters(batch_id, failed_delta=1)
+                        
+                        # Wait for retried entries to complete
+                        if retry_entry_ids:
+                            await _wait_for_wave_completion(batch_id, retry_entry_ids, wave_num, job_id)
             
             logger.info("Batch %s: Wave %d complete", job_id, wave_num)
+            
+            # Check if batch was cancelled between waves
+            if await batch_storage.is_batch_stopped(str(batch_id)):
+                logger.info("Batch %s: Stopped/cancelled, halting dispatch", job_id)
+                return
         
-        # Mark batch as running (worker will mark completed when last call ends)
-        await batch_storage.update_batch_status(batch_id, "running")
-        logger.info("Batch %s dispatched all %d calls in %d waves, now running", job_id, total, wave_num)
+        logger.info("Batch %s dispatched all %d calls in %d waves", job_id, total, wave_num)
         
         # NOTE: Batch report is triggered by cleanup_handler when last call completes
 
@@ -559,8 +633,8 @@ async def get_batch_status(batch_id: str) -> BatchStatusResponse:
     
     entries = await batch_storage.get_batch_entries(batch_record["id"])
     
-    pending = sum(1 for e in entries if e["status"] == "pending")
-    running = sum(1 for e in entries if e["status"] == "running")
+    pending = sum(1 for e in entries if e["status"] in ("queued", "dispatched"))
+    running = sum(1 for e in entries if e["status"] in ("running", "ongoing"))
     
     entry_models = [
         BatchEntryStatusModel(

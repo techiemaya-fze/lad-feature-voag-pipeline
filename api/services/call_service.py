@@ -19,6 +19,7 @@ from livekit import api
 # Call routing validation
 from utils.call_routing import validate_and_format_call
 from utils.tenant_utils import is_education_tenant
+from utils.livekit_resolver import resolve_livekit_credentials
 from db.db_config import get_db_config
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ class VoiceContext:
     overrides: dict[str, str]
     voice_name: str | None
     accent: str | None
+    is_realtime: bool = False  # True for realtime providers (ultravox, gemini_realtime, etc.)
 
 
 @dataclass
@@ -308,6 +310,8 @@ def _validate_livekit_credentials() -> tuple[str, str, str]:
 
 def _resolve_voice_context(voice_id: str, voice_record: Optional[Mapping[str, Any]]) -> VoiceContext:
     """Resolve voice context from voice ID and optional DB record."""
+    from agent.providers.realtime_builder import is_realtime_provider, normalize_realtime_provider
+    
     if not voice_record:
         return VoiceContext(
             db_voice_id=None,
@@ -320,6 +324,28 @@ def _resolve_voice_context(voice_id: str, voice_record: Optional[Mapping[str, An
     
     db_id = voice_record.get("id")
     provider_raw = voice_record.get("provider")
+    
+    # Check if this is a realtime provider (ultravox, gemini_realtime, etc.)
+    realtime_canonical = normalize_realtime_provider(provider_raw)
+    if realtime_canonical:
+        # Realtime provider: extract full provider_config as overrides
+        provider_config = voice_record.get("provider_config") or {}
+        realtime_overrides = {}
+        if isinstance(provider_config, dict):
+            for k, v in provider_config.items():
+                if v is not None:
+                    realtime_overrides[k] = str(v)
+        
+        return VoiceContext(
+            db_voice_id=str(db_id) if db_id else None,
+            tts_voice_id=voice_record.get("provider_voice_id") or "",
+            provider=realtime_canonical,
+            overrides=realtime_overrides,
+            voice_name=voice_record.get("description"),
+            accent=voice_record.get("accent"),
+            is_realtime=True,
+        )
+    
     provider = _normalize_tts_provider(provider_raw)
     
     # Determine TTS voice ID
@@ -391,6 +417,7 @@ def _resolve_voice_context(voice_id: str, voice_record: Optional[Mapping[str, An
         overrides=tts_overrides,
         voice_name=voice_record.get("description"),
         accent=voice_record.get("accent"),
+        is_realtime=False,
     )
 
 
@@ -536,7 +563,6 @@ class CallService:
         """
         await self._ensure_storage()
         
-        url, api_key, api_secret = _validate_livekit_credentials()
         voice_log_id = _coerce_uuid_string(voice_context.db_voice_id)
         
         # Resolve tenant_id - prefer user's tenant, fall back to agent's tenant
@@ -691,6 +717,17 @@ class CallService:
             else:
                 logger.warning(f"Could not find from_number_id for from_number={from_number} (tenant_id={tenant_id[:8] if tenant_id else 'None'}...)")
         
+        # ===== LIVEKIT CREDENTIAL RESOLUTION =====
+        # Resolve LiveKit credentials (database or environment based on feature flag)
+        livekit_creds = await resolve_livekit_credentials(
+            from_number=from_number,
+            tenant_id=tenant_id,
+            routing_result=routing_result,
+        )
+        url = livekit_creds.url
+        api_key = livekit_creds.api_key
+        api_secret = livekit_creds.api_secret
+        
         # Create call log
         call_log_id = await self.create_call_log(
             tenant_id=tenant_id,  # Already computed above for lead lookup
@@ -729,7 +766,12 @@ class CallService:
                 "initiated_by": initiated_by,  # User ID for OAuth tools
             }
             
-            # Add TTS overrides (speed/pitch/stability from provider_config)
+            # Add realtime model flag if applicable
+            if voice_context.is_realtime:
+                metadata["is_realtime"] = True
+                metadata["realtime_provider"] = voice_context.provider
+            
+            # Add TTS/realtime overrides (speed/pitch/stability from provider_config)
             if voice_context.overrides:
                 metadata["tts_config"] = voice_context.overrides
             
@@ -742,8 +784,8 @@ class CallService:
             if final_context:
                 metadata["added_context"] = final_context[:500]  # Truncate for safety
             
-            # Use trunk ID from routing rules, or fall back to env default
-            outbound_trunk = routing_result.outbound_trunk_id or os.getenv("OUTBOUND_TRUNK_ID")
+            # Use trunk ID (priority: livekit_creds > routing_result > env)
+            outbound_trunk = livekit_creds.trunk_id or routing_result.outbound_trunk_id or os.getenv("OUTBOUND_TRUNK_ID")
             if outbound_trunk:
                 metadata["outbound_trunk_id"] = outbound_trunk
             
@@ -756,10 +798,13 @@ class CallService:
             import json
             participant_metadata = json.dumps(metadata)
             
+            # Use worker_name from credentials (database or environment)
+            agent_name = livekit_creds.worker_name or os.getenv("VOICE_AGENT_NAME", "inbound-agent")
+            
             # Create agent dispatch
             dispatch_result = await livekit_api.agent_dispatch.create_dispatch(
                 api.CreateAgentDispatchRequest(
-                    agent_name=os.getenv("VOICE_AGENT_NAME", "inbound-agent"),
+                    agent_name=agent_name,
                     room=room_name,
                     metadata=participant_metadata,
                 )

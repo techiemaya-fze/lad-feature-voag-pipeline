@@ -89,7 +89,11 @@ from livekit.agents import (
 )
 from livekit.agents.llm import function_tool
 from livekit.agents import StopResponse
-from livekit.plugins import deepgram, silero
+from livekit.plugins import deepgram, silero, google  # noqa: F401 - plugins must register on main thread
+try:
+    from livekit.plugins import ultravox  # noqa: F401 - register on main thread
+except ImportError:
+    pass  # optional dependency
 
 # Import V2 modular components
 from agent.config import PipelineConfig, get_config
@@ -625,6 +629,8 @@ async def entrypoint(ctx: agents.JobContext):
     outbound_trunk_id: str | None = None  # SIP trunk ID from number rules
     batch_id: str | None = None  # Batch call tracking
     entry_id: str | None = None  # Batch entry tracking
+    is_realtime: bool = False  # Realtime model mode (Ultravox, etc.)
+    realtime_provider: str | None = None  # Realtime provider name
     
     try:
         if ctx.job.metadata:
@@ -686,6 +692,15 @@ async def entrypoint(ctx: agents.JobContext):
                 "Metadata: job_id=%s, call_log_id=%s, agent_id=%s, voice_id=%s",
                 job_id, call_log_id, agent_id, voice_id
             )
+            
+            # Realtime model detection (e.g., ultravox)
+            is_realtime = bool(dial_info.get("is_realtime", False))
+            realtime_provider = dial_info.get("realtime_provider")
+            if is_realtime:
+                logger.info(
+                    "REALTIME MODE detected: provider=%s, voice=%s",
+                    realtime_provider, voice_id
+                )
     except (json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Failed to parse metadata: {e}")
     
@@ -736,35 +751,70 @@ async def entrypoint(ctx: agents.JobContext):
         llm_provider_override, llm_model_override
     )
     
-    # Build TTS engine
-    tts_provider_final = tts_provider_override or os.getenv("TTS_PROVIDER", "cartesia")
-    logger.info(f"TTS provider: {tts_provider_final} (override={tts_provider_override})")
-    tts_engine, tts_details = build_tts_engine(
-        tts_provider_final,
-        default_voice_id=voice_id,
-        overrides=tts_overrides,
-        accent=voice_accent,
-    )
-    logger.info(f"TTS engine built: {tts_details}")
+    # =========================================================================
+    # BRANCH: Realtime Model vs Pipeline Mode
+    # =========================================================================
+    realtime_model = None
+    tts_engine = None
+    stt_engine = None
+    vad = None
+    llm_instance = None
+    tts_details = None
     
-    # Create LLM instance
-    file_search_stores = [s for s in knowledge_base_store_ids if s.startswith("fileSearchStores/")]
-    llm_instance = create_llm_instance(llm_provider, llm_model, file_search_stores or None)
-    
-    # Build STT
-    stt_language = derive_stt_language(voice_accent, pipeline_config.stt.language)
-    stt_engine = deepgram.STT(
-        model=pipeline_config.stt.model,
-        language=stt_language,
-    )
-    
-    # Build VAD
-    vad = silero.VAD.load(
-        min_silence_duration=pipeline_config.vad.min_silence_duration,
-        min_speech_duration=pipeline_config.vad.min_speech_duration,
-        activation_threshold=pipeline_config.vad.activation_threshold,
-        force_cpu=pipeline_config.vad.force_cpu,
-    )
+    if is_realtime and realtime_provider:
+        # ---- REALTIME MODE ----
+        # Realtime models (Ultravox, etc.) handle STT + LLM + TTS internally.
+        # We create a RealtimeModel and pass it as llm= to AgentSession.
+        from agent.providers.realtime_builder import create_realtime_model
+        
+        # Build realtime overrides from tts_overrides (which are actually
+        # provider_config values passed through the metadata pipeline)
+        realtime_overrides = dict(tts_overrides)  # from provider_config JSONB
+        
+        # The voice_id in realtime mode is the provider voice name (e.g., "Mark")
+        if voice_id and "voice" not in realtime_overrides:
+            realtime_overrides["voice"] = voice_id
+        
+        logger.info(
+            "Creating realtime model: provider=%s, overrides=%s",
+            realtime_provider, realtime_overrides
+        )
+        realtime_model = create_realtime_model(
+            provider=realtime_provider,
+            overrides=realtime_overrides,
+        )
+        logger.info("Realtime model created: %s", type(realtime_model).__name__)
+    else:
+        # ---- PIPELINE MODE (existing behavior) ----
+        # Build separate STT, LLM, TTS, and VAD components.
+        tts_provider_final = tts_provider_override or os.getenv("TTS_PROVIDER", "cartesia")
+        logger.info(f"TTS provider: {tts_provider_final} (override={tts_provider_override})")
+        tts_engine, tts_details = build_tts_engine(
+            tts_provider_final,
+            default_voice_id=voice_id,
+            overrides=tts_overrides,
+            accent=voice_accent,
+        )
+        logger.info(f"TTS engine built: {tts_details}")
+        
+        # Create LLM instance
+        file_search_stores = [s for s in knowledge_base_store_ids if s.startswith("fileSearchStores/")]
+        llm_instance = create_llm_instance(llm_provider, llm_model, file_search_stores or None)
+        
+        # Build STT
+        stt_language = derive_stt_language(voice_accent, pipeline_config.stt.language)
+        stt_engine = deepgram.STT(
+            model=pipeline_config.stt.model,
+            language=stt_language,
+        )
+        
+        # Build VAD
+        vad = silero.VAD.load(
+            min_silence_duration=pipeline_config.vad.min_silence_duration,
+            min_speech_duration=pipeline_config.vad.min_speech_duration,
+            activation_threshold=pipeline_config.vad.activation_threshold,
+            force_cpu=pipeline_config.vad.force_cpu,
+        )
     
     # Fetch tools BEFORE building instructions (Phase 17c: tool instructions require valid tool_config)
     # NOTE: This must happen before build_instructions_async() so hangup instruction is included!
@@ -818,13 +868,25 @@ async def entrypoint(ctx: agents.JobContext):
     usage_collector = None
     if is_component_tracking_enabled():
         usage_collector = UsageCollector()
-        usage_collector.set_tts_config(tts_provider_final, voice_id or "unknown")
-        usage_collector.set_llm_config(llm_provider, llm_model)
-        usage_collector.set_stt_config("deepgram", pipeline_config.stt.model)
-        logger.info(
-            "UsageCollector enabled: TTS=%s/%s, LLM=%s/%s, STT=deepgram/%s",
-            tts_provider_final, voice_id, llm_provider, llm_model, pipeline_config.stt.model
-        )
+        if is_realtime and realtime_provider:
+            # Realtime mode: single model handles STT + LLM + TTS
+            usage_collector.set_tts_config(realtime_provider, voice_id or "unknown")
+            usage_collector.set_llm_config(realtime_provider, realtime_overrides.get("model", "unknown"))
+            usage_collector.set_stt_config(realtime_provider, "realtime")
+            logger.info(
+                "UsageCollector enabled (REALTIME): provider=%s, voice=%s",
+                realtime_provider, voice_id,
+            )
+        else:
+            # Pipeline mode: separate TTS/LLM/STT providers
+            tts_provider_final = tts_provider_override or os.getenv("TTS_PROVIDER", "cartesia")
+            usage_collector.set_tts_config(tts_provider_final, voice_id or "unknown")
+            usage_collector.set_llm_config(llm_provider, llm_model)
+            usage_collector.set_stt_config("deepgram", pipeline_config.stt.model)
+            logger.info(
+                "UsageCollector enabled: TTS=%s/%s, LLM=%s/%s, STT=deepgram/%s",
+                tts_provider_final, voice_id, llm_provider, llm_model, pipeline_config.stt.model
+            )
     else:
         logger.debug("Component cost tracking disabled (ENABLE_COMPONENT_COST_TRACKING=false)")
     # Create silence monitor with warning milestone
@@ -900,22 +962,33 @@ async def entrypoint(ctx: agents.JobContext):
     # Populate holder so human_support tool can access VoiceAssistant
     voice_assistant_holder["assistant"] = voice_assistant
     
-    # Create agent session
-    session = AgentSession(
-        llm=llm_instance,
-        tts=tts_engine,
-        stt=stt_engine,
-        vad=vad,
-        min_endpointing_delay=pipeline_config.endpointing.min_endpointing_delay,
-        max_endpointing_delay=pipeline_config.endpointing.max_endpointing_delay,
-        # Interruption settings
-        allow_interruptions=pipeline_config.interruption.allow_interruptions,
-        min_interruption_duration=pipeline_config.interruption.min_interruption_duration,
-        min_interruption_words=pipeline_config.interruption.min_interruption_words,
-        # False interruption handling (resume if backchannel)
-        false_interruption_timeout=pipeline_config.interruption.false_interruption_timeout,
-        resume_false_interruption=pipeline_config.interruption.resume_false_interruption,
-    )
+    # Create agent session - branch on realtime vs pipeline mode
+    if is_realtime and realtime_model:
+        # REALTIME MODE: pass realtime model as llm=, no STT/TTS/VAD
+        session = AgentSession(
+            llm=realtime_model,
+            allow_interruptions=pipeline_config.interruption.allow_interruptions,
+            min_interruption_duration=pipeline_config.interruption.min_interruption_duration,
+        )
+        logger.info("AgentSession created in REALTIME mode (provider=%s)", realtime_provider)
+    else:
+        # PIPELINE MODE: pass separate LLM, TTS, STT, VAD
+        session = AgentSession(
+            llm=llm_instance,
+            tts=tts_engine,
+            stt=stt_engine,
+            vad=vad,
+            min_endpointing_delay=pipeline_config.endpointing.min_endpointing_delay,
+            max_endpointing_delay=pipeline_config.endpointing.max_endpointing_delay,
+            # Interruption settings
+            allow_interruptions=pipeline_config.interruption.allow_interruptions,
+            min_interruption_duration=pipeline_config.interruption.min_interruption_duration,
+            min_interruption_words=pipeline_config.interruption.min_interruption_words,
+            # False interruption handling (resume if backchannel)
+            false_interruption_timeout=pipeline_config.interruption.false_interruption_timeout,
+            resume_false_interruption=pipeline_config.interruption.resume_false_interruption,
+        )
+        logger.info("AgentSession created in PIPELINE mode (llm=%s, tts=%s)", llm_provider, tts_details)
     
     # Populate session reference for silence warning callback
     session_holder["session"] = session
@@ -1253,19 +1326,22 @@ async def entrypoint(ctx: agents.JobContext):
                     # Outbound greeting - try agent starter prompt, then added_context, then default
                     # Make initial greeting uninterruptible to prevent "hello collision"
                     # This allows AEC calibration and prevents 2-3 turn sync issues
-                    greeting_uninterruptible = pipeline_config.greeting.greeting_uninterruptible
-                    greeting = agent_record.get("outbound_starter_prompt", "") if agent_record else ""
-                    if greeting:
-                        logger.info(f"Sending outbound greeting (uninterruptible={greeting_uninterruptible}): {greeting[:50]}...")
-                        await session.generate_reply(instructions=greeting, allow_interruptions=not greeting_uninterruptible)
-                    elif added_context:
-                        # Use added_context as greeting instruction
-                        logger.info(f"Using added_context as greeting (uninterruptible={greeting_uninterruptible}): {added_context[:50]}...")
-                        await session.generate_reply(instructions=f"Greet the user. Context: {added_context}", allow_interruptions=not greeting_uninterruptible)
-                    else:
-                        # Default: just start the conversation
-                        logger.info(f"No greeting set, starting conversation with default (uninterruptible={greeting_uninterruptible})")
-                        await session.generate_reply(instructions="Greet the user warmly and ask how you can help them today.", allow_interruptions=not greeting_uninterruptible)
+                    try:
+                        greeting_uninterruptible = pipeline_config.greeting.greeting_uninterruptible
+                        greeting = agent_record.get("outbound_starter_prompt", "") if agent_record else ""
+                        if greeting:
+                            logger.info(f"Sending outbound greeting (uninterruptible={greeting_uninterruptible}): {greeting[:50]}...")
+                            await session.generate_reply(instructions=greeting, allow_interruptions=not greeting_uninterruptible)
+                        elif added_context:
+                            # Use added_context as greeting instruction
+                            logger.info(f"Using added_context as greeting (uninterruptible={greeting_uninterruptible}): {added_context[:50]}...")
+                            await session.generate_reply(instructions=f"Greet the user. Context: {added_context}", allow_interruptions=not greeting_uninterruptible)
+                        else:
+                            # Default: just start the conversation
+                            logger.info(f"No greeting set, starting conversation with default (uninterruptible={greeting_uninterruptible})")
+                            await session.generate_reply(instructions="Greet the user warmly and ask how you can help them today.", allow_interruptions=not greeting_uninterruptible)
+                    except RuntimeError as e:
+                        logger.error(f"Failed to send greeting (session may have crashed): {e}")
                         
                 except api.TwirpError as e:
                     logger.error(f"SIP dial error: {e.message}")

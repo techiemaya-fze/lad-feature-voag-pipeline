@@ -1,0 +1,18 @@
+{
+  "call_id": "cdc77680-2e35-4a5e-a7b2-cdd788031000",
+  "extracted_at": "2026-02-12T09:01:56.650506",
+  "lead_info": {
+    "first_name": "Sahil",
+    "full_name": "Sahil Tomar",
+    "email": "sahil.tomar.9457@gmail.com",
+    "available_time": "Sunday at 3:00 PM GST",
+    "contact_preference": "Email",
+    "education_level": "Grade 12",
+    "curriculum": "IB",
+    "program_interested": "Computer Science",
+    "country_interested": "USA",
+    "intake_year": "2026",
+    "intake_month": "September",
+    "additional_notes": "User mentioned that the VPN works; initially planned to manage applications themselves."
+  }
+}

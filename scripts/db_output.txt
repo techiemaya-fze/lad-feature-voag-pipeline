@@ -1,0 +1,86 @@
+﻿==========================================================================================
+VOICE_AGENT_NUMBERS - COLUMN NAMES
+==========================================================================================
+  [0] id
+  [1] tenant_id
+  [2] country_code
+  [3] base_number
+  [4] provider
+  [5] status
+  [6] rules
+  [7] default_agent_id
+  [8] created_at
+  [9] updated_at
+
+SAMPLE ROW:
+  id = '83e31eaf-5dec-4562-9d1a-4387d2432c5d'
+  tenant_id = 'e0a3e9ca-3f46-4bb0-ac10-a91b5c1d20b5'
+  country_code = '+971'
+  base_number = 545335200
+  provider = 'sasya UAE Number'
+  status = 'active'
+  rules = {'inbound': False, 'outbound': True, 'allowed_outbound': 'UAE', 'outbound_trunk_id': 'ST_rYU5qU2T3weF', 'required_lead_format': ['0', 'base_number']}
+  default_agent_id = None
+  created_at = datetime.datetime(2026, 1, 26, 7, 58, 30, 880777, tzinfo=datetime.timezone.utc)
+  updated_at = datetime.datetime(2026, 1, 27, 10, 44, 19, 663349, tzinfo=datetime.timezone.utc)
+
+==========================================================================================
+DISTINCT PROVIDERS IN voice_agent_numbers
+==========================================================================================
+  provider='Paras Oranization'            count=1
+  provider='Sasya Spaces'                 count=1
+  provider='TechieMaya FZE'               count=3
+  provider='Vonage'                       count=1
+  provider='paras-india'                  count=1
+  provider='pluto travels usa'            count=1
+  provider='sasya UAE Number'             count=3
+  provider='sasya local vendor'           count=1
+  provider='twilio'                       count=2
+
+==========================================================================================
+BILLING_PRICING_CATALOG - ALL ROWS
+==========================================================================================
+  Columns: ['id', 'tenant_id', 'category', 'provider', 'model', 'unit', 'unit_price', 'description', 'effective_from', 'effective_to', 'metadata', 'is_active', 'created_at', 'updated_at']
+  cat='enrichment'         provider='apollo'             model='company'       unit='record'     price=0.0500000000 desc='Apollo company enrichment per record'
+  cat='enrichment'         provider='apollo'             model='contact'       unit='record'     price=0.0200000000 desc='Apollo contact enrichment per record'
+  cat='llm'                provider='openai'             model='gpt-3.5-turbo' unit='token'      price=0.0000020000 desc='OpenAI GPT-3.5 Turbo per token'
+  cat='llm'                provider='openai'             model='gpt-4'         unit='token'      price=0.0000300000 desc='OpenAI GPT-4 per token'
+  cat='llm_completion'     provider='google'             model='gemini-1.5-flash' unit='tokens'     price=3.000E-7 desc='Gemini 1.5 Flash output ($0.30/1M tokens)'
+  cat='llm_completion'     provider='google'             model='gemini-2.0-flash' unit='tokens'     price=4.000E-7 desc='Gemini 2.0 Flash output ($0.40/1M tokens)'
+  cat='llm_completion'     provider='google'             model='gemini-2.5-flash-lite' unit='tokens'     price=4.000E-7 desc='Gemini Flash Lite Output ($0.40/1M)'
+  cat='llm_completion'     provider='google'             model='gemini-2.5-flash-preview-05-20' unit='tokens'     price=6.000E-7 desc='Gemini 2.5 Flash output ($0.60/1M tokens)'
+  cat='llm_completion'     provider='google'             model='gemini-flash-lite-latest' unit='tokens'     price=4.000E-7 desc='Gemini Flash Lite Output ($0.40/1M)'
+  cat='llm_completion'     provider='groq'               model='llama-3.1-8b-instant' unit='tokens'     price=8.00E-8 desc='Groq Llama 3.1 8B output ($0.08/1M tokens)'
+  cat='llm_completion'     provider='groq'               model='llama-3.3-70b-versatile' unit='tokens'     price=7.900E-7 desc='Groq Llama 3.3 70B output ($0.79/1M tokens)'
+  cat='llm_completion'     provider='openai'             model='gpt-4o'        unit='tokens'     price=0.0000100000 desc='OpenAI GPT-4o output ($10/1M tokens)'
+  cat='llm_completion'     provider='openai'             model='gpt-4o-mini'   unit='tokens'     price=6.000E-7 desc='OpenAI GPT-4o-mini output ($0.60/1M tokens)'
+  cat='llm_prompt'         provider='google'             model='gemini-1.5-flash' unit='tokens'     price=8.00E-8 desc='Gemini 1.5 Flash input ($0.075/1M tokens)'
+  cat='llm_prompt'         provider='google'             model='gemini-2.0-flash' unit='tokens'     price=1.000E-7 desc='Gemini 2.0 Flash input ($0.10/1M tokens)'
+  cat='llm_prompt'         provider='google'             model='gemini-2.5-flash-lite' unit='tokens'     price=1.000E-7 desc='Gemini Flash Lite Input ($0.10/1M)'
+  cat='llm_prompt'         provider='google'             model='gemini-2.5-flash-preview-05-20' unit='tokens'     price=1.500E-7 desc='Gemini 2.5 Flash input ($0.15/1M tokens)'
+  cat='llm_prompt'         provider='google'             model='gemini-flash-lite-latest' unit='tokens'     price=1.000E-7 desc='Gemini Flash Lite Input ($0.10/1M)'
+  cat='llm_prompt'         provider='groq'               model='llama-3.1-8b-instant' unit='tokens'     price=5.00E-8 desc='Groq Llama 3.1 8B input ($0.05/1M tokens)'
+  cat='llm_prompt'         provider='groq'               model='llama-3.3-70b-versatile' unit='tokens'     price=5.900E-7 desc='Groq Llama 3.3 70B input ($0.59/1M tokens)'
+  cat='llm_prompt'         provider='openai'             model='gpt-4o'        unit='tokens'     price=0.0000025000 desc='OpenAI GPT-4o input ($2.50/1M tokens)'
+  cat='llm_prompt'         provider='openai'             model='gpt-4o-mini'   unit='tokens'     price=1.500E-7 desc='OpenAI GPT-4o-mini input ($0.15/1M tokens)'
+  cat='stt'                provider='deepgram'           model='nova-2'        unit='seconds'    price=0.0000717000 desc='Deepgram Nova-2 STT ($0.0043/min)'
+  cat='stt'                provider='deepgram'           model='nova-3'        unit='seconds'    price=0.0000717000 desc='Deepgram Nova-3 STT ($0.0043/min)'
+  cat='stt'                provider='google'             model='chirp'         unit='seconds'    price=0.0002670000 desc='Google Chirp STT ($0.016/min)'
+  cat='stt'                provider='openai'             model='whisper-1'     unit='second'     price=0.0001000000 desc='OpenAI Whisper STT per second'
+  cat='telephony'          provider='livekit'            model='sip'           unit='seconds'    price=0.0001670000 desc='LiveKit SIP ($0.01/min)'
+  cat='telephony'          provider='twilio'             model='sms'           unit='message'    price=0.0075000000 desc='Twilio SMS per message'
+  cat='telephony'          provider='twilio'             model='voice'         unit='minute'     price=0.0130000000 desc='Twilio voice per minute'
+  cat='telephony'          provider='vonage'             model='sip'           unit='seconds'    price=0.0002330000 desc='Vonage SIP ($0.014/min)'
+  cat='tts'                provider='cartesia'           model='sonic-3'       unit='characters' price=0.0000392000 desc='Cartesia Sonic (Startup Plan $49/1.25M chars)'
+  cat='tts'                provider='cartesia'           model='sonic-english' unit='characters' price=0.0000392000 desc='Cartesia Sonic (Startup Plan $49/1.25M chars)'
+  cat='tts'                provider='cartesia'           model='sonic-multilingual' unit='characters' price=0.0000392000 desc='Cartesia Sonic (Startup Plan $49/1.25M chars)'
+  cat='tts'                provider='elevenlabs'         model='eleven_multilingual_v2' unit='characters' price=0.0001666700 desc='ElevenLabs Multilingual v2 (Starter Plan)'
+  cat='tts'                provider='elevenlabs'         model='eleven_turbo_v2_5' unit='characters' price=0.0000833400 desc='ElevenLabs Turbo v2.5 (Starter Plan)'
+  cat='tts'                provider='google'             model='chirp'         unit='characters' price=0.0000160000 desc='Google Chirp TTS ($16/1M chars)'
+  cat='tts'                provider='google'             model='chirp3-hd'     unit='characters' price=0.0000300000 desc='Google Chirp3 HD (current/latest model) - $30/1M chars'
+  cat='tts'                provider='openai'             model='tts-1'         unit='character'  price=0.0000150000 desc='OpenAI TTS per character'
+  cat='tts'                provider='openai'             model='tts-1'         unit='characters' price=0.0000150000 desc='OpenAI TTS-1'
+  cat='tts'                provider='openai'             model='tts-1-hd'      unit='character'  price=0.0000300000 desc='OpenAI TTS HD per character'
+  cat='tts'                provider='openai'             model='tts-1-hd'      unit='characters' price=0.0000300000 desc='OpenAI TTS-1 HD'
+  cat='vm_infrastructure'  provider='digitalocean'       model='*'             unit='seconds'    price=0.0000385800 desc='VM Infrastructure ($100/month prorated per second)'
+  cat='vm_infrastructure'  provider='runpod'             model='cpu-basic'     unit='second'     price=0.0002000000 desc='RunPod CPU instance per second'

@@ -1,12 +1,13 @@
 """
 Providers package.
 
-Factory modules for LLM and TTS providers.
+Factory modules for LLM, TTS, and Realtime providers.
 Supports runtime switching - each call creates a fresh instance.
 
 Modules:
 - llm_builder: Groq, Google Gemini, OpenAI
 - tts_builder: Cartesia, Google, Chirp, Gemini, ElevenLabs, Rime, SmallestAI, Sarvam
+- realtime_builder: Ultravox, Gemini Live (+ future OpenAI Realtime)
 """
 
 from agent.providers.llm_builder import (
@@ -31,6 +32,15 @@ from agent.providers.tts_builder import (
     normalize_provider as normalize_tts_provider,
 )
 
+from agent.providers.realtime_builder import (
+    create_realtime_model,
+    create_ultravox,
+    create_gemini_realtime,
+    is_realtime_provider,
+    normalize_realtime_provider,
+    REALTIME_PROVIDERS,
+)
+
 __all__ = [
     # LLM
     "create_llm",
@@ -50,4 +60,12 @@ __all__ = [
     "create_smallestai",
     "create_sarvam",
     "normalize_tts_provider",
+    # Realtime
+    "create_realtime_model",
+    "create_ultravox",
+    "create_gemini_realtime",
+    "is_realtime_provider",
+    "normalize_realtime_provider",
+    "REALTIME_PROVIDERS",
 ]
+
