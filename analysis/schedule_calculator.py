@@ -42,7 +42,7 @@ GRADE_TIMELINE = {
 }
 
 # Default timeline when no grade mentioned
-DEFAULT_TIMELINE = 2  # After 2 days when no grade mentioned
+DEFAULT_TIMELINE = 1  # After 1 days when no grade mentioned
 
 
 class ScheduleCalculator:
