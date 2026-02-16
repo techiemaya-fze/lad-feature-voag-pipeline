@@ -23,7 +23,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Schema and table constants
-SCHEMA = "lad_dev"
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
 AGENTS_TABLE = "voice_agents"
 PERMISSIONS_TABLE = "voice_permissions"
 FULL_AGENTS_TABLE = f"{SCHEMA}.{AGENTS_TABLE}"

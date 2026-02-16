@@ -7,6 +7,10 @@ Phase 19: Schema is now configurable via DB_SCHEMA env variable.
 """
 
 import os
+from dotenv import load_dotenv
+
+# Load environment variables BEFORE reading DB_SCHEMA
+load_dotenv()
 
 # =============================================================================
 # SCHEMA NAME - Configurable via DB_SCHEMA env variable
