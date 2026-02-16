@@ -146,6 +146,9 @@ class GCSStorageManager:
     ) -> Optional[str]:
         """Generate a signed URL from a gs:// URL"""
         try:
+            # Strip any whitespace/newlines that might be in the URL
+            gs_url = gs_url.strip()
+            
             if not gs_url.startswith("gs://"):
                 logger.error("Invalid GCS URL: %s", gs_url)
                 return None
