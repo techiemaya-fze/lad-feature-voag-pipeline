@@ -377,13 +377,13 @@ Return JSON only."""
         scheduled_at = None
         calculation_method = "none"
         
-        if not user_confirmed or not time_phrase:
-            # No confirmation -> next day from first timestamp
+        if not time_phrase:
+            # No time phrase -> next day from first timestamp
             scheduled_at = first_timestamp + timedelta(days=1)
             calculation_method = "no_confirmation_1day"
-            logger.info(f"No confirmation: {scheduled_at}")
+            logger.info(f"No time phrase: {scheduled_at}")
         else:
-            # Parse time phrase
+            # Parse time phrase (even if not confirmed)
             scheduled_at, calculation_method = await self._parse_time_phrase(
                 time_phrase, first_timestamp, last_timestamp
             )
@@ -498,16 +498,32 @@ Return JSON only."""
             normalized = re.sub(rf'\b{word}\b', str(num), normalized)
         
         # Match numeric time (e.g., "3 PM", "15:00", "4:30 pm", "11 am", "5 30 pm")
-        time_match = re.search(r'(\d{1,2})(?:[:\s](\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?', normalized)
+        # Handle commas and extra text in the phrase
+        # Look for time patterns with minutes or AM/PM to be more specific
+        time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)(?:\s*gst)?', normalized)
+        if not time_match:
+            # Fallback: try to find any hour:minute pattern
+            time_match = re.search(r'(\d{1,2}):(\d{2})', normalized)
+        
         if time_match:
             hour = int(time_match.group(1))
             minute = int(time_match.group(2)) if time_match.group(2) else 0
-            am_pm = time_match.group(3)
+            am_pm = time_match.group(3) if len(time_match.groups()) >= 3 else None
+            
+            # Check if PM is mentioned anywhere in the phrase (not just in the regex match)
+            if not am_pm and 'pm' in normalized.lower():
+                am_pm = 'pm'
+            elif not am_pm and 'am' in normalized.lower():
+                am_pm = 'am'
+            
+            logger.debug(f"Time match: hour={hour}, minute={minute}, am_pm={am_pm}")
             
             if am_pm and am_pm.replace('.', '') == 'pm' and hour != 12:
                 hour += 12
+                logger.debug(f"Converted to PM: hour={hour}")
             elif am_pm and am_pm.replace('.', '') == 'am' and hour == 12:
                 hour = 0
+                logger.debug(f"Converted 12 AM to 0: hour={hour}")
             elif am_pm is None:
                 # Universal AM/PM inference for all tenants and all times
                 # If no AM/PM specified, use call timestamp to decide
@@ -522,13 +538,17 @@ Return JSON only."""
                     if current_hour >= 12:
                         # If call was in afternoon/evening, likely means PM
                         hour += 12
+                        logger.debug(f"No AM/PM, assumed PM: hour={hour}")
                     elif hour >= 4 and hour <= 8:
                         # Common callback times (4-8) usually mean PM
                         hour += 12
+                        logger.debug(f"No AM/PM, callback time assumed PM: hour={hour}")
                     # Otherwise keep as AM (early morning times like 7 AM, 9 AM, 10 AM, 11 AM)
+                    logger.debug(f"No AM/PM, kept as AM: hour={hour}")
                 # For hour 12 without AM/PM, keep as 12 (noon)
                 # For hour > 12, already in 24-hour format
             
+            logger.debug(f"Final parsed time: hour={hour}, minute={minute}, am_pm={am_pm}")
             return hour, minute
         
         return None, None
@@ -567,7 +587,10 @@ Return JSON only."""
         word_to_num = {
             'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
             'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
-            'eleven': 11, 'twelve': 12, 'a': 1, 'an': 1
+            'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14, 'fifteen': 15,
+            'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19, 'twenty': 20,
+            'thirty': 30, 'forty': 40, 'fifty': 50, 'sixty': 60,
+            'a': 1, 'an': 1
         }
         
         # Convert written numbers to digits for matching
@@ -585,6 +608,19 @@ Return JSON only."""
                 scheduled_at = last_timestamp + timedelta(minutes=amount)
                 calculation_method = f"relative_+{amount}m_from_last"
             logger.info(f"Relative time: '{time_phrase}' -> {scheduled_at}")
+            return scheduled_at, calculation_method
+        
+        # Also handle standalone time phrases (without after/in/within)
+        standalone_match = re.search(r'(\d+)\s*(?:mins?|minutes?|hours?|hrs?)', normalized)
+        if standalone_match:
+            amount = int(standalone_match.group(1))
+            if re.search(r'hours?|hrs?', normalized):
+                scheduled_at = last_timestamp + timedelta(hours=amount)
+                calculation_method = f"standalone_+{amount}h_from_last"
+            else:
+                scheduled_at = last_timestamp + timedelta(minutes=amount)
+                calculation_method = f"standalone_+{amount}m_from_last"
+            logger.info(f"Standalone relative time: '{time_phrase}' -> {scheduled_at}")
             return scheduled_at, calculation_method
         
         # Rule 2: "day after tomorrow"
@@ -611,13 +647,19 @@ Return JSON only."""
         
         # Rule 4: "today" + time
         if 'today' in time_phrase_lower:
-            hour, minute = self._parse_hour_minute(time_phrase_lower.replace('today', ''), last_timestamp)
+            time_remaining = time_phrase_lower.replace('today', '')
+            logger.info(f"DEBUG: Parsing time from: '{time_remaining}'")
+            hour, minute = self._parse_hour_minute(time_remaining, last_timestamp)
+            logger.info(f"DEBUG: Parsed hour={hour}, minute={minute}")
             if hour is not None:
+                if hour > 23:
+                    logger.error(f"ERROR: Invalid hour {hour} - must be 0-23")
+                    raise ValueError(f"Invalid hour {hour} - must be 0-23")
                 scheduled_at = last_timestamp.replace(hour=hour, minute=minute, second=0, microsecond=0)
                 # If user explicitly said "today", keep it today even if time has passed
                 # This respects the user's explicit preference
             else:
-                scheduled_at = last_timestamp + timedelta(hours=2)
+                scheduled_at = last_timestamp + timedelta(days=1)
             logger.info(f"Today: '{time_phrase}' -> {scheduled_at}")
             return scheduled_at, "today_parsed"
         
@@ -917,15 +959,42 @@ Return JSON only."""
                 else:
                     started_at_gst = started_at
                 
-                # Use default: next day from started_at in GST
-                scheduled_at = started_at_gst + timedelta(days=1)
-                logger.info(f"Next day from started_at (GST): {scheduled_at}")
+                # For GLINKS tenant, use schedule calculator to apply business day rules
+                if tenant_id == GLINKS_TENANT_ID and self.schedule_calculator:
+                    logger.info("Empty conversation for GLINKS - applying schedule calculator")
+                    try:
+                        # Use next day as starting point for GLINKS calculator
+                        next_day = started_at_gst + timedelta(days=1)
+                        valid_schedule = self.schedule_calculator.calculate_next_call(
+                            current_time=next_day,
+                            student_grade=None,  # Default grade for empty conversation
+                            booking_type='auto_followup',  # Empty conversation is a followup
+                            confirmed_date_mentioned=False
+                        )
+                        
+                        if valid_schedule:
+                            scheduled_at = valid_schedule
+                            calculation_method = "empty_transcript_glinks_adjusted"
+                            logger.info(f"GLINKS adjusted empty conversation: {scheduled_at}")
+                        else:
+                            scheduled_at = next_day
+                            calculation_method = "empty_transcript_1day"
+                            logger.warning(f"GLINKS calculator failed, using next day: {scheduled_at}")
+                    except Exception as e:
+                        logger.error(f"GLINKS calculator error for empty conversation: {e}")
+                        scheduled_at = started_at_gst + timedelta(days=1)
+                        calculation_method = "empty_transcript_1day"
+                else:
+                    # Non-GLINKS tenant: use default next day
+                    scheduled_at = started_at_gst + timedelta(days=1)
+                    calculation_method = "empty_transcript_1day"
+                    logger.info(f"Next day from started_at (GST): {scheduled_at}")
             else:
                 scheduled_at = None
+                calculation_method = "empty_transcript_no_time"
                 logger.warning("No started_at time available")
             
             booking_type = "auto_followup"
-            calculation_method = "empty_transcript_1day"
             student_grade = None
             # Skip Gemini extraction for empty conversation to prevent hallucination
         else:
@@ -960,13 +1029,14 @@ Return JSON only."""
                     logger.warning(f"Invalid student_grade {student_grade}, setting to None")
                     student_grade = None
         
-        # Apply GLINKS schedule calculator if tenant matches (for both empty and non-empty conversations)
+        # Apply GLINKS schedule calculator if tenant matches and booking_type is auto_consultation
         logger.info(f"GLINKS check: tenant_id={tenant_id}, GLINKS_TENANT_ID={GLINKS_TENANT_ID}")
-        logger.info(f"GLINKS check: schedule_calculator={self.schedule_calculator is not None}, scheduled_at={scheduled_at is not None}, student_grade={student_grade}")
+        logger.info(f"GLINKS check: booking_type={booking_type}, schedule_calculator={self.schedule_calculator is not None}, scheduled_at={scheduled_at is not None}, student_grade={student_grade}")
         
         if (self.schedule_calculator and 
             tenant_id == GLINKS_TENANT_ID and 
-            scheduled_at):
+            scheduled_at and 
+            booking_type == 'auto_consultation'):
             
             logger.info("GLINKS conditions met - applying schedule calculator")
             

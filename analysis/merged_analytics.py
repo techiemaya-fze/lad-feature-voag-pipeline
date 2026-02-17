@@ -1592,6 +1592,15 @@ CONFIDENCE: [High/Medium/Low]"""
 
             # First try our internal JSON parser
             parsed_summary = self._parse_summary_json(summary_text)
+            
+            # Validate that parsed_summary is a proper dictionary
+            if parsed_summary is not None:
+                if not isinstance(parsed_summary, dict):
+                    logger.error(f"Parsed summary is not a dictionary: {type(parsed_summary)} - falling back to text extraction")
+                    parsed_summary = None
+                elif 'call_summary' not in parsed_summary and not any(key in parsed_summary for key in ['key_discussion_points', 'prospect_questions', 'prospect_concerns', 'next_steps']):
+                    logger.error(f"Parsed summary missing expected keys - falling back to text extraction")
+                    parsed_summary = None
 
             # Fallback 1: try gemini_client-style JSON extraction to recover valid JSON
             if parsed_summary is None:

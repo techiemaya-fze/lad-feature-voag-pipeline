@@ -3,15 +3,11 @@ Simplified Schedule Calculator - GLINKS Follow-up Rules
 Validates working hours, working days, and grade-based timeline
 """
 
-import os
 import logging
+import os
 from datetime import datetime, timedelta, time
 from typing import Optional, List
-from dotenv import load_dotenv
 import pytz
-
-# Load environment variables
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -30,24 +26,24 @@ UAE_PUBLIC_HOLIDAYS = [
     (12, 3),   # National Day (2nd day)
 ]
 
-# Grade-based timeline (frequency-based followup) - read from environment variables
+# Grade-based timeline (frequency-based followup)
 GRADE_TIMELINE = {
-    12: int(os.getenv('GRADE_12_TIMELINE_DAYS', '1')),   # Grade 12: 3 times per week
-    11: int(os.getenv('GRADE_11_TIMELINE_DAYS', '3')),   # Grade 11: 2 times per week  
-    10: int(os.getenv('GRADE_10_TIMELINE_DAYS', '3')),   # Grade 10: 2 times per week
-    9: int(os.getenv('GRADE_9_TIMELINE_DAYS', '5')),     # Grade 9: 1 time per week
-    8: int(os.getenv('GRADE_8_TIMELINE_DAYS', '5')),     # Grade 8: 1 time per week
-    7: int(os.getenv('GRADE_7_TIMELINE_DAYS', '5')),     # Grade 7: 1 time per week
-    6: int(os.getenv('GRADE_6_TIMELINE_DAYS', '5')),     # Grade 6: 1 time per week
-    5: int(os.getenv('GRADE_5_TIMELINE_DAYS', '5')),     # Grade 5: 1 time per week
-    4: int(os.getenv('GRADE_4_TIMELINE_DAYS', '5')),     # Grade 4: 1 time per week
-    3: int(os.getenv('GRADE_3_TIMELINE_DAYS', '5')),     # Grade 3: 1 time per week
-    2: int(os.getenv('GRADE_2_TIMELINE_DAYS', '5')),     # Grade 2: 1 time per week
-    1: int(os.getenv('GRADE_1_TIMELINE_DAYS', '5')),     # Grade 1: 1 time per week
+    12: 2,   # Grade 12: 3 times per week = every ~2 days
+    11: 3,   # Grade 11: 2 times per week = every ~3 days  
+    10: 3,   # Grade 10: 2 times per week = every ~3 days
+    9: 5,    # Grade 9: 1 time per week = every ~5 days
+    8: 5,    # Grade 8: 1 time per week = every ~5 days
+    7: 5,    # Grade 7: 1 time per week = every ~5 days
+    6: 5,    # Grade 6: 1 time per week = every ~5 days
+    5: 5,    # Grade 5: 1 time per week = every ~5 days
+    4: 5,    # Grade 4: 1 time per week = every ~5 days
+    3: 5,    # Grade 3: 1 time per week = every ~5 days
+    2: 5,    # Grade 2: 1 time per week = every ~5 days
+    1: 5,    # Grade 1: 1 time per week = every ~5 days
 }
 
-# Default timeline when no grade mentioned - read from environment variable
-DEFAULT_TIMELINE = int(os.getenv('DEFAULT_TIMELINE_DAYS', '1'))  # Default: 1 day
+# Default timeline when no grade mentioned - now from environment variable
+DEFAULT_TIMELINE = int(os.getenv('GLINKS_DEFAULT_TIMELINE_DAYS', '1'))
 
 
 class ScheduleCalculator:
@@ -56,6 +52,7 @@ class ScheduleCalculator:
     def __init__(self, public_holidays: Optional[List[tuple]] = None):
         self.timezone = GST
         self.public_holidays = public_holidays or UAE_PUBLIC_HOLIDAYS
+        logger.info(f"GLINKS ScheduleCalculator initialized with DEFAULT_TIMELINE={DEFAULT_TIMELINE} days")
     
     def is_working_day(self, date: datetime) -> bool:
         """Check if working day (no holidays)"""
