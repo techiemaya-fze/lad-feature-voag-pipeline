@@ -326,23 +326,25 @@ INSTRUCTIONS - Read the ENTIRE conversation carefully before answering:
    - false if: No confirmation, declined, vague, changed mind, or said no at the end
    - CRITICAL: If user confirmed earlier but declined/ended later, this is FALSE
 
-4. **student_grade**: DEFAULT is null. ONLY return a number (9, 10, 11, or 12) if USER confirms EXACT match:
+4. **student_grade**: DEFAULT is null. Return a number (9, 10, 11, or 12) if grade is confirmed:
    
-   CRITICAL: The USER must explicitly state their grade. Do NOT extract from agent statements.
+   SCENARIOS WHERE GRADE SHOULD BE EXTRACTED:
    
-   REQUIRED USER PHRASES:
-   - "I'm in grade 9", "I'm in grade 10", "I'm in grade 11", "I'm in grade 12"
-   - "I am in class 9", "I am in class 10", "I am in class 11", "I am in class 12"
-   - "I study in 9th grade", "I study in 10th grade", "I study in 11th grade", "I study in 12th grade"
-   - "I'm in 9th standard", "I'm in 10th standard", "I'm in 11th standard", "I'm in 12th standard"
-   - "I'm in ninth class", "I'm in tenth class", "I'm in eleventh class", "I'm in twelfth class"
-   - "My grade is 9", "My grade is 10", "My grade is 11", "My grade is 12"
+   **Scenario 1: User explicitly states their grade**
+   - "I'm in grade 9", "I am in class 10", "I study in 11th grade", "My grade is 12"
+   - "I'm in 9th standard", "I'm in tenth class", "I'm in eleventh class", "I'm in twelfth class"
    
-   IF USER EXACTLY CONFIRMS GRADE → return corresponding number
-   IF USER DOES NOT CONFIRM GRADE → return null (this is the default)
+   **Scenario 2: Agent mentions grade AND user agrees/accepts/confirms**
+   - Agent: "I see you're studying in 10th grade" User: "Yes", "Correct", "That's right", "Right", "True"
+   - Agent: "You're in grade 11?" User: "Yes", "Correct", "That's right", "Right", "True", "Uh-huh"
+   - Agent: "So you're studying in 12th grade" User: "Yes", "Correct", "That's right", "Right", "True"
+   - Agent: "You're in 9th grade right?" User: "Yes", "Correct", "That's right", "Right", "True"
    
-   IMPORTANT: Do NOT extract grade from agent statements like "I see you're in 10th grade". 
-   Only extract if the USER themselves confirm their grade.
+   CRITICAL: The user must AGREE/ACCEPT/CONFIRM when the agent mentions the grade.
+   If agent mentions grade but user is silent, says "hmm", or doesn't confirm -> DO NOT extract grade.
+   
+   IF USER CONFIRMS GRADE (either states it themselves OR agrees to agent's mention) → return corresponding number
+   IF NO GRADE CONFIRMATION → return null (this is the default)
 
 Return JSON only."""
 
