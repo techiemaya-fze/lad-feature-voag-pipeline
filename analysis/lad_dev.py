@@ -128,28 +128,29 @@ class StudentExtractor:
             
             prompt = f"""CURRENT DATE AND TIME: {current_datetime_str}
 
-Extract information from this phone call conversation.
+Extract information from USER RESPONSES ONLY in this phone call conversation.
+The conversation below contains only what the user/prospect said (agent messages filtered out).
 
-CONVERSATION:
+USER CONVERSATION:
 {conversation_text}
 
-INSTRUCTIONS - Follow these steps:
+INSTRUCTIONS - Analyze ONLY the user responses:
 
 STEP 1 - Find parent name:
-Search the conversation for these phrases:
+Search the user responses for these phrases:
 - "My father name is"
 - "father name is"  
 - "My father is"
 If you find any of these, extract the name that comes after. If the name appears in parts (e.g., "Suresh" then later "Harish Kumar"), combine them into one full name.
 
 STEP 2 - Find parent profession:
-Search for phrases like:
+Search user responses for phrases like:
 - "He is doing business"
 - "doing business"
 - Any mention of parent's job/profession
 If found, extract the profession.
 
-STEP 3 - Extract other fields:
+STEP 3 - Extract other fields from user responses:
 - Email addresses (even if spelled phonetically)
 - Meeting times when confirmed
 - Other information mentioned by the user
@@ -157,6 +158,7 @@ STEP 3 - Extract other fields:
 REQUIRED FIELDS TO EXTRACT:
 
 1. student_parent_name: 
+   - Search for "My father name is" or "father name is" in the user responses
    - Search for "My father name is" or "father name is" in the conversation
    - Extract the name that follows
    - Combine name parts if mentioned separately
@@ -658,16 +660,20 @@ async def main():
                 elif 'segments' in transcripts:
                     lines = []
                     for seg in transcripts['segments']:
-                        # Only use 'text' field, explicitly ignore 'indented_text'
-                        text = seg.get('text', '')
-                        if text:
-                            lines.append(f"{seg.get('role', seg.get('speaker', 'Unknown'))}: {text}")
+                        # Only process user segments, ignore agent segments
+                        speaker = seg.get('speaker', '').lower()
+                        if speaker == 'user':
+                            # Only use 'text' field, explicitly ignore 'indented_text'
+                            text = seg.get('text', '')
+                            if text:
+                                lines.append(f"User: {text}")
                     conversation_text = "\n".join(lines)
-                
+
                 logger.info(f"Conversation length: {len(conversation_text)} chars")
-                
+
                 # Extract student information
                 student_info = await extractor.extract_student_information(conversation_text)
+
                 
                 if student_info:
                     logger.info(f"Extracted student info: {json.dumps(student_info, indent=2)}")

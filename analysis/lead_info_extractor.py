@@ -117,9 +117,12 @@ class LeadInfoExtractor:
             # Only include lines that start with "User:"
             if line.startswith("User:"):
                 user_messages.append(line.replace("User:", "").strip())
-            # Exclude agent/bot messages
-            elif line.startswith("Bot:") or line.startswith("Agent:"):
+            # Exclude agent messages
+            elif line.startswith("Agent:"):
                 continue
+            # Lines without prefix might be user messages (legacy format)
+            elif line and not any(line.startswith(prefix) for prefix in ["Agent:", "User:"]):
+                user_messages.append(line)
         
         return " ".join(user_messages)
     

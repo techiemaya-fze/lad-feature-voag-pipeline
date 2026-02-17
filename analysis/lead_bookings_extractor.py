@@ -470,7 +470,7 @@ Return JSON only."""
         day = min(dt.day, max_day)
         return dt.replace(year=year, month=month, day=day)
     
-    def _parse_hour_minute(self, time_phrase_lower: str) -> tuple:
+    def _parse_hour_minute(self, time_phrase_lower: str, call_timestamp: datetime = None) -> tuple:
         """Extract hour and minute from a time phrase. Returns (hour, minute) or (None, None)"""
         import re
         
@@ -508,6 +508,26 @@ Return JSON only."""
                 hour += 12
             elif am_pm and am_pm.replace('.', '') == 'am' and hour == 12:
                 hour = 0
+            elif am_pm is None:
+                # Universal AM/PM inference for all tenants and all times
+                # If no AM/PM specified, use call timestamp to decide
+                if call_timestamp:
+                    current_hour = call_timestamp.hour
+                else:
+                    current_hour = datetime.now().hour
+                    
+                if 1 <= hour <= 11:
+                    # Simple universal rule: If call was in afternoon/evening, assume PM
+                    # If call was in morning, assume AM (unless it's a common callback time)
+                    if current_hour >= 12:
+                        # If call was in afternoon/evening, likely means PM
+                        hour += 12
+                    elif hour >= 4 and hour <= 8:
+                        # Common callback times (4-8) usually mean PM
+                        hour += 12
+                    # Otherwise keep as AM (early morning times like 7 AM, 9 AM, 10 AM, 11 AM)
+                # For hour 12 without AM/PM, keep as 12 (noon)
+                # For hour > 12, already in 24-hour format
             
             return hour, minute
         
@@ -591,11 +611,11 @@ Return JSON only."""
         
         # Rule 4: "today" + time
         if 'today' in time_phrase_lower:
-            hour, minute = self._parse_hour_minute(time_phrase_lower.replace('today', ''))
+            hour, minute = self._parse_hour_minute(time_phrase_lower.replace('today', ''), last_timestamp)
             if hour is not None:
                 scheduled_at = last_timestamp.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                if scheduled_at <= last_timestamp:
-                    scheduled_at = scheduled_at + timedelta(days=1)
+                # If user explicitly said "today", keep it today even if time has passed
+                # This respects the user's explicit preference
             else:
                 scheduled_at = last_timestamp + timedelta(hours=2)
             logger.info(f"Today: '{time_phrase}' -> {scheduled_at}")
@@ -843,7 +863,7 @@ Return JSON only."""
             return scheduled_at, "time_of_day_parsed"
         
         # Rule 9: Just numeric time (e.g., "3 PM", "4:30", "15:00")
-        hour, minute = self._parse_hour_minute(time_phrase_lower)
+        hour, minute = self._parse_hour_minute(time_phrase_lower, last_timestamp)
         if hour is not None:
             scheduled_at = last_timestamp.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if scheduled_at <= last_timestamp:
@@ -1074,6 +1094,9 @@ Return JSON only."""
             'weekday_monday', 'weekday_tuesday', 'weekday_wednesday', 
             'weekday_thursday', 'weekday_friday', 'weekday_saturday', 'weekday_sunday',
             
+            # Time-only parsing (when user confirms specific time)
+            'time_only_parsed', 'time_of_day_parsed',
+            
             # Next/This/Last weekday variations
             'next_monday', 'next_tuesday', 'next_wednesday', 'next_thursday', 'next_friday', 'next_saturday', 'next_sunday',
             'this_monday', 'this_tuesday', 'this_wednesday', 'this_thursday', 'this_friday', 'this_saturday', 'this_sunday',
@@ -1127,42 +1150,34 @@ Return JSON only."""
     
     async def save_booking(self, booking_data: Dict) -> Dict:
         """Save booking to database with lead assignment logic"""
-        result = {"db": "error", "errors": []}
-        
-        if not booking_data:
-            result["errors"].append("No booking data provided")
-            return result
+        result = {"db": "enabled", "errors": []}
         
         try:
-            # Check if required fields are present
-            if not booking_data.get('lead_id'):
-                error_msg = "Skipping database save: lead_id is required but is null"
-                logger.warning(error_msg)
-                result["errors"].append(error_msg)
-                return result
-            else:
-                # Ensure lead is assigned to user before booking (required by DB trigger)
-                lead_id = booking_data.get('lead_id')
-                assigned_user_id = booking_data.get('assigned_user_id')
-                if lead_id and assigned_user_id:
-                    try:
-                        from db.storage.leads import LeadStorage
-                        lead_storage = LeadStorage()
-                        lead_storage.assign_lead_to_user_if_unassigned(lead_id, assigned_user_id)
-                        logger.info(f"Attempted to assign lead {lead_id} to user {assigned_user_id}")
-                    except Exception as e:
-                        logger.warning(f"Could not assign lead to user: {e}")
-                
-                booking_id = await self.storage.save_booking(booking_data)
-                logger.info(f"Booking saved to database: {booking_id}")
-                result["db"] = "saved"
+            # Save to database using storage
+            booking_id = await self.storage.save_booking(booking_data)
+            
+            if booking_id:
+                result["db"] = "success"
                 result["booking_id"] = booking_id
-        except Exception as e:
-            logger.error(f"Failed to save booking to database: {e}")
+                logger.info(f"Booking saved successfully: {booking_id}")
+            else:
+                result["db"] = "failed"
+                result["booking_id"] = None
+                result["errors"].append("Failed to save booking - no ID returned")
+                logger.error("Failed to save booking - no ID returned")
+                
+        except LeadBookingsStorageError as e:
+            result["db"] = "error"
+            result["booking_id"] = None
             result["errors"].append(str(e))
+            logger.error(f"Database storage error: {e}")
+        except Exception as e:
+            result["db"] = "error"
+            result["booking_id"] = None
+            result["errors"].append(str(e))
+            logger.error(f"Unexpected error saving booking: {e}")
         
         return result
-
 
 async def main():
     """Main function"""
