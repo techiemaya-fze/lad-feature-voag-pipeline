@@ -10,6 +10,7 @@ Updated for lad_dev schema (Phase 12):
 - Added: tenant_id (required), source, email, etc.
 """
 
+import os
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime
@@ -30,7 +31,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Schema and table constants
-SCHEMA = "lad_dev"
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
 TABLE = "leads"
 FULL_TABLE = f"{SCHEMA}.{TABLE}"
 

@@ -5,6 +5,7 @@ Database storage for lead bookings extraction from voice_call_logs transcription
 Uses psycopg2 with connection pooling (v2 pattern).
 """
 
+import os
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -24,7 +25,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Schema and table constants
-SCHEMA = "lad_dev"
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
 CALL_LOGS_TABLE = "voice_call_logs"
 VOICE_AGENTS_TABLE = "voice_agents"
 LEAD_BOOKINGS_TABLE = "lead_bookings"

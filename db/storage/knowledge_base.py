@@ -34,7 +34,7 @@ class KnowledgeBaseStorage:
     with tenants rather than individual agents/leads.
     """
 
-    SCHEMA = "lad_dev"
+    SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
     STORES_TABLE = "knowledge_base_catalog"
     # Note: Agent/lead links are not used in new schema - stores are linked via tenant_id
 

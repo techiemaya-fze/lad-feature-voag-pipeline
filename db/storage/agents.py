@@ -7,6 +7,7 @@ Updated for lad_dev schema (Phase 12):
 - Uses voice_permissions for org lookup (was org_permissions_voiceagent)
 """
 
+import os
 import logging
 from typing import Any, Optional
 
@@ -23,7 +24,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Schema and table constants
-SCHEMA = "lad_dev"
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
 AGENTS_TABLE = "voice_agents"
 PERMISSIONS_TABLE = "voice_permissions"
 FULL_AGENTS_TABLE = f"{SCHEMA}.{AGENTS_TABLE}"

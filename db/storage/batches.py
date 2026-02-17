@@ -10,6 +10,7 @@ Updated for lad_dev schema (Phase 12):
 - Changed: entry uses lead_id (UUID FK) instead of lead_name
 """
 
+import os
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Any
@@ -26,7 +27,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Schema and table constants
-SCHEMA = "lad_dev"
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
 BATCH_TABLE = "voice_call_batches"
 ENTRY_TABLE = "voice_call_batch_entries"
 CALL_TABLE = "voice_call_logs"
@@ -308,6 +309,7 @@ class BatchStorage:
                         UPDATE {FULL_ENTRY_TABLE}
                         SET status = %s, last_error = %s, updated_at = %s
                         WHERE id = %s
+                          AND status NOT IN ('completed', 'failed', 'cancelled', 'declined', 'ended')
                         """,
                         (status, error_message, datetime.now(timezone.utc), entry_id)
                     )
@@ -581,7 +583,7 @@ class BatchStorage:
                         SELECT 
                             id, tenant_id, batch_id, lead_id, to_phone, status, call_log_id
                         FROM {FULL_ENTRY_TABLE}
-                        WHERE batch_id = %s AND status IN ('pending', 'running') 
+                        WHERE batch_id = %s AND status IN ('queued', 'running', 'dispatched') 
                         AND is_deleted = FALSE
                         ORDER BY created_at
                         """,
@@ -610,7 +612,7 @@ class BatchStorage:
                         f"""
                         UPDATE {FULL_ENTRY_TABLE}
                         SET status = 'cancelled', updated_at = %s
-                        WHERE batch_id = %s AND status = 'pending'
+                        WHERE batch_id = %s AND status IN ('pending', 'queued')
                         """,
                         (datetime.now(timezone.utc), batch_id)
                     )
@@ -628,148 +630,7 @@ class BatchStorage:
             )
             return 0
 
-    async def count_pending_entries(self, batch_id: str, entry_ids: list[str]) -> int:
-        """
-        Count entries from the given list that are still pending/running/dispatched.
-        
-        Used by wave completion logic to check how many entries haven't finished.
-        
-        Args:
-            batch_id: UUID of the batch
-            entry_ids: List of entry UUIDs to check
-            
-        Returns:
-            Count of entries not yet in terminal state
-        """
-        if not entry_ids:
-            return 0
-            
-        try:
-            conn = self._get_connection()
-            try:
-                with conn.cursor() as cur:
-                    # Count entries that haven't reached terminal state
-                    cur.execute(
-                        f"""
-                        SELECT COUNT(*) FROM {FULL_ENTRY_TABLE}
-                        WHERE batch_id = %s 
-                          AND id = ANY(%s::uuid[])
-                          AND status NOT IN ('completed', 'failed', 'cancelled', 'declined', 'ended')
-                        """,
-                        (batch_id, entry_ids)
-                    )
-                    return cur.fetchone()[0]
-            finally:
-                self._return_connection(conn)
-                
-        except Exception as exc:
-            logger.error(
-                "Failed to count pending entries: %s",
-                exc,
-                exc_info=True
-            )
-            # Assume all pending on error (safe fallback - will keep waiting)
-            return len(entry_ids)
 
-    async def get_pending_entry_details(
-        self, batch_id: str, entry_ids: list[str]
-    ) -> list[dict]:
-        """
-        Get details of pending entries (those NOT in terminal state).
-        
-        Used for enhanced logging when waiting for small number of entries.
-        
-        Args:
-            batch_id: UUID of the batch
-            entry_ids: List of entry UUIDs to check
-            
-        Returns:
-            List of dicts with id, call_log_id, to_number, status for pending entries
-        """
-        if not entry_ids:
-            return []
-            
-        try:
-            conn = self._get_connection()
-            try:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    cur.execute(
-                        f"""
-                        SELECT id, call_log_id, to_phone, metadata->>'lead_name' as lead_name, status
-                        FROM {FULL_ENTRY_TABLE}
-                        WHERE batch_id = %s 
-                          AND id = ANY(%s::uuid[])
-                          AND status NOT IN ('completed', 'failed', 'cancelled', 'declined', 'ended')
-                        """,
-                        (batch_id, entry_ids)
-                    )
-                    return [dict(row) for row in cur.fetchall()]
-            finally:
-                self._return_connection(conn)
-                
-        except Exception as exc:
-            logger.error(
-                "Failed to get pending entry details: %s",
-                exc,
-                exc_info=True
-            )
-            return []
-
-    async def mark_pending_entries_failed(
-        self, 
-        batch_id: str, 
-        entry_ids: list[str], 
-        error_reason: str
-    ) -> int:
-        """
-        Mark specific entries as failed with error reason.
-        
-        Used by wave timeout logic to fail entries that didn't complete in time.
-        
-        Args:
-            batch_id: UUID of the batch
-            entry_ids: List of entry UUIDs to mark as failed
-            error_reason: Error message to store
-            
-        Returns:
-            Number of entries marked as failed
-        """
-        if not entry_ids:
-            return 0
-            
-        try:
-            conn = self._get_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"""
-                        UPDATE {FULL_ENTRY_TABLE}
-                        SET status = 'failed', 
-                            error_message = %s,
-                            updated_at = %s
-                        WHERE batch_id = %s 
-                          AND id = ANY(%s)
-                          AND status NOT IN ('completed', 'failed', 'cancelled')
-                        """,
-                        (error_reason, datetime.now(timezone.utc), batch_id, entry_ids)
-                    )
-                    failed_count = cur.rowcount
-                    conn.commit()
-                    logger.info(
-                        "Marked %d entries as failed (reason: %s) for batch %s",
-                        failed_count, error_reason, batch_id
-                    )
-                    return failed_count
-            finally:
-                self._return_connection(conn)
-                
-        except Exception as exc:
-            logger.error(
-                "Failed to mark entries failed: %s",
-                exc,
-                exc_info=True
-            )
-            return 0
 
     async def get_running_entries_with_call_logs(self, batch_id: str) -> list[dict]:
         """Get running entries with their call_log details for cleanup."""
@@ -856,7 +717,7 @@ class BatchStorage:
                             COALESCE(b.completed_calls, 0),
                             COALESCE(b.failed_calls, 0),
                             (SELECT COUNT(*) FROM {FULL_ENTRY_TABLE} 
-                             WHERE batch_id = b.id AND status IN ('completed', 'failed')) as done_count
+                             WHERE batch_id = b.id AND status IN ('completed', 'failed', 'cancelled', 'declined', 'ended')) as done_count
                         FROM {FULL_BATCH_TABLE} b
                         WHERE b.id = %s
                         """,
@@ -1158,7 +1019,7 @@ class BatchStorage:
                         f"""
                         UPDATE {FULL_ENTRY_TABLE}
                         SET status = 'failed', 
-                            error_message = 'max_retries_exceeded',
+                            last_error = 'max_retries_exceeded',
                             updated_at = %s
                         WHERE batch_id = %s 
                           AND id = ANY(%s)
@@ -1250,6 +1111,8 @@ class BatchStorage:
             "failed_max_retries": 0,
             "failed_ringing": 0,
             "failed_ongoing_stuck": 0,
+            "recovered_completed": 0,
+            "recovered_failed": 0,
             "still_ongoing": [],
         }
         
@@ -1285,68 +1148,163 @@ class BatchStorage:
                         f"""
                         UPDATE {FULL_ENTRY_TABLE}
                         SET status = 'failed', 
-                            error_message = 'max_retries_exceeded',
+                            last_error = 'max_retries_exceeded',
                             updated_at = %s
                         WHERE batch_id = %s 
                           AND id = ANY(%s::uuid[])
                           AND status = 'dispatched'
                           AND retry_count >= %s
-                        RETURNING id
+                        RETURNING id, call_log_id
                         """,
                         (now, batch_id, entry_ids, max_retries)
                     )
-                    results["failed_max_retries"] = cur.rowcount
+                    failed_rows = cur.fetchall()
+                    results["failed_max_retries"] = len(failed_rows)
                     
-                    # 3. Fail ringing entries (started but no progress)
+                    # Also fail the corresponding call_logs
+                    failed_call_log_ids = [r["call_log_id"] for r in failed_rows if r.get("call_log_id")]
+                    if failed_call_log_ids:
+                        cur.execute(
+                            f"""
+                            UPDATE {FULL_CALL_TABLE}
+                            SET status = 'failed',
+                                ended_at = COALESCE(ended_at, %s),
+                                updated_at = %s
+                            WHERE id = ANY(%s::uuid[])
+                              AND status NOT IN ('ended', 'completed', 'failed', 'declined', 'cancelled')
+                            """,
+                            (now, now, failed_call_log_ids)
+                        )
+                    
+                    # 3. For remaining dispatched entries, check actual call status
+                    #    in voice_call_logs (worker writes ringing/ongoing/ended/failed
+                    #    to call_logs, NOT to batch_entries)
                     cur.execute(
                         f"""
-                        UPDATE {FULL_ENTRY_TABLE}
-                        SET status = 'failed', 
-                            error_message = 'wave_timeout_ringing',
-                            updated_at = %s
-                        WHERE batch_id = %s 
-                          AND id = ANY(%s::uuid[])
-                          AND status = 'ringing'
-                        RETURNING id
-                        """,
-                        (now, batch_id, entry_ids)
-                    )
-                    results["failed_ringing"] = cur.rowcount
-                    
-                    # 4. Check ongoing entries
-                    cur.execute(
-                        f"""
-                        SELECT id, call_log_id, updated_at
-                        FROM {FULL_ENTRY_TABLE}
-                        WHERE batch_id = %s 
-                          AND id = ANY(%s::uuid[])
-                          AND status = 'ongoing'
+                        SELECT e.id as entry_id, e.call_log_id, 
+                               c.status as call_status, c.ended_at as call_ended_at,
+                               c.updated_at as call_updated_at
+                        FROM {FULL_ENTRY_TABLE} e
+                        LEFT JOIN {FULL_CALL_TABLE} c ON e.call_log_id = c.id
+                        WHERE e.batch_id = %s
+                          AND e.id = ANY(%s::uuid[])
+                          AND e.status = 'dispatched'
                         """,
                         (batch_id, entry_ids)
                     )
-                    ongoing_entries = cur.fetchall()
+                    still_dispatched = cur.fetchall()
                     
-                    for entry in ongoing_entries:
-                        entry_updated = entry["updated_at"]
-                        if entry_updated and entry_updated < ongoing_threshold:
-                            # Ongoing too long - mark as failed
+                    for entry in still_dispatched:
+                        call_status = (entry.get("call_status") or "").lower()
+                        entry_id = entry["entry_id"]
+                        
+                        # Terminal call statuses — call finished but callback never arrived
+                        terminal_statuses = {"ended", "completed", "failed", "declined", 
+                                           "cancelled", "canceled", "error", "not_reachable",
+                                           "rejected", "no_answer", "busy"}
+                        failed_statuses = {"failed", "error", "not_reachable"}
+                        declined_statuses = {"declined", "rejected", "no_answer", "busy"}
+                        
+                        if call_status in terminal_statuses:
+                            # Call finished in call_logs but callback never reached main
+                            # Map call_log status to batch entry status
+                            if call_status in failed_statuses:
+                                entry_status = "failed"
+                            elif call_status in declined_statuses:
+                                entry_status = "declined"
+                            elif call_status in {"cancelled", "canceled"}:
+                                entry_status = "cancelled"
+                            else:
+                                entry_status = "completed"
+                            
                             cur.execute(
                                 f"""
                                 UPDATE {FULL_ENTRY_TABLE}
-                                SET status = 'failed', 
-                                    error_message = 'ongoing_timeout',
+                                SET status = %s,
+                                    last_error = %s,
                                     updated_at = %s
                                 WHERE id = %s
+                                  AND status NOT IN ('completed', 'failed', 'cancelled', 'declined', 'ended')
                                 """,
-                                (now, entry["id"])
+                                (entry_status, f'recovered_from_call_log:{call_status}', now, entry_id)
                             )
-                            results["failed_ongoing_stuck"] += 1
-                        else:
-                            # Still in progress - need to wait
-                            results["still_ongoing"].append({
-                                "id": entry["id"],
-                                "call_log_id": entry["call_log_id"],
-                            })
+                            if entry_status in ("failed", "declined"):
+                                results["recovered_failed"] += 1
+                            else:
+                                results["recovered_completed"] += 1
+                            logger.info(
+                                "Entry %s: call_log status=%s, recovered to entry status=%s",
+                                entry_id, call_status, entry_status
+                            )
+                            
+                        elif call_status == "ringing":
+                            # Call is stuck ringing — fail entry AND call_log
+                            cur.execute(
+                                f"""
+                                UPDATE {FULL_ENTRY_TABLE}
+                                SET status = 'failed',
+                                    last_error = 'wave_timeout_ringing',
+                                    updated_at = %s
+                                WHERE id = %s
+                                  AND status NOT IN ('completed', 'failed', 'cancelled', 'declined', 'ended')
+                                """,
+                                (now, entry_id)
+                            )
+                            # Update call_log to failed too
+                            call_log_id = entry.get("call_log_id")
+                            if call_log_id:
+                                cur.execute(
+                                    f"""
+                                    UPDATE {FULL_CALL_TABLE}
+                                    SET status = 'failed',
+                                        ended_at = COALESCE(ended_at, %s),
+                                        updated_at = %s
+                                    WHERE id = %s
+                                      AND status NOT IN ('ended', 'completed', 'failed', 'declined', 'cancelled')
+                                    """,
+                                    (now, now, call_log_id)
+                                )
+                            results["failed_ringing"] += 1
+                            
+                        elif call_status == "ongoing":
+                            # Call is ongoing — check if it's been running too long
+                            call_updated = entry.get("call_updated_at")
+                            if call_updated and call_updated < ongoing_threshold:
+                                # Ongoing too long — force fail entry AND call_log
+                                cur.execute(
+                                    f"""
+                                    UPDATE {FULL_ENTRY_TABLE}
+                                    SET status = 'failed',
+                                        last_error = 'ongoing_timeout',
+                                        updated_at = %s
+                                    WHERE id = %s
+                                      AND status NOT IN ('completed', 'failed', 'cancelled', 'declined', 'ended')
+                                    """,
+                                    (now, entry_id)
+                                )
+                                # Update call_log to failed too
+                                call_log_id = entry.get("call_log_id")
+                                if call_log_id:
+                                    cur.execute(
+                                        f"""
+                                        UPDATE {FULL_CALL_TABLE}
+                                        SET status = 'failed',
+                                            ended_at = COALESCE(ended_at, %s),
+                                            updated_at = %s
+                                        WHERE id = %s
+                                          AND status NOT IN ('ended', 'completed', 'failed', 'declined', 'cancelled')
+                                        """,
+                                        (now, now, call_log_id)
+                                    )
+                                results["failed_ongoing_stuck"] += 1
+                            else:
+                                # Still active — extend wait
+                                results["still_ongoing"].append({
+                                    "id": entry_id,
+                                    "call_log_id": entry.get("call_log_id"),
+                                })
+                        
+                        # else: no call_log or unknown status — already handled by steps 1-2
                     
                     conn.commit()
                     

@@ -6,6 +6,7 @@ Phase 13: Post-Call Analysis Refactor
 - 1:1 relationship with voice_call_logs via call_log_id
 """
 
+import os
 import json
 import logging
 from datetime import datetime
@@ -23,7 +24,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Schema and table constants
-SCHEMA = "lad_dev"
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
 TABLE = "voice_call_analysis"
 FULL_TABLE = f"{SCHEMA}.{TABLE}"
 
