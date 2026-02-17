@@ -234,7 +234,8 @@ class LeadBookingsExtractor:
         self,
         conversation_text: str,
         first_timestamp: datetime,
-        last_timestamp: datetime
+        last_timestamp: datetime,
+        tenant_id: str = None
     ) -> Dict:
         """
         Extract followup time using simplified logic
@@ -256,7 +257,22 @@ class LeadBookingsExtractor:
         # Debug: Show conversation content being sent to Gemini
         logger.info(f"CONVERSATION SENT TO GEMINI:\n{conversation_text}\n---END CONVERSATION---")
         
-        prompt = f"""You are analyzing a phone conversation between an Agent and a User to extract followup scheduling information.
+        # Check for meaningful user content to prevent LLM hallucination
+        user_lines = [line for line in conversation_text.split('\n') if line.strip().startswith('User:')]
+        user_content = ' '.join([line.replace('User:', '').strip() for line in user_lines])
+        
+        # If no meaningful user content, skip LLM and return defaults
+        if len(user_content.strip()) < 1:  # Less than 10 characters of user content
+            logger.info(f"Insufficient user content ({len(user_content)} chars) - skipping LLM, using defaults")
+            result = {
+                "booking_type": "auto_followup",
+                "time_phrase": None,
+                "user_confirmed": False,
+                "student_grade": None
+            }
+        else:
+            # Proceed with LLM extraction only if there's meaningful user content
+            prompt = f"""You are analyzing a phone conversation between an Agent and a User to extract followup scheduling information.
 
 CONVERSATION:
 {conversation_text}
@@ -378,10 +394,17 @@ Return JSON only."""
         calculation_method = "none"
         
         if not time_phrase:
-            # No time phrase -> next day from first timestamp
-            scheduled_at = first_timestamp + timedelta(days=1)
-            calculation_method = "no_confirmation_1day"
-            logger.info(f"No time phrase: {scheduled_at}")
+            # No time phrase -> use tenant-specific default timeline
+            if tenant_id == GLINKS_TENANT_ID:
+                # GLINKS: Use environment variable
+                default_days = int(os.getenv('GLINKS_DEFAULT_TIMELINE_DAYS', '1'))
+            else:
+                # Non-GLINKS: Use 1 day default
+                default_days = 1
+            
+            scheduled_at = first_timestamp + timedelta(days=default_days)
+            calculation_method = f"no_confirmation_{default_days}day"
+            logger.info(f"No time phrase: {scheduled_at} (using {default_days} days default for {'GLINKS' if tenant_id == GLINKS_TENANT_ID else 'Non-GLINKS'} tenant)")
         else:
             # Parse time phrase (even if not confirmed)
             scheduled_at, calculation_method = await self._parse_time_phrase(
@@ -959,29 +982,17 @@ Return JSON only."""
                 else:
                     started_at_gst = started_at
                 
-                # For GLINKS tenant, use schedule calculator to apply business day rules
-                if tenant_id == GLINKS_TENANT_ID and self.schedule_calculator:
-                    logger.info("Empty conversation for GLINKS - applying schedule calculator")
+                # For GLINKS tenant, use simple calendar days (no working day logic)
+                if tenant_id == GLINKS_TENANT_ID:
+                    logger.info("Empty conversation for GLINKS - using simple calendar days")
                     try:
-                        # Use next day as starting point for GLINKS calculator
-                        next_day = started_at_gst + timedelta(days=1)
-                        valid_schedule = self.schedule_calculator.calculate_next_call(
-                            current_time=next_day,
-                            student_grade=None,  # Default grade for empty conversation
-                            booking_type='auto_followup',  # Empty conversation is a followup
-                            confirmed_date_mentioned=False
-                        )
-                        
-                        if valid_schedule:
-                            scheduled_at = valid_schedule
-                            calculation_method = "empty_transcript_glinks_adjusted"
-                            logger.info(f"GLINKS adjusted empty conversation: {scheduled_at}")
-                        else:
-                            scheduled_at = next_day
-                            calculation_method = "empty_transcript_1day"
-                            logger.warning(f"GLINKS calculator failed, using next day: {scheduled_at}")
+                        # Use GLINKS default timeline as simple calendar days
+                        default_days = int(os.getenv('GLINKS_DEFAULT_TIMELINE_DAYS', '1'))
+                        scheduled_at = started_at_gst + timedelta(days=default_days)
+                        calculation_method = f"empty_transcript_{default_days}day"
+                        logger.info(f"GLINKS empty conversation: {scheduled_at} (using {default_days} calendar days)")
                     except Exception as e:
-                        logger.error(f"GLINKS calculator error for empty conversation: {e}")
+                        logger.error(f"GLINKS empty conversation error: {e}")
                         scheduled_at = started_at_gst + timedelta(days=1)
                         calculation_method = "empty_transcript_1day"
                 else:
@@ -1011,7 +1022,8 @@ Return JSON only."""
             result = await self.extract_followup_time(
                 conversation_text=conversation_text,
                 first_timestamp=first_timestamp,
-                last_timestamp=last_timestamp
+                last_timestamp=last_timestamp,
+                tenant_id=tenant_id
             )
             
             booking_type = result['booking_type']

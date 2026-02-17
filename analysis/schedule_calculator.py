@@ -8,6 +8,10 @@ import os
 from datetime import datetime, timedelta, time
 from typing import Optional, List
 import pytz
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +47,7 @@ GRADE_TIMELINE = {
 }
 
 # Default timeline when no grade mentioned - now from environment variable
-DEFAULT_TIMELINE = int(os.getenv('GLINKS_DEFAULT_TIMELINE_DAYS', '1'))
+DEFAULT_TIMELINE = int(os.getenv('GLINKS_DEFAULT_TIMELINE_DAYS', '2'))
 
 
 class ScheduleCalculator:
@@ -55,9 +59,8 @@ class ScheduleCalculator:
         logger.info(f"GLINKS ScheduleCalculator initialized with DEFAULT_TIMELINE={DEFAULT_TIMELINE} days")
     
     def is_working_day(self, date: datetime) -> bool:
-        """Check if working day (no holidays)"""
-        if (date.month, date.day) in self.public_holidays:
-            return False
+        """Check if working day (no holidays) - DISABLED: always return True"""
+        # DISABLED: Don't skip Mondays or holidays
         return True
     
     def is_working_hour(self, dt: datetime) -> bool:
