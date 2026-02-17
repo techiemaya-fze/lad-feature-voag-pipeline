@@ -262,7 +262,7 @@ class LeadBookingsExtractor:
         user_content = ' '.join([line.replace('User:', '').strip() for line in user_lines])
         
         # If no meaningful user content, skip LLM and return defaults
-        if len(user_content.strip()) < 1:  # Less than 10 characters of user content
+        if len(user_content.strip()) < 1:  # Less than 1 character of user content
             logger.info(f"Insufficient user content ({len(user_content)} chars) - skipping LLM, using defaults")
             result = {
                 "booking_type": "auto_followup",
@@ -272,6 +272,7 @@ class LeadBookingsExtractor:
             }
         else:
             # Proceed with LLM extraction only if there's meaningful user content
+            # Define prompt for logging purposes
             prompt = f"""You are analyzing a phone conversation between an Agent and a User to extract followup scheduling information.
 
 CONVERSATION:
@@ -394,17 +395,26 @@ Return JSON only."""
         calculation_method = "none"
         
         if not time_phrase:
-            # No time phrase -> use tenant-specific default timeline
+            # No time phrase -> use grade timeline if available, else default timeline
             if tenant_id == GLINKS_TENANT_ID:
-                # GLINKS: Use environment variable
-                default_days = int(os.getenv('GLINKS_DEFAULT_TIMELINE_DAYS', '1'))
+                if student_grade is not None:
+                    # GLINKS: Use grade-based timeline
+                    from schedule_calculator import GRADE_TIMELINE
+                    default_days = GRADE_TIMELINE.get(student_grade, int(os.getenv('GLINKS_DEFAULT_TIMELINE_DAYS', '1')))
+                    calculation_method = f"no_confirmation_grade{student_grade}_{default_days}day"
+                    logger.info(f"No time phrase: grade {student_grade} -> {default_days} days")
+                else:
+                    # GLINKS: Use environment variable (no grade mentioned)
+                    default_days = int(os.getenv('GLINKS_DEFAULT_TIMELINE_DAYS', '1'))
+                    calculation_method = f"no_confirmation_{default_days}day"
+                    logger.info(f"No time phrase: no grade -> {default_days} days default")
             else:
-                # Non-GLINKS: Use 1 day default
+                # Non-GLINKS: Use 1 day default (tomorrow)
                 default_days = 1
+                calculation_method = "no_confirmation_1day"
             
             scheduled_at = first_timestamp + timedelta(days=default_days)
-            calculation_method = f"no_confirmation_{default_days}day"
-            logger.info(f"No time phrase: {scheduled_at} (using {default_days} days default for {'GLINKS' if tenant_id == GLINKS_TENANT_ID else 'Non-GLINKS'} tenant)")
+            logger.info(f"No time phrase: {scheduled_at} (using {default_days} days for {'GLINKS grade ' + str(student_grade) if tenant_id == GLINKS_TENANT_ID and student_grade else 'GLINKS default' if tenant_id == GLINKS_TENANT_ID else 'Non-GLINKS'} tenant)")
         else:
             # Parse time phrase (even if not confirmed)
             scheduled_at, calculation_method = await self._parse_time_phrase(
