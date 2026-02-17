@@ -30,8 +30,16 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import logging
 from typing import Any, Dict, Optional
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Schema configuration
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
 
 logger = logging.getLogger(__name__)
 

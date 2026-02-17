@@ -28,6 +28,9 @@ from .gemini_client import generate_with_schema_retry, LEAD_INFO_SCHEMA
 
 load_dotenv()
 
+# Schema configuration
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
+
 # Use existing logger from parent module or create new one
 logger = logging.getLogger(__name__)
 

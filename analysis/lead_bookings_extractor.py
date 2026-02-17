@@ -23,6 +23,12 @@ _PROJECT_ROOT = _SCRIPT_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+# Load environment variables
+load_dotenv()
+
+# Schema configuration
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
+
 # Import Gemini client
 from analysis.gemini_client import generate_with_schema_async, IMPROVED_BOOKING_SCHEMA
 from google.genai import types
@@ -46,7 +52,7 @@ except ImportError:
     ScheduleCalculator = None
 
 # GLINKS tenant ID
-GLINKS_TENANT_ID = "926070b5-189b-4682-9279-ea10ca090b84"
+GLINKS_TENANT_ID = os.getenv("GLINKS_TENANT_ID", "926070b5-189b-4682-9279-ea10ca090b84")
 
 # Configure logging
 logging.basicConfig(

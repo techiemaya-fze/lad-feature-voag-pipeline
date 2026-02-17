@@ -56,6 +56,9 @@ GST = timezone(timedelta(hours=4))
 
 load_dotenv()
 
+# Schema configuration
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
+
 # Schema constants for table names
 from db.schema_constants import (
     CALL_LOGS_FULL,
@@ -321,7 +324,7 @@ async def get_batch_info(batch_id: str) -> Optional[Dict]:
     conn = _get_connection()
     try:
         with conn.cursor() as cur:
-            # v2 schema: lad_dev.voice_call_batches uses finished_at, no cancelled_calls
+            # v2 schema: {SCHEMA}.voice_call_batches uses finished_at, no cancelled_calls
             # Join with users to get tenant_id from initiated_by_user_id's primary_tenant_id
             cur.execute(f"""
                 SELECT 
@@ -1174,7 +1177,7 @@ def _get_email_method(tenant_id: Optional[str] = None) -> str:
     Get the configured email method from tenant features or env var.
     
     Priority:
-    1. Tenant features (lad_dev.tenant_features with feature_key='voice-agent-batch-report-email-provider')
+    1. Tenant features ({SCHEMA}.tenant_features with feature_key='voice-agent-batch-report-email-provider')
     2. BATCH_EMAIL_METHOD env var
     3. Default 'oauth' (Google)
     
@@ -1192,7 +1195,7 @@ def _get_email_method(tenant_id: Optional[str] = None) -> str:
                 with conn.cursor() as cur:
                     cur.execute("""
                         SELECT config
-                        FROM lad_dev.tenant_features
+                        FROM {SCHEMA}.tenant_features
                         WHERE tenant_id = %s
                           AND feature_key = 'voice-agent-batch-report-email-provider'
                           AND enabled = true

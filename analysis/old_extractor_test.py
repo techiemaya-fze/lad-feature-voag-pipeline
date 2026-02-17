@@ -1,6 +1,6 @@
 """
 Lead Bookings Extractor
-Reads transcriptions from lad_dev.voice_call_logs and creates lead_bookings JSON files
+Reads transcriptions from {SCHEMA}.voice_call_logs and creates lead_bookings JSON files
 """
 
 import os
@@ -17,6 +17,12 @@ from typing import Dict, List, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 import pytz
+
+# Load environment variables
+load_dotenv()
+
+# Schema configuration
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
 
 # Add parent directory to path to allow imports when running as script
 _SCRIPT_DIR = Path(__file__).parent

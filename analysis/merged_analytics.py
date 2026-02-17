@@ -26,6 +26,9 @@ from .gemini_client import (
 
 load_dotenv()
 
+# Schema configuration
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
+
 # Configure logging
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -62,7 +65,8 @@ except ImportError:
     LEAD_EXTRACTOR_AVAILABLE = False
     logger.debug("LeadInfoExtractor not available - lead extraction disabled")
 
-# Phase 13: Import storage classes for lad_dev schema
+
+# Phase 13: Import storage classes for database schema
 try:
     from db.storage.call_analysis import CallAnalysisStorage
     from db.storage.calls import CallStorage
@@ -142,7 +146,7 @@ class CallAnalytics:
 
         candidates = [text]
 
-        # Extract fenced blocks (handles both ```json and ```)
+        # Extract fenced blocks (handles both ```json and ``)
         fence_pattern = re.compile(r"```(?:json)?\s*([\s\S]+?)```", re.IGNORECASE)
         for match in fence_pattern.finditer(text):
             snippet = match.group(1).strip()
@@ -1452,7 +1456,7 @@ CONFIDENCE: [High/Medium/Low]"""
         - Other tenants: Do NOT use stage-based logic (use sentiment/duration logic instead)
         - Keep all other categories unchanged (Warm Lead, Cold Lead, etc.)
         """
-        GLINKS_TENANT_ID = '926070b5-189b-4682-9279-ea10ca090b84'
+        GLINKS_TENANT_ID = os.getenv("GLINKS_TENANT_ID", "926070b5-189b-4682-9279-ea10ca090b84")
         
         stages_reached = stage_info.get('stages_reached', [])
         final_stage = stage_info.get('final_stage', '')
@@ -2299,7 +2303,7 @@ CONFIDENCE: [High/Medium/Low]"""
         quality_metrics = self.calculate_conversation_quality(conversation_text, sentiment, duration_seconds)
 
         # Update lead category based on tenant-specific logic
-        GLINKS_TENANT_ID = '926070b5-189b-4682-9279-ea10ca090b84'
+        GLINKS_TENANT_ID = os.getenv("GLINKS_TENANT_ID", "926070b5-189b-4682-9279-ea10ca090b84")
         
         if tenant_id == GLINKS_TENANT_ID:
             # GLINKS: Use stage-based logic
@@ -2559,7 +2563,7 @@ CONFIDENCE: [High/Medium/Low]"""
         
         Args:
             analysis: The complete analytics dictionary
-            call_log_id: UUID of the call log (from lad_dev.voice_call_logs)
+            call_log_id: UUID of the call log (from {SCHEMA}.voice_call_logs)
             db_config: Database configuration dictionary (not used, tenant_id extracted from analysis)
             
         Returns:
@@ -2580,11 +2584,11 @@ CONFIDENCE: [High/Medium/Low]"""
         tenant_id: str,
     ) -> bool:
         """
-        Save analytics to lad_dev.voice_call_analysis with full legacy-parity columns.
+        Save analytics to {SCHEMA}.voice_call_analysis with full legacy-parity columns.
         
         Args:
             analysis: The complete analytics dictionary
-            call_log_id: UUID of the call log (from lad_dev.voice_call_logs)
+            call_log_id: UUID of the call log (from {SCHEMA}.voice_call_logs)
             tenant_id: UUID of the tenant for multi-tenancy
             
         Returns:
@@ -2601,7 +2605,7 @@ CONFIDENCE: [High/Medium/Low]"""
             analysis = dict(analysis or {})
             analysis["tenant_id"] = tenant_id
 
-            # Full-column persistence into lad_dev.voice_call_analysis.
+            # Full-column persistence into {SCHEMA}.voice_call_analysis.
             # This updates: disposition, lead_category, recommendations, key_phrases, cost, etc.
             
             # Extract data for voice_call_analysis table
@@ -2613,9 +2617,9 @@ CONFIDENCE: [High/Medium/Low]"""
             disposition = analysis.get("lead_disposition", {})
             cost_data = analysis.get("cost", {})
             
-            # Prepare INSERT query - matches FULL lad_dev.voice_call_analysis schema
+            # Prepare INSERT query - matches FULL {SCHEMA}.voice_call_analysis schema
             query = """
-                INSERT INTO lad_dev.voice_call_analysis (
+                INSERT INTO {SCHEMA}.voice_call_analysis (
                     call_log_id,
                     tenant_id,
                     summary,
@@ -2756,7 +2760,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 
                 if call_log_id:
                     cursor.execute(
-                        "DELETE FROM lad_dev.voice_call_analysis WHERE call_log_id = %s::uuid",
+                        f"DELETE FROM {SCHEMA}.voice_call_analysis WHERE call_log_id = %s::uuid",
                         (call_log_id,),
                     )
                 
@@ -2784,7 +2788,7 @@ CONFIDENCE: [High/Medium/Low]"""
             # Verify the data was actually saved
             try:
                 cursor.execute(
-                    "SELECT id, call_log_id, disposition, cost FROM lad_dev.voice_call_analysis WHERE call_log_id = %s::uuid ORDER BY created_at DESC LIMIT 1",
+                    f"SELECT id, call_log_id, disposition, cost FROM {SCHEMA}.voice_call_analysis WHERE call_log_id = %s::uuid ORDER BY created_at DESC LIMIT 1",
                     (call_log_id,)
                 )
                 saved_record = cursor.fetchone()
@@ -2798,7 +2802,7 @@ CONFIDENCE: [High/Medium/Low]"""
             cursor.close()
             conn.close()
             
-            logger.info(f"Analytics saved to lad_dev.voice_call_analysis table successfully!")
+            logger.info(f"Analytics saved to {SCHEMA}.voice_call_analysis table successfully!")
             
             # Update tags column in leads table with lead_category value
             if analysis and "lead_score" in analysis:
@@ -2820,7 +2824,7 @@ CONFIDENCE: [High/Medium/Low]"""
                         # Get lead_id from voice_call_logs table
                         cursor.execute("""
                             SELECT lead_id 
-                            FROM lad_dev.voice_call_logs 
+                            FROM {SCHEMA}.voice_call_logs 
                             WHERE id = %s::uuid
                         """, (call_log_id,))
                         result = cursor.fetchone()
@@ -2853,15 +2857,13 @@ CONFIDENCE: [High/Medium/Low]"""
                             # Update tags column in leads table as JSON array
                             try:
                                 cursor.execute(
-                                    "UPDATE lad_dev.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
+                                    f"UPDATE {SCHEMA}.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
                                     (tags_json, datetime.now(timezone.utc), lead_id_from_call)
                                 )
                             except Exception as db_error:
                                 logger.error(f"Database update error: {db_error}")
                                 logger.error(f"Parameters: tags_json={tags_json} (type: {type(tags_json)}), lead_id={lead_id_from_call}")
                                 raise db_error
-                            conn.commit()
-                            logger.info(f"Updated tags column in leads table (lead_id: {lead_id_from_call}, tags: {[lead_category_value]})")
                         else:
                             logger.warning(f"No lead_id found for call_log_id: {call_log_id}")
                         
@@ -2874,7 +2876,7 @@ CONFIDENCE: [High/Medium/Low]"""
             
             return True
         except Exception as e:
-            logger.error(f"lad_dev save failed: {e}", exc_info=True)
+            logger.error(f"Database save failed: {e}", exc_info=True)
             return False
     def update_leads_for_user_transcription(self, call_log_id: str, lead_id: str, db_config: Dict, 
                                            conn=None, cursor=None, transcripts=None, tenant_id: str = None) -> bool:
@@ -2977,7 +2979,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 try:
                     local_cursor.execute("""
                         SELECT transcripts 
-                        FROM lad_dev.voice_call_logs 
+                        FROM {SCHEMA}.voice_call_logs 
                         WHERE id = %s::uuid
                     """, (call_log_id,))
                     result = local_cursor.fetchone()
@@ -3062,7 +3064,7 @@ CONFIDENCE: [High/Medium/Low]"""
             logger.info(f"Final result - has_user_transcription: {has_user_transcription}, conversation_text length: {len(conversation_text)}")
             
             if not has_user_transcription:
-                logger.info(f"No user transcriptions found for call log: {call_log_id} - updating source and stage only")
+                logger.info("No user transcriptions found for call log: {call_log_id} - updating source and stage only")
                 
                 # Always update source and stage for no user transcription, but don't update status
                 try:
@@ -3082,7 +3084,7 @@ CONFIDENCE: [High/Medium/Low]"""
                         stages_reached_text = json.dumps(stages_reached) if isinstance(stages_reached, list) else str(stages_reached)
                         
                         local_cursor.execute("""
-                            UPDATE lad_dev.voice_call_analysis 
+                            UPDATE {SCHEMA}.voice_call_analysis 
                             SET stages_reached = %s
                             WHERE call_log_id = %s::uuid
                         """, (
@@ -3109,7 +3111,7 @@ CONFIDENCE: [High/Medium/Low]"""
                         logger.info(f"DEBUG: Parameter types - source: {type('voice_agent')}, stage: {type(stage_value)}, lead_id: {type(lead_id)}")
                         
                         local_cursor.execute("""
-                            UPDATE lad_dev.leads 
+                            UPDATE {SCHEMA}.leads 
                             SET source = %s, 
                                 stage = %s,
                                 updated_at = %s
@@ -3169,7 +3171,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 lead_id_str = str(lead_id) if lead_id is not None else ""
                 
                 local_cursor.execute("""
-                    UPDATE lad_dev.leads 
+                    UPDATE {SCHEMA}.leads 
                     SET source = %s, 
                         status = %s, 
                         stage = %s, 
@@ -3289,7 +3291,7 @@ class StandaloneAnalytics:
                         WHEN transcripts IS NULL OR transcripts::text = '' THEN 'No transcript'
                         ELSE SUBSTRING(transcripts::text, 1, 50) || '...'
                     END as transcript_preview
-                FROM lad_dev.voice_call_logs
+                FROM {SCHEMA}.voice_call_logs
                 ORDER BY ctid
                 LIMIT 500000
             """)
@@ -3361,7 +3363,7 @@ class StandaloneAnalytics:
                             duration_seconds,
                             recording_url,
                             ROW_NUMBER() OVER (ORDER BY ctid) as row_num
-                        FROM lad_dev.voice_call_logs
+                        FROM {SCHEMA}.voice_call_logs
                     ) ranked
                     WHERE row_num = %s
                 """, (call_log_id,))
@@ -3370,14 +3372,14 @@ class StandaloneAnalytics:
                 try:
                     cursor.execute("""
                         SELECT id, transcripts, started_at, ended_at, duration_seconds, recording_url
-                        FROM lad_dev.voice_call_logs
+                        FROM {SCHEMA}.voice_call_logs
                         WHERE id = %s::uuid
                     """, (str(call_log_id),))
                 except (psycopg2.errors.InvalidTextRepresentation, psycopg2.errors.UndefinedFunction):
                     # Fallback: try text match
                     cursor.execute("""
                         SELECT id, transcripts, started_at, ended_at, duration_seconds, recording_url
-                        FROM lad_dev.voice_call_logs
+                        FROM {SCHEMA}.voice_call_logs
                         WHERE id::text = %s
                     """, (str(call_log_id),))
             
@@ -3391,7 +3393,7 @@ class StandaloneAnalytics:
             
             # Get tenant_id and lead_id in single query
             cursor.execute(
-                "SELECT tenant_id, lead_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
+                "SELECT tenant_id, lead_id FROM {SCHEMA}.voice_call_logs WHERE id = %s::uuid",
                 (str(db_call_id),)
             )
             result = cursor.fetchone()
@@ -3450,7 +3452,7 @@ class StandaloneAnalytics:
             
                 # Save to database
                 if tenant_id and STORAGE_CLASSES_AVAILABLE:
-                    logger.info("Saving analytics to lad_dev.voice_call_analysis table...")
+                    logger.info("Saving analytics to {SCHEMA}.voice_call_analysis table...")
                     success = await self.analytics.save_to_lad_dev(result, str(db_call_id), str(tenant_id))
                     # Use the same db_config for leads update
                     from db.db_config import get_db_config
@@ -3466,7 +3468,7 @@ class StandaloneAnalytics:
                     try:
                         if lead_id:
                             # Get the original transcripts from database to pass to leads update
-                            cursor.execute("SELECT transcripts FROM lad_dev.voice_call_logs WHERE id = %s::uuid", (str(db_call_id),))
+                            cursor.execute(f"SELECT transcripts FROM {SCHEMA}.voice_call_logs WHERE id = %s::uuid", (str(db_call_id),))
                             transcripts_result = cursor.fetchone()
                             original_transcripts = transcripts_result[0] if transcripts_result else None
                             

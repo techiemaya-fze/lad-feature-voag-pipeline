@@ -26,6 +26,12 @@ from typing import Dict, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
+
+# Schema configuration
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
+
 # Structured output client for guaranteed JSON responses
 from .gemini_client import generate_with_schema_retry, STUDENT_EXTRACTOR_SCHEMA
 
@@ -519,7 +525,7 @@ class StandaloneStudentExtractor:
     
     def _get_lead_category_from_analysis(self, cursor, call_log_id) -> Optional[str]:
         """
-        Get lead_category from lad_dev.voice_call_analysis table
+        Get lead_category from {SCHEMA}.voice_call_analysis table
         Connected via voice_call_logs.id = voice_call_analysis.call_log_id
         
         Args:

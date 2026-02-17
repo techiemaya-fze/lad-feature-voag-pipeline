@@ -340,7 +340,7 @@ class CallStageDetector:
         # Tenant-specific stage mappings
         self.tenant_stage_mapping = {
             # Glinks tenant uses counseling_booked for stage 4
-            '926070b5-189b-4682-9279-ea10ca090b84': {
+            os.getenv("GLINKS_TENANT_ID", "926070b5-189b-4682-9279-ea10ca090b84"): {
                 '1_contacted': 'contacted',
                 '2_followup': 'followup',
                 '3_email_sent': 'email_sent',
