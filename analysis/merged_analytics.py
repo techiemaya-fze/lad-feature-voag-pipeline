@@ -668,31 +668,36 @@ class CallAnalytics:
 CONVERSATION:
 {conversation_text[:1000]}
 
-TASK: Classify the prospect's sentiment as one of:
-- Very Interested
-- Positive
-- Neutral
-- Negative"""
+TASK: Classify the prospect's sentiment and provide a confidence score:
+- category: One of ["Very Interested", "Positive", "Neutral", "Negative"]
+- combined_score: Numeric confidence from 0.0 to 100.0 (where 60+ = positive, 40-59 = neutral, <40 = negative)"""
             
-            # Simple schema for category only
+            # Schema with both category and score
             schema = {
                 "type": "object",
                 "properties": {
-                    "category": {"type": "string", "enum": ["Very Interested", "Positive", "Neutral", "Negative"]}
+                    "category": {"type": "string", "enum": ["Very Interested", "Positive", "Neutral", "Negative"]},
+                    "combined_score": {"type": "number", "minimum": 0, "maximum": 100}
                 },
-                "required": ["category"]
+                "required": ["category", "combined_score"]
             }
             
             sentiment_data = self._call_gemini_structured(prompt, schema, temperature=0.1, max_output_tokens=500)
             
             if sentiment_data:
-                return {"category": sentiment_data.get("category", "Neutral")}
+                # Convert numeric score to percentage string for consistency
+                score = sentiment_data.get("combined_score", 50)
+                combined_score_str = f"{score:.1f}%"
+                return {
+                    "category": sentiment_data.get("category", "Neutral"),
+                    "combined_score": combined_score_str
+                }
             
         except Exception as e:
             logger.error(f"LLM sentiment calculation error: {e}", exc_info=True)
         
         # Fallback
-        return {"category": "Neutral"}
+        return {"category": "Neutral", "combined_score": "50.0%"}
     
 
     
@@ -731,7 +736,8 @@ TASK: Classify the prospect's sentiment as one of:
         result = {
             "category": category.value,
             "sentiment_description": sentiment_description,
-            "key_phrases": key_phrases[:5]
+            "key_phrases": key_phrases[:5],
+            "combined_score": llm_sentiment_data.get("combined_score", "50.0%")
         }
         
         return result
@@ -1437,36 +1443,87 @@ CONFIDENCE: [High/Medium/Low]"""
             }
         }
     
-    def _update_lead_category_based_on_stages(self, lead_score: Dict, stage_info: Dict) -> Dict:
+    def _update_lead_category_based_on_stages(self, lead_score: Dict, stage_info: Dict, tenant_id: str = None) -> Dict:
         """
         Update lead category based on stages reached.
         
         Logic:
-        - Upgrade to Hot Lead ONLY if reached Stage 3 (email_sent) or Stage 4 (counseling_booked)
+        - GLINKS tenant: Upgrade to Hot Lead ONLY if reached Stage 3 (email_sent) or Stage 4 (counseling_booked)
+        - Other tenants: Do NOT use stage-based logic (use sentiment/duration logic instead)
         - Keep all other categories unchanged (Warm Lead, Cold Lead, etc.)
         """
+        GLINKS_TENANT_ID = '926070b5-189b-4682-9279-ea10ca090b84'
+        
         stages_reached = stage_info.get('stages_reached', [])
         final_stage = stage_info.get('final_stage', '')
         
-        # Check if reached Stage 3 or 4
+        # Check if GLINKS tenant and reached Stage 3 or 4
+        is_glinks = tenant_id == GLINKS_TENANT_ID
         reached_hot_stage = any(stage in stages_reached for stage in ['3_email_sent', '4_counseling_booked'])
         
-        if reached_hot_stage:
-            # Upgrade to Hot Lead
+        if is_glinks and reached_hot_stage:
+            # GLINKS tenant: Upgrade to Hot Lead based on stages
             lead_category = "Hot Lead"
             final_score = 10.0  # Boost to max score
             priority = "High"
-            stage_bonus = "Reached Stage 3/4 - Upgraded to Hot Lead"
+            stage_bonus = "GLINKS: Reached Stage 3/4 - Upgraded to Hot Lead"
         else:
-            # Keep original category and score for non-hot leads
+            # Non-GLINKS tenants or no hot stage: Keep original category and score
             lead_category = lead_score.get('lead_category', 'Warm Lead')
             final_score = lead_score.get('lead_score', 6.0)
             priority = lead_score.get('priority', 'Medium')
-            stage_bonus = "Did not reach Stage 3/4 - Kept original category"
+            stage_bonus = "No stage-based upgrade"
         
         # Update scoring breakdown
         scoring_breakdown = lead_score.get('scoring_breakdown', {})
         scoring_breakdown['stage_based'] = stage_bonus
+        
+        return {
+            "lead_score": final_score,
+            "max_score": 10.0,
+            "lead_category": lead_category,
+            "priority": priority,
+            "scoring_breakdown": scoring_breakdown
+        }
+    
+    def _update_lead_category_for_non_glinks(self, lead_score: Dict, sentiment: Dict, duration: int) -> Dict:
+        """
+        Update lead category for non-GLINKS tenants based on sentiment and duration.
+        
+        Logic:
+        - High sentiment + Duration > 1 minute → Upgrade to Hot Lead
+        - Keep all other categories unchanged
+        """
+        # Get sentiment category and score
+        sentiment_category = sentiment.get('category', '').lower()
+        combined_score_str = sentiment.get('combined_score', '0.0%')
+        
+        # Parse percentage string to float
+        try:
+            sentiment_score = float(combined_score_str.replace('%', '')) / 100.0
+        except (ValueError, AttributeError):
+            sentiment_score = 0.0
+        
+        # Check for high sentiment and duration > 1 minute
+        is_high_sentiment = sentiment_category in ['positive', 'very positive'] and sentiment_score >= 0.6
+        is_long_duration = duration > 60  # More than 1 minute
+        
+        if is_high_sentiment and is_long_duration:
+            # Upgrade to Hot Lead for non-GLINKS tenants
+            lead_category = "Hot Lead"
+            final_score = 10.0  # Boost to max score
+            priority = "High"
+            sentiment_bonus = f"Non-GLINKS: High sentiment ({sentiment_category}) + {duration}s duration - Upgraded to Hot Lead"
+        else:
+            # Keep original category and score
+            lead_category = lead_score.get('lead_category', 'Warm Lead')
+            final_score = lead_score.get('lead_score', 6.0)
+            priority = lead_score.get('priority', 'Medium')
+            sentiment_bonus = f"Non-GLINKS: Sentiment={sentiment_category}, Duration={duration}s - No upgrade"
+        
+        # Update scoring breakdown
+        scoring_breakdown = lead_score.get('scoring_breakdown', {})
+        scoring_breakdown['sentiment_duration_based'] = sentiment_bonus
         
         return {
             "lead_score": final_score,
@@ -2232,21 +2289,28 @@ CONFIDENCE: [High/Medium/Low]"""
             logger.info("Step 4/7: Determining lead disposition...")
             lead_disposition = await self._determine_lead_disposition_llm(sentiment, summary, stage_info)
             logger.info(f"Lead disposition: {lead_disposition.get('disposition', 'Unknown')} - Action: {lead_disposition.get('recommended_action', 'N/A')}")
-        
+
         # ===== NON-LLM STEPS (fast, no API calls) =====
         logger.info("Step 5/7: Calculating lead score from disposition...")
         lead_score = self._calculate_lead_score_from_disposition(lead_disposition)
         logger.info(f"Lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
-        
+
         logger.info("Step 6/7: Calculating quality metrics...")
         quality_metrics = self.calculate_conversation_quality(conversation_text, sentiment, duration_seconds)
-        
-        # Update lead category based on stages reached (Hot Lead only if Stage 3/4)
-        lead_score = self._update_lead_category_based_on_stages(lead_score, stage_info)
-        logger.info(f"Updated lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
-        
-        # Lead info already extracted in parallel phase above
 
+        # Update lead category based on tenant-specific logic
+        GLINKS_TENANT_ID = '926070b5-189b-4682-9279-ea10ca090b84'
+        
+        if tenant_id == GLINKS_TENANT_ID:
+            # GLINKS: Use stage-based logic
+            lead_score = self._update_lead_category_based_on_stages(lead_score, stage_info, tenant_id)
+            logger.info(f"GLINKS updated lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
+        else:
+            # Non-GLINKS: Use sentiment + duration logic
+            lead_score = self._update_lead_category_for_non_glinks(lead_score, sentiment, duration_seconds)
+            logger.info(f"Non-GLINKS updated lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
+
+        # Lead info already extracted in parallel phase above
 
         # Enhance recommendations with complete analytics data
         if summary and 'recommendations' in summary and lead_score:
