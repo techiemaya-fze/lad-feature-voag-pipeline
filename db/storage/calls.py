@@ -875,7 +875,7 @@ class CallStorage:
                 with conn.cursor() as cur:
                     # Use lad_dev.billing_pricing_catalog table
                     # Column mappings: category = component, unit_price = cost_per_unit
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT category, provider, model, unit, unit_price
                         FROM {SCHEMA}.billing_pricing_catalog
                         WHERE is_active = TRUE

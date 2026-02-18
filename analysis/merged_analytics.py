@@ -2618,7 +2618,7 @@ CONFIDENCE: [High/Medium/Low]"""
             cost_data = analysis.get("cost", {})
             
             # Prepare INSERT query - matches FULL {SCHEMA}.voice_call_analysis schema
-            query = """
+            query = f"""
                 INSERT INTO {SCHEMA}.voice_call_analysis (
                     call_log_id,
                     tenant_id,
@@ -2822,7 +2822,7 @@ CONFIDENCE: [High/Medium/Low]"""
                         cursor = conn.cursor()
                         
                         # Get lead_id from voice_call_logs table
-                        cursor.execute("""
+                        cursor.execute(f"""
                             SELECT lead_id 
                             FROM {SCHEMA}.voice_call_logs 
                             WHERE id = %s::uuid
@@ -2977,7 +2977,7 @@ CONFIDENCE: [High/Medium/Low]"""
             else:
                 # Get transcripts from voice_call_logs
                 try:
-                    local_cursor.execute("""
+                    local_cursor.execute(f"""
                         SELECT transcripts 
                         FROM {SCHEMA}.voice_call_logs 
                         WHERE id = %s::uuid
@@ -3060,30 +3060,28 @@ CONFIDENCE: [High/Medium/Low]"""
                             conversation_text = text_content
             else:
                 logger.info(f"No transcripts provided")
-            
+
             logger.info(f"Final result - has_user_transcription: {has_user_transcription}, conversation_text length: {len(conversation_text)}")
-            
+
             if not has_user_transcription:
                 logger.info("No user transcriptions found for call log: {call_log_id} - updating source and stage only")
-                
-                # Always update source and stage for no user transcription, but don't update status
+
                 try:
                     stage_info = stage_detector.extract_call_stages(conversation_text, {}, tenant_id)
                     stages_reached = stage_info.get('stages_reached', [])
-                    
+
                     # For no user transcription, always set stage to followup and add 2_followup to stages_reached
                     stage_value = 'followup'
                     stages_reached.append("2_followup")  # Add followup stage for no user transcription
-                    
+
                     logger.info(f"No user transcription - setting stage to followup and adding 2_followup to stages_reached")
                     logger.info(f"Updated stages_reached: {stages_reached}")
-                    
-                    # Update voice_call_analysis table to include 2_followup in stages_reached
+
                     try:
                         # Convert stages_reached to text for storage
                         stages_reached_text = json.dumps(stages_reached) if isinstance(stages_reached, list) else str(stages_reached)
-                        
-                        local_cursor.execute("""
+
+                        local_cursor.execute(f"""
                             UPDATE {SCHEMA}.voice_call_analysis 
                             SET stages_reached = %s
                             WHERE call_log_id = %s::uuid
@@ -3092,25 +3090,24 @@ CONFIDENCE: [High/Medium/Low]"""
                             call_log_id
                         ))
                         logger.info(f"DEBUG: Updated voice_call_analysis stages_reached with 2_followup")
-                        
+
                         # Commit this update
                         local_conn.commit()
                         logger.info(f"DEBUG: Committed voice_call_analysis update")
-                        
+
                     except Exception as analysis_update_error:
                         logger.error(f"Error updating voice_call_analysis stages_reached: {analysis_update_error}")
                         # Don't fail the whole operation if this update fails
-                    
+
                     # Ensure lead_id is a string
                     if not isinstance(lead_id, str):
                         lead_id = str(lead_id)
-                    
-                    # Update leads table with source and stage only (no status update)
+
                     try:
                         logger.info(f"DEBUG: Executing no-user-transcription UPDATE with parameters: source=voice_agent, stage={stage_value}, lead_id={lead_id}")
                         logger.info(f"DEBUG: Parameter types - source: {type('voice_agent')}, stage: {type(stage_value)}, lead_id: {type(lead_id)}")
-                        
-                        local_cursor.execute("""
+
+                        local_cursor.execute(f"""
                             UPDATE {SCHEMA}.leads 
                             SET source = %s, 
                                 stage = %s,
@@ -3123,76 +3120,48 @@ CONFIDENCE: [High/Medium/Low]"""
                             lead_id
                         ))
                         logger.info(f"DEBUG: No-user-transcription UPDATE executed successfully")
+
                     except Exception as no_user_update_error:
                         logger.error(f"Error executing no-user-transcription leads table update: {no_user_update_error}")
                         logger.error(f"Parameters: source=voice_agent, stage={stage_value} (type: {type(stage_value)}), lead_id={lead_id} (type: {type(lead_id)})")
                         raise no_user_update_error
+
+                except Exception as update_error:
+                    logger.error(f"Error executing leads table update: {update_error}")
+                    raise update_error
+
+            else:
+                # Has user transcriptions - process normally
+                try:
+                    # Process user transcription logic here
+                    readable_stage = stage_detector.extract_call_stages(conversation_text, {}, tenant_id).get('final_stage', 'contacted')
+                    stage_str = str(readable_stage) if readable_stage is not None else ""
+                    lead_id_str = str(lead_id) if lead_id is not None else ""
                     
-                    # Always commit the transaction
-                    local_conn.commit()
+                    local_cursor.execute(f"""
+                        UPDATE {SCHEMA}.leads 
+                        SET source = %s, 
+                            status = %s, 
+                            stage = %s,
+                            updated_at = %s
+                        WHERE id = %s::uuid
+                    """, ('voice_agent', 'success', stage_str, datetime.now(timezone.utc), lead_id_str))
                     
-                    logger.info(f"Updated leads table for no user transcription (lead_id: {lead_id}, source=voice_agent, stage={stage_value})")
+                    if should_close_connection:
+                        local_conn.commit()
+                    logger.info(f"Updated leads table for lead_id: {lead_id} (source=voice_agent, status=success, stage={readable_stage})")
                     return True
-                        
-                except Exception as followup_update_error:
-                    logger.warning(f"Error in no user transcription update: {followup_update_error}")
+                    
+                except Exception as update_error:
+                    logger.error(f"Error executing leads table update: {update_error}")
+                    if local_conn and should_close_connection:
+                        local_conn.rollback()
                     return False
             
-            # Extract stages to determine highest stage reached
-            try:
-                readable_stage = stage_detector.get_highest_stage_for_leads(conversation_text, tenant_id)
-                # If no stage detected but user transcription exists, set to contacted
-                if not readable_stage and has_user_transcription:
-                    readable_stage = 'contacted'
-            except Exception as stage_error:
-                logger.warning(f"Error extracting stages: {stage_error}")
-                readable_stage = 'contacted' if has_user_transcription else ''
-            
-            # Ensure readable_stage is a string
-            if not isinstance(readable_stage, str):
-                readable_stage = str(readable_stage)
-            
-            # Debug logging to verify leads table update
-            
-            # Ensure lead_id is a string
-            if not isinstance(lead_id, str):
-                lead_id = str(lead_id)
-            
-            # Define values for leads table update
-            source = 'voice_agent'
-            status = 'success'
-            
-            # Update leads table with highest stage reached
-            try:
-                # Ensure all parameters are strings
-                source_str = str(source) if source is not None else ""
-                status_str = str(status) if status is not None else ""
-                stage_str = str(readable_stage) if readable_stage is not None else ""
-                lead_id_str = str(lead_id) if lead_id is not None else ""
-                
-                local_cursor.execute("""
-                    UPDATE {SCHEMA}.leads 
-                    SET source = %s, 
-                        status = %s, 
-                        stage = %s, 
-                        updated_at = %s
-                    WHERE id = %s::uuid
-                """, (
-                    source_str,
-                    status_str, 
-                    stage_str,
-                    datetime.now(timezone.utc),
-                    lead_id_str
-                ))
-                logger.info(f"Leads table UPDATE executed successfully")
-            except Exception as update_error:
-                logger.error(f"Error executing leads table update: {update_error}")
-                raise update_error
-            
-            # Only commit if we created the connection ourselves
+            # Always commit the transaction
             if should_close_connection:
                 local_conn.commit()
-            logger.info(f"Updated leads table for lead_id: {lead_id} (source=voice_agent, status=success, stage={readable_stage})")
+            logger.info(f"Updated leads table for lead_id: {lead_id} (source=voice_agent, stage={stage_value})")
             return True
             
         except Exception as e:
@@ -3281,7 +3250,7 @@ class StandaloneAnalytics:
         try:
             # Fetch calls in pgAdmin's default display order (physical storage order using ctid)
             # This matches exactly how pgAdmin shows rows when no ORDER BY is specified
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     ROW_NUMBER() OVER (ORDER BY ctid) as row_num,
                     id,
@@ -3309,11 +3278,12 @@ class StandaloneAnalytics:
                     duration = f"{duration_seconds}s"
                 
                 started_str = started_at.strftime('%Y-%m-%d %H:%M:%S') if started_at else 'N/A'
+                print(f"{row_num}: {call_id} - {started_str} - {duration} - {transcript_preview}")
             
         finally:
             cursor.close()
             conn.close()
-    
+
     async def analyze_from_database(self, call_log_id) -> Dict:
         """
         Analyze call from database call_logs table
@@ -3352,7 +3322,7 @@ class StandaloneAnalytics:
             
             if isinstance(call_log_id, int):
                 # Integer ID: Use ROW_NUMBER() to find the Nth record (ordered by ctid)
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT id, transcripts, started_at, ended_at, duration_seconds, recording_url
                     FROM (
                         SELECT 
@@ -3370,14 +3340,14 @@ class StandaloneAnalytics:
             else:
                 # UUID string: Try direct UUID match or text match
                 try:
-                    cursor.execute("""
+                    cursor.execute(f"""
                         SELECT id, transcripts, started_at, ended_at, duration_seconds, recording_url
                         FROM {SCHEMA}.voice_call_logs
                         WHERE id = %s::uuid
                     """, (str(call_log_id),))
                 except (psycopg2.errors.InvalidTextRepresentation, psycopg2.errors.UndefinedFunction):
                     # Fallback: try text match
-                    cursor.execute("""
+                    cursor.execute(f"""
                         SELECT id, transcripts, started_at, ended_at, duration_seconds, recording_url
                         FROM {SCHEMA}.voice_call_logs
                         WHERE id::text = %s
@@ -3392,10 +3362,7 @@ class StandaloneAnalytics:
             recording_url = call_data[5] if len(call_data) > 5 else None
             
             # Get tenant_id and lead_id in single query
-            cursor.execute(
-                "SELECT tenant_id, lead_id FROM {SCHEMA}.voice_call_logs WHERE id = %s::uuid",
-                (str(db_call_id),)
-            )
+            cursor.execute(f"SELECT tenant_id, lead_id FROM {SCHEMA}.voice_call_logs WHERE id = '{db_call_id}'::uuid")
             result = cursor.fetchone()
             tenant_id = result[0] if result and result[0] else None
             lead_id = result[1] if result and result[1] else None

@@ -1253,6 +1253,35 @@ Return JSON only."""
         result = {"db": "enabled", "errors": []}
         
         try:
+            # Ensure lead is assigned to user before booking (required by DB trigger)
+            # Get initiated_by_user_id from voice_call_logs table for this specific call
+            lead_id = booking_data.get('lead_id')
+            call_id = booking_data.get('metadata', {}).get('call_id')
+            
+            if lead_id and call_id:
+                try:
+                    # Fetch initiated_by_user_id from voice_call_logs
+                    from db.storage.calls import CallStorage
+                    call_storage = CallStorage()
+                    call_record = await call_storage.get_call_by_id(call_id)
+                    
+                    if call_record and call_record.get('initiated_by_user_id'):
+                        initiated_by_user_id = call_record['initiated_by_user_id']
+                        
+                        # Assign lead to the user who initiated the call
+                        from db.storage.leads import LeadStorage
+                        lead_storage = LeadStorage()
+                        lead_storage.assign_lead_to_user_if_unassigned(lead_id, initiated_by_user_id)
+                        
+                        logger.info(f"Assigned lead {lead_id} to initiating user {initiated_by_user_id} from call {call_id}")
+                    else:
+                        logger.warning(f"No initiated_by_user_id found for call {call_id}")
+                        
+                except Exception as e:
+                    logger.warning(f"Could not assign lead from call record: {e}")
+            else:
+                logger.warning(f"Missing lead_id or call_id for lead assignment: lead_id={lead_id}, call_id={call_id}")
+            
             # Save to database using storage
             booking_id = await self.storage.save_booking(booking_data)
             

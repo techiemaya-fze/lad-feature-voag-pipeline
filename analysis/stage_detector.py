@@ -12,6 +12,7 @@ This module is designed to be imported and used by the main analytics module.
 """
 
 import re
+import os
 import logging
 from typing import Dict, List
 
