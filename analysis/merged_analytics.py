@@ -2860,6 +2860,8 @@ CONFIDENCE: [High/Medium/Low]"""
                                     f"UPDATE {SCHEMA}.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
                                     (tags_json, datetime.now(timezone.utc), lead_id_from_call)
                                 )
+                                conn.commit()  # Commit the tags update
+
                             except Exception as db_error:
                                 logger.error(f"Database update error: {db_error}")
                                 logger.error(f"Parameters: tags_json={tags_json} (type: {type(tags_json)}), lead_id={lead_id_from_call}")
