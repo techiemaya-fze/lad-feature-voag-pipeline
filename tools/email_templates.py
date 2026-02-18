@@ -24,8 +24,16 @@ The agent should:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Schema configuration
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
 
 from livekit.agents.llm import function_tool
 
@@ -347,7 +355,7 @@ async def get_template_from_db(tenant_id: str, template_key: str) -> dict | None
     """
     Get a template from DB by tenant_id and key.
     
-    Phase 18: Queries lad_dev.communication_templates.
+    Phase 18: Queries {SCHEMA}.communication_templates.
     
     Returns:
         Dict with template data or None if not found
@@ -361,7 +369,7 @@ async def get_template_from_db(tenant_id: str, template_key: str) -> dict | None
                 cur.execute("""
                     SELECT template_key, name, subject_template, content, 
                            html_content, placeholders, description, category
-                    FROM lad_dev.communication_templates
+                    FROM {SCHEMA}.communication_templates
                     WHERE tenant_id = %s AND template_key = %s AND is_active = true
                 """, (tenant_id, template_key))
                 row = cur.fetchone()
@@ -387,7 +395,7 @@ async def list_templates_from_db(tenant_id: str, category: str | None = None) ->
     """
     List all templates from DB for a tenant.
     
-    Phase 18: Queries lad_dev.communication_templates.
+    Phase 18: Queries {SCHEMA}.communication_templates.
     
     Returns:
         List of template dicts
@@ -401,14 +409,14 @@ async def list_templates_from_db(tenant_id: str, category: str | None = None) ->
                 if category:
                     cur.execute("""
                         SELECT template_key, name, description, category, placeholders
-                        FROM lad_dev.communication_templates
+                        FROM {SCHEMA}.communication_templates
                         WHERE tenant_id = %s AND is_active = true AND category = %s
                         ORDER BY category, template_key
                     """, (tenant_id, category))
                 else:
                     cur.execute("""
                         SELECT template_key, name, description, category, placeholders
-                        FROM lad_dev.communication_templates
+                        FROM {SCHEMA}.communication_templates
                         WHERE tenant_id = %s AND is_active = true
                         ORDER BY category, template_key
                     """, (tenant_id,))
