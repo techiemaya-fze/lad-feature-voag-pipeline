@@ -503,7 +503,7 @@ CRITICAL EXTRACTION RULES:
                         intake_month = COALESCE(EXCLUDED.intake_month, {SCHEMA}.education_students.intake_month),
                         metadata = EXCLUDED.metadata,
                         updated_at = CURRENT_TIMESTAMP
-                """
+                """.format(SCHEMA=SCHEMA)
                 
                 values = (
                     tenant_id,  # UUID from {SCHEMA}.tenants.id
