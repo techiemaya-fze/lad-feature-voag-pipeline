@@ -657,10 +657,13 @@ async def main():
                 if 'messages' in transcripts:
                     lines = []
                     for msg in transcripts['messages']:
-                        # Only use 'text' field, explicitly ignore 'indented_text'
-                        text = msg.get('text', '')
-                        if text:
-                            lines.append(f"{msg.get('role', 'Unknown')}: {text}")
+                        # Only process user messages, ignore agent messages
+                        role = msg.get('role', '').lower()
+                        if role == 'user':
+                            # Only use 'text' field, explicitly ignore 'indented_text'
+                            text = msg.get('text', '')
+                            if text:
+                                lines.append(f"User: {text}")
                     conversation_text = "\n".join(lines)
                 elif 'segments' in transcripts:
                     lines = []
