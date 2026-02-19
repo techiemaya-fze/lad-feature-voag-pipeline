@@ -1,0 +1,4 @@
+2026-02-19 14:54:21,740 - db.config - INFO - Database mode: PRODUCTION (using DB_* environment variables)
+2026-02-19 14:54:21,770 - db.pool - INFO - Database connection pooling ENABLED: min=1, max=10, timeout=30s
+2026-02-19 14:54:21,795 - db.connection_pool - INFO - Database connection pooling ENABLED: min=1, max=10, timeout=30s
+2026-02-19 14:54:21,820 - db.db_config - INFO - Database mode: PRODUCTION (using DB_* environment variables)

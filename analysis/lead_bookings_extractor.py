@@ -23,6 +23,12 @@ _PROJECT_ROOT = _SCRIPT_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+# Load environment variables
+load_dotenv()
+
+# Schema configuration
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
+
 # Import Gemini client
 from analysis.gemini_client import generate_with_schema_async, IMPROVED_BOOKING_SCHEMA
 from google.genai import types
@@ -46,7 +52,7 @@ except ImportError:
     ScheduleCalculator = None
 
 # GLINKS tenant ID
-GLINKS_TENANT_ID = "926070b5-189b-4682-9279-ea10ca090b84"
+GLINKS_TENANT_ID = os.getenv("GLINKS_TENANT_ID", "926070b5-189b-4682-9279-ea10ca090b84")
 
 # Configure logging
 logging.basicConfig(
@@ -234,7 +240,8 @@ class LeadBookingsExtractor:
         self,
         conversation_text: str,
         first_timestamp: datetime,
-        last_timestamp: datetime
+        last_timestamp: datetime,
+        tenant_id: str = None
     ) -> Dict:
         """
         Extract followup time using simplified logic
@@ -256,7 +263,23 @@ class LeadBookingsExtractor:
         # Debug: Show conversation content being sent to Gemini
         logger.info(f"CONVERSATION SENT TO GEMINI:\n{conversation_text}\n---END CONVERSATION---")
         
-        prompt = f"""You are analyzing a phone conversation between an Agent and a User to extract followup scheduling information.
+        # Check for meaningful user content to prevent LLM hallucination
+        user_lines = [line for line in conversation_text.split('\n') if line.strip().startswith('User:')]
+        user_content = ' '.join([line.replace('User:', '').strip() for line in user_lines])
+        
+        # If no meaningful user content, skip LLM and return defaults
+        if len(user_content.strip()) < 1:  # Less than 1 character of user content
+            logger.info(f"Insufficient user content ({len(user_content)} chars) - skipping LLM, using defaults")
+            result = {
+                "booking_type": "auto_followup",
+                "time_phrase": None,
+                "user_confirmed": False,
+                "student_grade": None
+            }
+        else:
+            # Proceed with LLM extraction only if there's meaningful user content
+            # Define prompt for logging purposes
+            prompt = f"""You are analyzing a phone conversation between an Agent and a User to extract followup scheduling information.
 
 CONVERSATION:
 {conversation_text}
@@ -309,23 +332,25 @@ INSTRUCTIONS - Read the ENTIRE conversation carefully before answering:
    - false if: No confirmation, declined, vague, changed mind, or said no at the end
    - CRITICAL: If user confirmed earlier but declined/ended later, this is FALSE
 
-4. **student_grade**: DEFAULT is null. ONLY return a number (9, 10, 11, or 12) if USER confirms EXACT match:
+4. **student_grade**: DEFAULT is null. Return a number (9, 10, 11, or 12) if grade is confirmed:
    
-   CRITICAL: The USER must explicitly state their grade. Do NOT extract from agent statements.
+   SCENARIOS WHERE GRADE SHOULD BE EXTRACTED:
    
-   REQUIRED USER PHRASES:
-   - "I'm in grade 9", "I'm in grade 10", "I'm in grade 11", "I'm in grade 12"
-   - "I am in class 9", "I am in class 10", "I am in class 11", "I am in class 12"
-   - "I study in 9th grade", "I study in 10th grade", "I study in 11th grade", "I study in 12th grade"
-   - "I'm in 9th standard", "I'm in 10th standard", "I'm in 11th standard", "I'm in 12th standard"
-   - "I'm in ninth class", "I'm in tenth class", "I'm in eleventh class", "I'm in twelfth class"
-   - "My grade is 9", "My grade is 10", "My grade is 11", "My grade is 12"
+   **Scenario 1: User explicitly states their grade**
+   - "I'm in grade 9", "I am in class 10", "I study in 11th grade", "My grade is 12"
+   - "I'm in 9th standard", "I'm in tenth class", "I'm in eleventh class", "I'm in twelfth class"
    
-   IF USER EXACTLY CONFIRMS GRADE → return corresponding number
-   IF USER DOES NOT CONFIRM GRADE → return null (this is the default)
+   **Scenario 2: Agent mentions grade AND user agrees/accepts/confirms**
+   - Agent: "I see you're studying in 10th grade" User: "Yes", "Correct", "That's right", "Right", "True"
+   - Agent: "You're in grade 11?" User: "Yes", "Correct", "That's right", "Right", "True", "Uh-huh"
+   - Agent: "So you're studying in 12th grade" User: "Yes", "Correct", "That's right", "Right", "True"
+   - Agent: "You're in 9th grade right?" User: "Yes", "Correct", "That's right", "Right", "True"
    
-   IMPORTANT: Do NOT extract grade from agent statements like "I see you're in 10th grade". 
-   Only extract if the USER themselves confirm their grade.
+   CRITICAL: The user must AGREE/ACCEPT/CONFIRM when the agent mentions the grade.
+   If agent mentions grade but user is silent, says "hmm", or doesn't confirm -> DO NOT extract grade.
+   
+   IF USER CONFIRMS GRADE (either states it themselves OR agrees to agent's mention) → return corresponding number
+   IF NO GRADE CONFIRMATION → return null (this is the default)
 
 Return JSON only."""
 
@@ -377,13 +402,29 @@ Return JSON only."""
         scheduled_at = None
         calculation_method = "none"
         
-        if not user_confirmed or not time_phrase:
-            # No confirmation -> next day from first timestamp
-            scheduled_at = first_timestamp + timedelta(days=1)
-            calculation_method = "no_confirmation_1day"
-            logger.info(f"No confirmation: {scheduled_at}")
+        if not time_phrase:
+            # No time phrase -> use grade timeline if available, else default timeline
+            if tenant_id == GLINKS_TENANT_ID:
+                if student_grade is not None:
+                    # GLINKS: Use grade-based timeline
+                    from schedule_calculator import GRADE_TIMELINE
+                    default_days = GRADE_TIMELINE.get(student_grade, int(os.getenv('GLINKS_DEFAULT_TIMELINE_DAYS', '1')))
+                    calculation_method = f"no_confirmation_grade{student_grade}_{default_days}day"
+                    logger.info(f"No time phrase: grade {student_grade} -> {default_days} days")
+                else:
+                    # GLINKS: Use environment variable (no grade mentioned)
+                    default_days = int(os.getenv('GLINKS_DEFAULT_TIMELINE_DAYS', '1'))
+                    calculation_method = f"no_confirmation_{default_days}day"
+                    logger.info(f"No time phrase: no grade -> {default_days} days default")
+            else:
+                # Non-GLINKS: Use 1 day default (tomorrow)
+                default_days = 1
+                calculation_method = "no_confirmation_1day"
+            
+            scheduled_at = first_timestamp + timedelta(days=default_days)
+            logger.info(f"No time phrase: {scheduled_at} (using {default_days} days for {'GLINKS grade ' + str(student_grade) if tenant_id == GLINKS_TENANT_ID and student_grade else 'GLINKS default' if tenant_id == GLINKS_TENANT_ID else 'Non-GLINKS'} tenant)")
         else:
-            # Parse time phrase
+            # Parse time phrase (even if not confirmed)
             scheduled_at, calculation_method = await self._parse_time_phrase(
                 time_phrase, first_timestamp, last_timestamp
             )
@@ -470,7 +511,7 @@ Return JSON only."""
         day = min(dt.day, max_day)
         return dt.replace(year=year, month=month, day=day)
     
-    def _parse_hour_minute(self, time_phrase_lower: str) -> tuple:
+    def _parse_hour_minute(self, time_phrase_lower: str, call_timestamp: datetime = None) -> tuple:
         """Extract hour and minute from a time phrase. Returns (hour, minute) or (None, None)"""
         import re
         
@@ -498,17 +539,57 @@ Return JSON only."""
             normalized = re.sub(rf'\b{word}\b', str(num), normalized)
         
         # Match numeric time (e.g., "3 PM", "15:00", "4:30 pm", "11 am", "5 30 pm")
-        time_match = re.search(r'(\d{1,2})(?:[:\s](\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?', normalized)
+        # Handle commas and extra text in the phrase
+        # Look for time patterns with minutes or AM/PM to be more specific
+        time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)(?:\s*gst)?', normalized)
+        if not time_match:
+            # Fallback: try to find any hour:minute pattern
+            time_match = re.search(r'(\d{1,2}):(\d{2})', normalized)
+        
         if time_match:
             hour = int(time_match.group(1))
             minute = int(time_match.group(2)) if time_match.group(2) else 0
-            am_pm = time_match.group(3)
+            am_pm = time_match.group(3) if len(time_match.groups()) >= 3 else None
+            
+            # Check if PM is mentioned anywhere in the phrase (not just in the regex match)
+            if not am_pm and 'pm' in normalized.lower():
+                am_pm = 'pm'
+            elif not am_pm and 'am' in normalized.lower():
+                am_pm = 'am'
+            
+            logger.debug(f"Time match: hour={hour}, minute={minute}, am_pm={am_pm}")
             
             if am_pm and am_pm.replace('.', '') == 'pm' and hour != 12:
                 hour += 12
+                logger.debug(f"Converted to PM: hour={hour}")
             elif am_pm and am_pm.replace('.', '') == 'am' and hour == 12:
                 hour = 0
+                logger.debug(f"Converted 12 AM to 0: hour={hour}")
+            elif am_pm is None:
+                # Universal AM/PM inference for all tenants and all times
+                # If no AM/PM specified, use call timestamp to decide
+                if call_timestamp:
+                    current_hour = call_timestamp.hour
+                else:
+                    current_hour = datetime.now().hour
+                    
+                if 1 <= hour <= 11:
+                    # Simple universal rule: If call was in afternoon/evening, assume PM
+                    # If call was in morning, assume AM (unless it's a common callback time)
+                    if current_hour >= 12:
+                        # If call was in afternoon/evening, likely means PM
+                        hour += 12
+                        logger.debug(f"No AM/PM, assumed PM: hour={hour}")
+                    elif hour >= 4 and hour <= 8:
+                        # Common callback times (4-8) usually mean PM
+                        hour += 12
+                        logger.debug(f"No AM/PM, callback time assumed PM: hour={hour}")
+                    # Otherwise keep as AM (early morning times like 7 AM, 9 AM, 10 AM, 11 AM)
+                    logger.debug(f"No AM/PM, kept as AM: hour={hour}")
+                # For hour 12 without AM/PM, keep as 12 (noon)
+                # For hour > 12, already in 24-hour format
             
+            logger.debug(f"Final parsed time: hour={hour}, minute={minute}, am_pm={am_pm}")
             return hour, minute
         
         return None, None
@@ -547,7 +628,10 @@ Return JSON only."""
         word_to_num = {
             'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
             'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
-            'eleven': 11, 'twelve': 12, 'a': 1, 'an': 1
+            'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14, 'fifteen': 15,
+            'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19, 'twenty': 20,
+            'thirty': 30, 'forty': 40, 'fifty': 50, 'sixty': 60,
+            'a': 1, 'an': 1
         }
         
         # Convert written numbers to digits for matching
@@ -565,6 +649,19 @@ Return JSON only."""
                 scheduled_at = last_timestamp + timedelta(minutes=amount)
                 calculation_method = f"relative_+{amount}m_from_last"
             logger.info(f"Relative time: '{time_phrase}' -> {scheduled_at}")
+            return scheduled_at, calculation_method
+        
+        # Also handle standalone time phrases (without after/in/within)
+        standalone_match = re.search(r'(\d+)\s*(?:mins?|minutes?|hours?|hrs?)', normalized)
+        if standalone_match:
+            amount = int(standalone_match.group(1))
+            if re.search(r'hours?|hrs?', normalized):
+                scheduled_at = last_timestamp + timedelta(hours=amount)
+                calculation_method = f"standalone_+{amount}h_from_last"
+            else:
+                scheduled_at = last_timestamp + timedelta(minutes=amount)
+                calculation_method = f"standalone_+{amount}m_from_last"
+            logger.info(f"Standalone relative time: '{time_phrase}' -> {scheduled_at}")
             return scheduled_at, calculation_method
         
         # Rule 2: "day after tomorrow"
@@ -591,13 +688,19 @@ Return JSON only."""
         
         # Rule 4: "today" + time
         if 'today' in time_phrase_lower:
-            hour, minute = self._parse_hour_minute(time_phrase_lower.replace('today', ''))
+            time_remaining = time_phrase_lower.replace('today', '')
+            logger.info(f"DEBUG: Parsing time from: '{time_remaining}'")
+            hour, minute = self._parse_hour_minute(time_remaining, last_timestamp)
+            logger.info(f"DEBUG: Parsed hour={hour}, minute={minute}")
             if hour is not None:
+                if hour > 23:
+                    logger.error(f"ERROR: Invalid hour {hour} - must be 0-23")
+                    raise ValueError(f"Invalid hour {hour} - must be 0-23")
                 scheduled_at = last_timestamp.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                if scheduled_at <= last_timestamp:
-                    scheduled_at = scheduled_at + timedelta(days=1)
+                # If user explicitly said "today", keep it today even if time has passed
+                # This respects the user's explicit preference
             else:
-                scheduled_at = last_timestamp + timedelta(hours=2)
+                scheduled_at = last_timestamp + timedelta(days=1)
             logger.info(f"Today: '{time_phrase}' -> {scheduled_at}")
             return scheduled_at, "today_parsed"
         
@@ -843,7 +946,7 @@ Return JSON only."""
             return scheduled_at, "time_of_day_parsed"
         
         # Rule 9: Just numeric time (e.g., "3 PM", "4:30", "15:00")
-        hour, minute = self._parse_hour_minute(time_phrase_lower)
+        hour, minute = self._parse_hour_minute(time_phrase_lower, last_timestamp)
         if hour is not None:
             scheduled_at = last_timestamp.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if scheduled_at <= last_timestamp:
@@ -897,15 +1000,30 @@ Return JSON only."""
                 else:
                     started_at_gst = started_at
                 
-                # Use default: next day from started_at in GST
-                scheduled_at = started_at_gst + timedelta(days=1)
-                logger.info(f"Next day from started_at (GST): {scheduled_at}")
+                # For GLINKS tenant, use simple calendar days (no working day logic)
+                if tenant_id == GLINKS_TENANT_ID:
+                    logger.info("Empty conversation for GLINKS - using simple calendar days")
+                    try:
+                        # Use GLINKS default timeline as simple calendar days
+                        default_days = int(os.getenv('GLINKS_DEFAULT_TIMELINE_DAYS', '1'))
+                        scheduled_at = started_at_gst + timedelta(days=default_days)
+                        calculation_method = f"empty_transcript_{default_days}day"
+                        logger.info(f"GLINKS empty conversation: {scheduled_at} (using {default_days} calendar days)")
+                    except Exception as e:
+                        logger.error(f"GLINKS empty conversation error: {e}")
+                        scheduled_at = started_at_gst + timedelta(days=1)
+                        calculation_method = "empty_transcript_1day"
+                else:
+                    # Non-GLINKS tenant: use default next day
+                    scheduled_at = started_at_gst + timedelta(days=1)
+                    calculation_method = "empty_transcript_1day"
+                    logger.info(f"Next day from started_at (GST): {scheduled_at}")
             else:
                 scheduled_at = None
+                calculation_method = "empty_transcript_no_time"
                 logger.warning("No started_at time available")
             
             booking_type = "auto_followup"
-            calculation_method = "empty_transcript_1day"
             student_grade = None
             # Skip Gemini extraction for empty conversation to prevent hallucination
         else:
@@ -922,7 +1040,8 @@ Return JSON only."""
             result = await self.extract_followup_time(
                 conversation_text=conversation_text,
                 first_timestamp=first_timestamp,
-                last_timestamp=last_timestamp
+                last_timestamp=last_timestamp,
+                tenant_id=tenant_id
             )
             
             booking_type = result['booking_type']
@@ -940,13 +1059,14 @@ Return JSON only."""
                     logger.warning(f"Invalid student_grade {student_grade}, setting to None")
                     student_grade = None
         
-        # Apply GLINKS schedule calculator if tenant matches (for both empty and non-empty conversations)
+        # Apply GLINKS schedule calculator if tenant matches and booking_type is auto_consultation
         logger.info(f"GLINKS check: tenant_id={tenant_id}, GLINKS_TENANT_ID={GLINKS_TENANT_ID}")
-        logger.info(f"GLINKS check: schedule_calculator={self.schedule_calculator is not None}, scheduled_at={scheduled_at is not None}, student_grade={student_grade}")
+        logger.info(f"GLINKS check: booking_type={booking_type}, schedule_calculator={self.schedule_calculator is not None}, scheduled_at={scheduled_at is not None}, student_grade={student_grade}")
         
         if (self.schedule_calculator and 
             tenant_id == GLINKS_TENANT_ID and 
-            scheduled_at):
+            scheduled_at and 
+            booking_type == 'auto_consultation'):
             
             logger.info("GLINKS conditions met - applying schedule calculator")
             
@@ -1074,6 +1194,9 @@ Return JSON only."""
             'weekday_monday', 'weekday_tuesday', 'weekday_wednesday', 
             'weekday_thursday', 'weekday_friday', 'weekday_saturday', 'weekday_sunday',
             
+            # Time-only parsing (when user confirms specific time)
+            'time_only_parsed', 'time_of_day_parsed',
+            
             # Next/This/Last weekday variations
             'next_monday', 'next_tuesday', 'next_wednesday', 'next_thursday', 'next_friday', 'next_saturday', 'next_sunday',
             'this_monday', 'this_tuesday', 'this_wednesday', 'this_thursday', 'this_friday', 'this_saturday', 'this_sunday',
@@ -1127,42 +1250,63 @@ Return JSON only."""
     
     async def save_booking(self, booking_data: Dict) -> Dict:
         """Save booking to database with lead assignment logic"""
-        result = {"db": "error", "errors": []}
-        
-        if not booking_data:
-            result["errors"].append("No booking data provided")
-            return result
+        result = {"db": "enabled", "errors": []}
         
         try:
-            # Check if required fields are present
-            if not booking_data.get('lead_id'):
-                error_msg = "Skipping database save: lead_id is required but is null"
-                logger.warning(error_msg)
-                result["errors"].append(error_msg)
-                return result
-            else:
-                # Ensure lead is assigned to user before booking (required by DB trigger)
-                lead_id = booking_data.get('lead_id')
-                assigned_user_id = booking_data.get('assigned_user_id')
-                if lead_id and assigned_user_id:
-                    try:
+            # Ensure lead is assigned to user before booking (required by DB trigger)
+            # Get initiated_by_user_id from voice_call_logs table for this specific call
+            lead_id = booking_data.get('lead_id')
+            call_id = booking_data.get('metadata', {}).get('call_id')
+            
+            if lead_id and call_id:
+                try:
+                    # Fetch initiated_by_user_id from voice_call_logs
+                    from db.storage.calls import CallStorage
+                    call_storage = CallStorage()
+                    call_record = await call_storage.get_call_by_id(call_id)
+                    
+                    if call_record and call_record.get('initiated_by_user_id'):
+                        initiated_by_user_id = call_record['initiated_by_user_id']
+                        
+                        # Assign lead to the user who initiated the call
                         from db.storage.leads import LeadStorage
                         lead_storage = LeadStorage()
-                        lead_storage.assign_lead_to_user_if_unassigned(lead_id, assigned_user_id)
-                        logger.info(f"Attempted to assign lead {lead_id} to user {assigned_user_id}")
-                    except Exception as e:
-                        logger.warning(f"Could not assign lead to user: {e}")
-                
-                booking_id = await self.storage.save_booking(booking_data)
-                logger.info(f"Booking saved to database: {booking_id}")
-                result["db"] = "saved"
+                        lead_storage.assign_lead_to_user_if_unassigned(lead_id, initiated_by_user_id)
+                        
+                        logger.info(f"Assigned lead {lead_id} to initiating user {initiated_by_user_id} from call {call_id}")
+                    else:
+                        logger.warning(f"No initiated_by_user_id found for call {call_id}")
+                        
+                except Exception as e:
+                    logger.warning(f"Could not assign lead from call record: {e}")
+            else:
+                logger.warning(f"Missing lead_id or call_id for lead assignment: lead_id={lead_id}, call_id={call_id}")
+            
+            # Save to database using storage
+            booking_id = await self.storage.save_booking(booking_data)
+            
+            if booking_id:
+                result["db"] = "success"
                 result["booking_id"] = booking_id
-        except Exception as e:
-            logger.error(f"Failed to save booking to database: {e}")
+                logger.info(f"Booking saved successfully: {booking_id}")
+            else:
+                result["db"] = "failed"
+                result["booking_id"] = None
+                result["errors"].append("Failed to save booking - no ID returned")
+                logger.error("Failed to save booking - no ID returned")
+                
+        except LeadBookingsStorageError as e:
+            result["db"] = "error"
+            result["booking_id"] = None
             result["errors"].append(str(e))
+            logger.error(f"Database storage error: {e}")
+        except Exception as e:
+            result["db"] = "error"
+            result["booking_id"] = None
+            result["errors"].append(str(e))
+            logger.error(f"Unexpected error saving booking: {e}")
         
         return result
-
 
 async def main():
     """Main function"""

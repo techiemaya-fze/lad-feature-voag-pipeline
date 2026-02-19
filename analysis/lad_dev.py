@@ -1,5 +1,4 @@
-﻿
-"""
+﻿"""
 Student Information Extraction for LAD Development
 Extracts student/parent information from call transcriptions and stores in lad_dev.education_students table
 
@@ -25,6 +24,12 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Schema configuration
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
 
 # Structured output client for guaranteed JSON responses
 from .gemini_client import generate_with_schema_async, LAD_STUDENT_INFO_SCHEMA
@@ -128,28 +133,29 @@ class StudentExtractor:
             
             prompt = f"""CURRENT DATE AND TIME: {current_datetime_str}
 
-Extract information from this phone call conversation.
+Extract information from USER RESPONSES ONLY in this phone call conversation.
+The conversation below contains only what the user/prospect said (agent messages filtered out).
 
-CONVERSATION:
+USER CONVERSATION:
 {conversation_text}
 
-INSTRUCTIONS - Follow these steps:
+INSTRUCTIONS - Analyze ONLY the user responses:
 
 STEP 1 - Find parent name:
-Search the conversation for these phrases:
+Search the user responses for these phrases:
 - "My father name is"
 - "father name is"  
 - "My father is"
 If you find any of these, extract the name that comes after. If the name appears in parts (e.g., "Suresh" then later "Harish Kumar"), combine them into one full name.
 
 STEP 2 - Find parent profession:
-Search for phrases like:
+Search user responses for phrases like:
 - "He is doing business"
 - "doing business"
 - Any mention of parent's job/profession
 If found, extract the profession.
 
-STEP 3 - Extract other fields:
+STEP 3 - Extract other fields from user responses:
 - Email addresses (even if spelled phonetically)
 - Meeting times when confirmed
 - Other information mentioned by the user
@@ -157,6 +163,7 @@ STEP 3 - Extract other fields:
 REQUIRED FIELDS TO EXTRACT:
 
 1. student_parent_name: 
+   - Search for "My father name is" or "father name is" in the user responses
    - Search for "My father name is" or "father name is" in the conversation
    - Extract the name that follows
    - Combine name parts if mentioned separately
@@ -310,7 +317,7 @@ CRITICAL EXTRACTION RULES:
             student_info: The extracted student information dictionary
             call_log_id: ID from voice_call_logs table (for reference in metadata)
             lead_id: Lead ID from voice_call_logs.lead_id (UUID to connect with education_students.lead_id)
-            tenant_id: Tenant ID from lad_dev.tenants.id (UUID string or None)
+            tenant_id: Tenant ID from {SCHEMA}.tenants.id (UUID string or None)
         
         Returns:
             Path to saved JSON file or None if failed
@@ -398,13 +405,13 @@ CRITICAL EXTRACTION RULES:
     
     async def save_to_database(self, student_info: Dict, call_log_id, lead_id, tenant_id: Optional[str], db_config: Dict) -> bool:
         """
-        Save student information to lad_dev.education_students table (async with psycopg2 in thread)
+        Save student information to {SCHEMA}.education_students table (async with psycopg2 in thread)
         
         Args:
             student_info: The extracted student information dictionary
             call_log_id: ID from voice_call_logs table (for reference in metadata)
             lead_id: Lead ID from voice_call_logs.lead_id (UUID to connect with education_students.lead_id)
-            tenant_id: Tenant ID from lad_dev.tenants.id (UUID string or None)
+            tenant_id: Tenant ID from {SCHEMA}.tenants.id (UUID string or None)
             db_config: Dict with db connection parameters
         
         Returns:
@@ -471,7 +478,7 @@ CRITICAL EXTRACTION RULES:
                 
                 # Prepare INSERT query with tenant_id and lead_id
                 query = """
-                    INSERT INTO lad_dev.education_students (
+                    INSERT INTO {SCHEMA}.education_students (
                         tenant_id,
                         lead_id,
                         student_parent_name,
@@ -488,18 +495,18 @@ CRITICAL EXTRACTION RULES:
                         %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, FALSE
                     )
                     ON CONFLICT (tenant_id, lead_id) DO UPDATE SET
-                        student_parent_name = COALESCE(EXCLUDED.student_parent_name, lad_dev.education_students.student_parent_name),
-                        parent_designation = COALESCE(EXCLUDED.parent_designation, lad_dev.education_students.parent_designation),
-                        program_interested_in = COALESCE(EXCLUDED.program_interested_in, lad_dev.education_students.program_interested_in),
-                        country_interested = COALESCE(EXCLUDED.country_interested, lad_dev.education_students.country_interested),
-                        intake_year = COALESCE(EXCLUDED.intake_year, lad_dev.education_students.intake_year),
-                        intake_month = COALESCE(EXCLUDED.intake_month, lad_dev.education_students.intake_month),
+                        student_parent_name = COALESCE(EXCLUDED.student_parent_name, {SCHEMA}.education_students.student_parent_name),
+                        parent_designation = COALESCE(EXCLUDED.parent_designation, {SCHEMA}.education_students.parent_designation),
+                        program_interested_in = COALESCE(EXCLUDED.program_interested_in, {SCHEMA}.education_students.program_interested_in),
+                        country_interested = COALESCE(EXCLUDED.country_interested, {SCHEMA}.education_students.country_interested),
+                        intake_year = COALESCE(EXCLUDED.intake_year, {SCHEMA}.education_students.intake_year),
+                        intake_month = COALESCE(EXCLUDED.intake_month, {SCHEMA}.education_students.intake_month),
                         metadata = EXCLUDED.metadata,
                         updated_at = CURRENT_TIMESTAMP
-                """
+                """.format(SCHEMA=SCHEMA)
                 
                 values = (
-                    tenant_id,  # UUID from lad_dev.tenants.id
+                    tenant_id,  # UUID from {SCHEMA}.tenants.id
                     lead_id_uuid,  # UUID from voice_call_logs.lead_id (already UUID in database)
                     student_info.get('student_parent_name'),
                     student_info.get('parent_designation'),
@@ -577,9 +584,9 @@ async def main():
             conn = psycopg2.connect(**db_config)
             cursor = conn.cursor()
             
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT id, lead_id, tenant_id, started_at, agent_id
-                FROM lad_dev.voice_call_logs
+                FROM {SCHEMA}.voice_call_logs
                 ORDER BY started_at DESC
                 LIMIT 100
             """)
@@ -616,16 +623,16 @@ async def main():
             try:
                 uuid_lib.UUID(args.db_id)
                 # It's a UUID
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT id, lead_id, tenant_id, transcripts, started_at
-                    FROM lad_dev.voice_call_logs
+                    FROM {SCHEMA}.voice_call_logs
                     WHERE id = %s
                 """, (args.db_id,))
             except ValueError:
                 # It's a row number
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT id, lead_id, tenant_id, transcripts, started_at
-                    FROM lad_dev.voice_call_logs
+                    FROM {SCHEMA}.voice_call_logs
                     ORDER BY started_at DESC
                     LIMIT 1 OFFSET %s
                 """, (int(args.db_id) - 1,))
@@ -650,24 +657,31 @@ async def main():
                 if 'messages' in transcripts:
                     lines = []
                     for msg in transcripts['messages']:
-                        # Only use 'text' field, explicitly ignore 'indented_text'
-                        text = msg.get('text', '')
-                        if text:
-                            lines.append(f"{msg.get('role', 'Unknown')}: {text}")
+                        # Only process user messages, ignore agent messages
+                        role = msg.get('role', '').lower()
+                        if role == 'user':
+                            # Only use 'text' field, explicitly ignore 'indented_text'
+                            text = msg.get('text', '')
+                            if text:
+                                lines.append(f"User: {text}")
                     conversation_text = "\n".join(lines)
                 elif 'segments' in transcripts:
                     lines = []
                     for seg in transcripts['segments']:
-                        # Only use 'text' field, explicitly ignore 'indented_text'
-                        text = seg.get('text', '')
-                        if text:
-                            lines.append(f"{seg.get('role', seg.get('speaker', 'Unknown'))}: {text}")
+                        # Only process user segments, ignore agent segments
+                        speaker = seg.get('speaker', '').lower()
+                        if speaker == 'user':
+                            # Only use 'text' field, explicitly ignore 'indented_text'
+                            text = seg.get('text', '')
+                            if text:
+                                lines.append(f"User: {text}")
                     conversation_text = "\n".join(lines)
-                
+
                 logger.info(f"Conversation length: {len(conversation_text)} chars")
-                
+
                 # Extract student information
                 student_info = await extractor.extract_student_information(conversation_text)
+
                 
                 if student_info:
                     logger.info(f"Extracted student info: {json.dumps(student_info, indent=2)}")

@@ -26,6 +26,9 @@ from .gemini_client import (
 
 load_dotenv()
 
+# Schema configuration
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
+
 # Configure logging
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -56,12 +59,14 @@ import openai
 # Lead information extractor
 try:
     from .lead_info_extractor import LeadInfoExtractor
+    from .stage_detector import stage_detector
     LEAD_EXTRACTOR_AVAILABLE = True
 except ImportError:
     LEAD_EXTRACTOR_AVAILABLE = False
     logger.debug("LeadInfoExtractor not available - lead extraction disabled")
 
-# Phase 13: Import storage classes for lad_dev schema
+
+# Phase 13: Import storage classes for database schema
 try:
     from db.storage.call_analysis import CallAnalysisStorage
     from db.storage.calls import CallStorage
@@ -141,7 +146,7 @@ class CallAnalytics:
 
         candidates = [text]
 
-        # Extract fenced blocks (handles both ```json and ```)
+        # Extract fenced blocks (handles both ```json and ``)
         fence_pattern = re.compile(r"```(?:json)?\s*([\s\S]+?)```", re.IGNORECASE)
         for match in fence_pattern.finditer(text):
             snippet = match.group(1).strip()
@@ -458,7 +463,7 @@ class CallAnalytics:
             'phone_number': phone_number
         }
     
-    def _parse_voiceagent_segments(self, segments: List[Dict]) -> str:
+    def _parse_voiceagent_segments(self, segments: list) -> str:
         """
         Parse voiceagent transcription segments format.
         
@@ -507,7 +512,7 @@ class CallAnalytics:
             
             # Map speaker names
             if speaker == 'agent':
-                role = 'Bot'
+                role = 'Agent'
             elif speaker == 'user':
                 role = 'User'
                 user_message_count += 1
@@ -667,31 +672,36 @@ class CallAnalytics:
 CONVERSATION:
 {conversation_text[:1000]}
 
-TASK: Classify the prospect's sentiment as one of:
-- Very Interested
-- Positive
-- Neutral
-- Negative"""
+TASK: Classify the prospect's sentiment and provide a confidence score:
+- category: One of ["Very Interested", "Positive", "Neutral", "Negative"]
+- combined_score: Numeric confidence from 0.0 to 100.0 (where 60+ = positive, 40-59 = neutral, <40 = negative)"""
             
-            # Simple schema for category only
+            # Schema with both category and score
             schema = {
                 "type": "object",
                 "properties": {
-                    "category": {"type": "string", "enum": ["Very Interested", "Positive", "Neutral", "Negative"]}
+                    "category": {"type": "string", "enum": ["Very Interested", "Positive", "Neutral", "Negative"]},
+                    "combined_score": {"type": "number", "minimum": 0, "maximum": 100}
                 },
-                "required": ["category"]
+                "required": ["category", "combined_score"]
             }
             
             sentiment_data = self._call_gemini_structured(prompt, schema, temperature=0.1, max_output_tokens=500)
             
             if sentiment_data:
-                return {"category": sentiment_data.get("category", "Neutral")}
+                # Convert numeric score to percentage string for consistency
+                score = sentiment_data.get("combined_score", 50)
+                combined_score_str = f"{score:.1f}%"
+                return {
+                    "category": sentiment_data.get("category", "Neutral"),
+                    "combined_score": combined_score_str
+                }
             
         except Exception as e:
             logger.error(f"LLM sentiment calculation error: {e}", exc_info=True)
         
         # Fallback
-        return {"category": "Neutral"}
+        return {"category": "Neutral", "combined_score": "50.0%"}
     
 
     
@@ -730,7 +740,8 @@ TASK: Classify the prospect's sentiment as one of:
         result = {
             "category": category.value,
             "sentiment_description": sentiment_description,
-            "key_phrases": key_phrases[:5]
+            "key_phrases": key_phrases[:5],
+            "combined_score": llm_sentiment_data.get("combined_score", "50.0%")
         }
         
         return result
@@ -1057,19 +1068,31 @@ Be specific about their mindset, not generic."""
         except Exception as e:
             return f"LLM full summary error: {str(e)}"
     
-    async def _determine_lead_disposition_llm(self, sentiment: Dict, summary: Dict) -> Dict:
-        """Use LLM to determine lead disposition (AI-powered, no hardcoded keywords)"""
+    async def _determine_lead_disposition_llm(self, sentiment: Dict, summary: Dict, stage_info: Dict = None) -> Dict:
+        """Use LLM to determine lead disposition with stage-based restrictions"""
         
-        logger.debug(f"Determining disposition from sentiment and summary")
+        logger.debug(f"Determining disposition from sentiment, summary, and stages")
         if not self.gemini_api_key:
             # Fallback to rule-based if no API key
             return self._determine_lead_disposition_fallback(sentiment, summary)
+        
+        # Check if stages 3 or 4 were reached - required for PROCEED IMMEDIATELY
+        stages_reached = stage_info.get('stages_reached', []) if stage_info else []
+        reached_conversion_stage = any(stage in stages_reached for stage in ['3_email_sent', '4_counseling_booked'])
         
         try:
             call_summary = str(summary.get('call_summary', ''))
             concerns = summary.get('prospect_concerns', [])
             next_steps = summary.get('next_steps', [])
             sentiment_category = sentiment.get('category', 'Neutral')
+            
+            # Build stage-aware prompt
+            stage_restriction = ""
+            if not reached_conversion_stage:
+                stage_restriction = """
+CRITICAL RESTRICTION: PROCEED IMMEDIATELY (A) is ONLY allowed if prospect reached Stage 3 (email provided) or Stage 4 (meeting booked). 
+Since no conversion stage was reached, you MUST choose between B, C, or D only.
+"""
             
             prompt = f"""Analyze this sales call and determine the lead disposition.
 
@@ -1078,32 +1101,37 @@ CALL DATA:
 - Call Summary: {call_summary}
 - Prospect Concerns: {', '.join(concerns) if concerns else 'None'}
 - Next Steps: {', '.join(next_steps) if next_steps else 'None'}
+- Stages Reached: {', '.join(stages_reached) if stages_reached else 'None'}
 
+{stage_restriction}
 TASK: Classify this lead as ONE of the following:
 
 A. PROCEED IMMEDIATELY
-   - Very interested, asked about pricing/features/timeline
-   - Strong buying signals
-   - Ready to move forward
-   - Follow up within 24 hours
+   - AUTOMATICALLY selected if Stage 3 (email provided) or Stage 4 (meeting booked) reached
+   - Prospect took concrete action (email, meeting booking) = ready to convert
+   - Strong buying signals demonstrated through actions
+   - Follow up within 24 hours for immediate conversion
 
 B. FOLLOW UP IN 3 DAYS
    - Moderate interest, needs nurturing
    - Asked questions but not ready to decide
    - Said "busy right now" (timing issue, not rejection)
+   - Some engagement but no concrete conversion actions
    - Warm lead, follow up in 2-3 days
 
 C. NURTURE (7 DAYS)
    - Low engagement but not negative
-   - Has existing partner but open to alternatives (e.g., "secondary option", "if better price")
+   - Has existing partner but open to alternatives
    - Gatekeeper (can't share info, will forward internally)
+   - No conversion actions taken
    - Long-term nurture, follow up in 1-2 weeks
 
 D. DON'T PURSUE
    - Explicitly not interested ("don't want", "don't need", "not interested")
    - Very happy with current provider and NOT open to switch
    - Asked to stop calling or remove from list
-   - Very low score (<3) with no positive signals
+   - Very negative responses throughout
+   - No positive signals at all
 
 CRITICAL RULES:
 1. "Busy right now" = B (timing issue, NOT rejection)
@@ -1111,9 +1139,10 @@ CRITICAL RULES:
 3. "Already have + 100% happy + NOT open" = D (don't pursue)
 4. Gatekeeper (can't share details) = C (nurture)
 5. "Don't want/need" or "not interested" = D (don't pursue)
-6. Asked about pricing/cost = A or B (interested)
-7. Strong interest signals = A
+6. Asked about pricing/cost = B or A (if conversion stage reached)
+7. Strong interest signals = A (only if conversion stage reached)
 8. Negative sentiment with no positive signals = D
+9. **CRITICAL: Stage 3 (email) or Stage 4 (meeting) reached = AUTOMATICALLY PROCEED IMMEDIATELY (A)**
 
 Respond in this EXACT format:
 DISPOSITION: [A/B/C/D]
@@ -1379,16 +1408,16 @@ CONFIDENCE: [High/Medium/Low]"""
         Calculate lead_score and lead_category based on disposition.
         
         Mapping:
-        - "PROCEED IMMEDIATELY" → lead_score = 10/10, lead_category = "Hot Lead"
+        - "PROCEED IMMEDIATELY" → lead_score = 10/10, lead_category = "Hot Lead" (immediate conversion)
         - "FOLLOW UP IN 3 DAYS" → lead_score = 8/10, lead_category = "Warm Lead"
-        - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "Cold Lead"
-        - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Not qualified"
+        - "FOLLOW UP IN 7 DAYS" or "NURTURE (7 DAYS)" → lead_score = 6/10, lead_category = "Warm Lead"
+        - "DON'T PURSUE" → lead_score = 4/10, lead_category = "Cold Lead"
         """
         disposition_str = disposition.get('disposition', '').upper()
         
         if disposition_str == 'PROCEED IMMEDIATELY':
-            lead_score = 10.0
-            lead_category = "Hot Lead"
+            lead_score = 10.0  # Maximum score - immediate conversion
+            lead_category = "Hot Lead"  # Immediate Hot Lead status
             priority = "High"
         elif disposition_str == 'FOLLOW UP IN 3 DAYS':
             lead_score = 8.0
@@ -1396,11 +1425,11 @@ CONFIDENCE: [High/Medium/Low]"""
             priority = "High"
         elif disposition_str in ['FOLLOW UP IN 7 DAYS', 'NURTURE (7 DAYS)', 'NURTURE']:
             lead_score = 6.0
-            lead_category = "Cold Lead"
+            lead_category = "Warm Lead"
             priority = "Medium"
         elif disposition_str == "DON'T PURSUE" or disposition_str == "DONT PURSUE":
             lead_score = 4.0
-            lead_category = "Not qualified"
+            lead_category = "Cold Lead"
             priority = "Low"
         else:
             # Default/Unknown disposition
@@ -1416,6 +1445,96 @@ CONFIDENCE: [High/Medium/Low]"""
             "scoring_breakdown": {
                 "disposition_based": f"Score calculated from disposition: {disposition_str}"
             }
+        }
+    
+    def _update_lead_category_based_on_stages(self, lead_score: Dict, stage_info: Dict, tenant_id: str = None) -> Dict:
+        """
+        Update lead category based on stages reached.
+        
+        Logic:
+        - GLINKS tenant: Upgrade to Hot Lead ONLY if reached Stage 3 (email_sent) or Stage 4 (counseling_booked)
+        - Other tenants: Do NOT use stage-based logic (use sentiment/duration logic instead)
+        - Keep all other categories unchanged (Warm Lead, Cold Lead, etc.)
+        """
+        GLINKS_TENANT_ID = os.getenv("GLINKS_TENANT_ID", "926070b5-189b-4682-9279-ea10ca090b84")
+        
+        stages_reached = stage_info.get('stages_reached', [])
+        final_stage = stage_info.get('final_stage', '')
+        
+        # Check if GLINKS tenant and reached Stage 3 or 4
+        is_glinks = tenant_id == GLINKS_TENANT_ID
+        reached_hot_stage = any(stage in stages_reached for stage in ['3_email_sent', '4_counseling_booked'])
+        
+        if is_glinks and reached_hot_stage:
+            # GLINKS tenant: Upgrade to Hot Lead based on stages
+            lead_category = "Hot Lead"
+            final_score = 10.0  # Boost to max score
+            priority = "High"
+            stage_bonus = "GLINKS: Reached Stage 3/4 - Upgraded to Hot Lead"
+        else:
+            # Non-GLINKS tenants or no hot stage: Keep original category and score
+            lead_category = lead_score.get('lead_category', 'Warm Lead')
+            final_score = lead_score.get('lead_score', 6.0)
+            priority = lead_score.get('priority', 'Medium')
+            stage_bonus = "No stage-based upgrade"
+        
+        # Update scoring breakdown
+        scoring_breakdown = lead_score.get('scoring_breakdown', {})
+        scoring_breakdown['stage_based'] = stage_bonus
+        
+        return {
+            "lead_score": final_score,
+            "max_score": 10.0,
+            "lead_category": lead_category,
+            "priority": priority,
+            "scoring_breakdown": scoring_breakdown
+        }
+    
+    def _update_lead_category_for_non_glinks(self, lead_score: Dict, sentiment: Dict, duration: int) -> Dict:
+        """
+        Update lead category for non-GLINKS tenants based on sentiment and duration.
+        
+        Logic:
+        - High sentiment + Duration > 1 minute → Upgrade to Hot Lead
+        - Keep all other categories unchanged
+        """
+        # Get sentiment category and score
+        sentiment_category = sentiment.get('category', '').lower()
+        combined_score_str = sentiment.get('combined_score', '0.0%')
+        
+        # Parse percentage string to float
+        try:
+            sentiment_score = float(combined_score_str.replace('%', '')) / 100.0
+        except (ValueError, AttributeError):
+            sentiment_score = 0.0
+        
+        # Check for high sentiment and duration > 1 minute
+        is_high_sentiment = sentiment_category in ['positive', 'very positive'] and sentiment_score >= 0.6
+        is_long_duration = duration > 60  # More than 1 minute
+        
+        if is_high_sentiment and is_long_duration:
+            # Upgrade to Hot Lead for non-GLINKS tenants
+            lead_category = "Hot Lead"
+            final_score = 10.0  # Boost to max score
+            priority = "High"
+            sentiment_bonus = f"Non-GLINKS: High sentiment ({sentiment_category}) + {duration}s duration - Upgraded to Hot Lead"
+        else:
+            # Keep original category and score
+            lead_category = lead_score.get('lead_category', 'Warm Lead')
+            final_score = lead_score.get('lead_score', 6.0)
+            priority = lead_score.get('priority', 'Medium')
+            sentiment_bonus = f"Non-GLINKS: Sentiment={sentiment_category}, Duration={duration}s - No upgrade"
+        
+        # Update scoring breakdown
+        scoring_breakdown = lead_score.get('scoring_breakdown', {})
+        scoring_breakdown['sentiment_duration_based'] = sentiment_bonus
+        
+        return {
+            "lead_score": final_score,
+            "max_score": 10.0,
+            "lead_category": lead_category,
+            "priority": priority,
+            "scoring_breakdown": scoring_breakdown
         }
     
     def _enhance_recommendations(self, base_rec: str, lead_score: Dict, sentiment: Dict, quality: Dict, stage: Dict, duration: int) -> str:
@@ -1534,6 +1653,15 @@ CONFIDENCE: [High/Medium/Low]"""
 
             # First try our internal JSON parser
             parsed_summary = self._parse_summary_json(summary_text)
+            
+            # Validate that parsed_summary is a proper dictionary
+            if parsed_summary is not None:
+                if not isinstance(parsed_summary, dict):
+                    logger.error(f"Parsed summary is not a dictionary: {type(parsed_summary)} - falling back to text extraction")
+                    parsed_summary = None
+                elif 'call_summary' not in parsed_summary and not any(key in parsed_summary for key in ['key_discussion_points', 'prospect_questions', 'prospect_concerns', 'next_steps']):
+                    logger.error(f"Parsed summary missing expected keys - falling back to text extraction")
+                    parsed_summary = None
 
             # Fallback 1: try gemini_client-style JSON extraction to recover valid JSON
             if parsed_summary is None:
@@ -1733,10 +1861,10 @@ CONFIDENCE: [High/Medium/Low]"""
             lead_category = "Warm Lead"
             priority = "Medium"
         elif final_score >= 4.0:
-            lead_category = "Cold Lead"
+            lead_category = "Warm Lead"
             priority = "Low"
         else:
-            lead_category = "Not Qualified"
+            lead_category = "Cold Lead"
             priority = "Very Low"
         
         return {
@@ -1758,11 +1886,11 @@ CONFIDENCE: [High/Medium/Low]"""
         
         # Count turns (user responses)
         user_turns = len([line for line in conversation_text.split('\n') if line.strip().startswith('User:')])
-        bot_turns = len([line for line in conversation_text.split('\n') if line.strip().startswith('Bot:')])
+        agent_turns = len([line for line in conversation_text.split('\n') if line.strip().startswith('Agent:')])
         
         # Calculate response rate
-        if bot_turns > 0:
-            response_rate = round((user_turns / bot_turns) * 100, 1)
+        if agent_turns > 0:
+            response_rate = round((user_turns / agent_turns) * 100, 1)
         else:
             response_rate = 0.0
         
@@ -1789,8 +1917,8 @@ CONFIDENCE: [High/Medium/Low]"""
             "quality_rating": quality_rating,
             "conversation_turns": {
                 "user_turns": user_turns,
-                "bot_turns": bot_turns,
-                "total_turns": user_turns + bot_turns
+                "agent_turns": agent_turns,
+                "total_turns": user_turns + agent_turns
             },
             "response_rate": f"{response_rate}%",
             "avg_user_response_length": round(avg_user_response_length, 1),
@@ -1855,9 +1983,9 @@ CONFIDENCE: [High/Medium/Low]"""
             if line.startswith("User:"):
                 role = "user"
                 message = line.replace("User:", "").strip()
-            elif line.startswith("Bot:"):
+            elif line.startswith("Agent:"):
                 role = "agent"
-                message = line.replace("Bot:", "").strip()
+                message = line.replace("Agent:", "").strip()
             else:
                 # Skip lines that don't match expected format
                 continue
@@ -1877,59 +2005,21 @@ CONFIDENCE: [High/Medium/Low]"""
         
         return transcript
     
-    def extract_call_stages(self, conversation_text: str, summary: Dict) -> Dict:
+    def extract_call_stages(self, conversation_text: str, summary: Dict, tenant_id: str = None) -> Dict:
         """
-        Extract call stage information
-        Runs AFTER call - no performance impact
+        Extract call stage information using the dedicated stage detector.
+        
+        Args:
+            conversation_text: The formatted conversation transcript
+            summary: Optional summary data
+            tenant_id: Optional tenant ID for tenant-specific stage mapping
+            
+        Returns:
+            Dict containing stage information
         """
-        
-        logger.debug("Extracting call stages...")
-        stages_reached = []
-        
-        # Detect stages based on conversation content
-        text_lower = conversation_text.lower()
-        
-        # Stage 1: Greeting
-        if any(keyword in text_lower for keyword in ['hello', 'hi', 'good morning', 'good afternoon', 'pluto travels']):
-            stages_reached.append("1_greeting")
-        
-        # Stage 2: Decision-maker identification
-        if any(keyword in text_lower for keyword in ['manage', 'handle', 'decision', 'in charge', 'responsible']):
-            stages_reached.append("2_decision_maker_identification")
-        
-        # Stage 3: Value proposition
-        if any(keyword in text_lower for keyword in ['save', 'cost', 'dashboard', 'partnership', 'convenience']):
-            stages_reached.append("3_value_proposition")
-        
-        # Stage 4: Qualification
-        if any(keyword in text_lower for keyword in ['how frequently', 'how often', 'travel', 'agency', 'pain point']):
-            stages_reached.append("4_qualification")
-        
-        # Stage 5: Objection handling
-        if any(keyword in text_lower for keyword in ['already have', 'not interested', 'busy', 'security', 'pricing']):
-            stages_reached.append("5_objection_handling")
-        
-        # Stage 6: WhatsApp handoff
-        if any(keyword in text_lower for keyword in ['whatsapp', 'send', 'brochure', 'message', 'follow up']):
-            stages_reached.append("6_whatsapp_handoff")
-        
-        # Determine final stage
-        if stages_reached:
-            final_stage = stages_reached[-1]
-        else:
-            final_stage = "0_no_engagement"
-        
-        # Stage completion percentage
-        stage_completion = round((len(stages_reached) / 6) * 100, 1)
-        
-        return {
-            "stages_reached": stages_reached,
-            "final_stage": final_stage,
-            "stage_completion_percentage": f"{stage_completion}%",
-            "total_stages_reached": len(stages_reached)
-        }
+        return stage_detector.extract_call_stages(conversation_text, summary, tenant_id)
     
-    async def analyze_call(self, call_id: str, conversation_log, duration_seconds: int, call_start_time=None) -> Dict:
+    async def analyze_call(self, call_id: str, conversation_log, duration_seconds: int, call_start_time=None, tenant_id: str = None) -> Dict:
         """Complete call analysis - sentiment + summarization + scoring
         
         Args:
@@ -1937,6 +2027,7 @@ CONFIDENCE: [High/Medium/Low]"""
             conversation_log: List of dicts with {role, message, timestamp} OR string (legacy)
             duration_seconds: Call duration
             call_start_time: datetime when call started (for real timestamps)
+            tenant_id: Optional tenant ID for tenant-specific stage mapping
         """
         
         logger.info(f"Analyzing call {call_id}...")
@@ -1967,7 +2058,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 # Convert to text for analytics
                 conversation_text = "\n".join([f"{entry['role'].title()}: {entry['message']}" for entry in conversation_log])
         else:
-            # Legacy format: String with "User:" and "Bot:" lines
+            # Legacy format: String with "User:" and "Agent:" lines
             if isinstance(conversation_log, list):
                 conversation_text = "\n".join(conversation_log)
             else:
@@ -2018,7 +2109,7 @@ CONFIDENCE: [High/Medium/Low]"""
                 "prospect_questions": [],
                 "prospect_concerns": [],
                 "next_steps": [],
-                "recommendations": "Prospect doesn't provide enough response to make the recommendations\n--- AI ANALYTICS RECOMMENDATION SUMMARY ---\nOverall Lead Status: Cold Lead (6.0/10)\nEngagement Level: Low\nFarthest Stage Reached: greeting\nProspect Sentiment: Neutral",
+                "recommendations": "Prospect doesn't provide enough response to make the recommendations\n--- AI ANALYTICS RECOMMENDATION SUMMARY ---\nOverall Lead Status: Cold Lead (6.0/10)\nEngagement Level: Low\nFarthest Stage Reached: followup \nProspect Sentiment: Neutral",
                 "business_name": None,
                 "contact_person": None,
                 "phone_number": None
@@ -2073,12 +2164,7 @@ CONFIDENCE: [High/Medium/Low]"""
                     "avg_user_response_length": 0,
                     "questions_asked_by_user": 0,
                 }, 
-                "stage_info": {
-                    "stages_reached": ["1_greeting"],
-                    "final_stage": "1_greeting",
-                    "stage_completion_percentage": "16.7%",
-                    "total_stages_reached": 1,
-                },
+                "stage_info": stage_detector.get_default_stage_info(),
                 "lead_info": None,
                 "lead_info_path": None,
                 "conversation_length": len(conversation_text),
@@ -2087,56 +2173,148 @@ CONFIDENCE: [High/Medium/Low]"""
             }
 
         
-        # ===== PARALLEL PHASE 1: Sentiment + Lead Info Extraction =====
-        # These two are independent and can run in parallel
-        logger.info("Step 1/7: Analyzing sentiment + Step 7/7: Extracting lead info (PARALLEL)...")
+        # ===== MEANINGFUL USER TRANSCRIPTION CHECK =====
+        logger.info("Checking for meaningful user transcription...")
+        has_meaningful_transcription = stage_detector.has_meaningful_user_transcription(conversation_text)
         
-        async def extract_lead_info_safe():
-            """Wrapper for lead info extraction with error handling"""
-            if not self.lead_extractor:
-                logger.debug("Lead extractor not available - skipping lead info extraction")
-                return None, None
-            try:
-                # Pass None for summary since we don't have it yet - lead extraction doesn't strictly need it
-                lead_info = await self.lead_extractor.extract_lead_information(conversation_text, None)
-                lead_info_path = None
-                if lead_info:
-                    lead_info_path = self.lead_extractor.save_to_json(lead_info, call_id)
-                    logger.info(f"Lead info extracted: {len(lead_info)} fields, saved to: {lead_info_path}")
-                else:
-                    logger.debug("No lead information found in this call")
-                return lead_info, lead_info_path
-            except Exception as e:
-                logger.error(f"Lead info extraction failed: {e}", exc_info=True)
-                return None, None
-        
-        # Run sentiment analysis and lead info extraction in parallel
-        sentiment, (lead_info, lead_info_path) = await asyncio.gather(
-            self.analyze_sentiment(conversation_text, duration=duration_seconds, word_count=word_count),
-            extract_lead_info_safe()
-        )
-        
-        # ===== SEQUENTIAL PHASE: Summary → Disposition (dependencies) =====
-        logger.info("Step 2/7: Generating summary...")
-        summary = await self.generate_summary(conversation_text, sentiment_data=sentiment, duration=duration_seconds)
-        
-        logger.info("Step 3/7: Determining lead disposition...")
-        lead_disposition = await self._determine_lead_disposition_llm(sentiment, summary)
-        logger.info(f"Lead disposition: {lead_disposition.get('disposition', 'Unknown')} - Action: {lead_disposition.get('recommended_action', 'N/A')}")
-        
+        if not has_meaningful_transcription:
+            logger.info("No meaningful user transcription - using same defaults as no user transcription")
+            
+            # Default values as requested (same as no user transcription)
+            default_summary = {
+                "call_summary": "Prospect did not provide enough conversation to make the summary",
+                "key_discussion_points": [],
+                "prospect_questions": [],
+                "prospect_concerns": [],
+                "next_steps": [],
+                "recommendations": "Prospect doesn't provide enough response to make the recommendations\n--- AI ANALYTICS RECOMMENDATION SUMMARY ---\nOverall Lead Status: Cold Lead (6.0/10)\nEngagement Level: Low\nFarthest Stage Reached: followup \nProspect Sentiment: Neutral",
+                "business_name": None,
+                "contact_person": None,
+                "phone_number": None
+            }
+            
+            default_sentiment = {
+                "category": "Neutral",
+                "sentiment_description": "Prospect did not provide enough conversation to make the sentiment",
+                "key_phrases": []
+            }
+            
+            default_disposition = {
+                "disposition": "NURTURE (7 DAYS)",
+                "recommended_action": "Attempt a follow-up call in 7 days to establish a two-way conversation .",
+                "reasoning": "No user response recorded",
+                "decision_confidence": "High"
+            }
+            
+            default_lead_score = {
+                "lead_score": 6.0, 
+                "lead_category": "Cold Lead",
+                "priority": "Low",
+                "scoring_breakdown": {"reason": "No user speech detected"}
+            }
+
+            zero_cost = {
+                "total_api_calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cost_usd": 0.0,
+                "cost_usd_formatted": "$0",
+                "pricing_model": "Skipped (No User Speech)"
+            }
+
+            # Return the complete analysis with default values
+            return {
+                "call_id": call_id,
+                "timestamp": datetime.now().isoformat(),
+                "duration_seconds": duration_seconds,
+                "lead_disposition": default_disposition,
+                "sentiment": default_sentiment,
+                "summary": default_summary,
+                "lead_score": default_lead_score,
+                "quality_metrics": {
+                    "overall_score": 0,
+                    "engagement_level": "Low",
+                    "quality_rating": "Poor",
+                    "clarity": "N/A",
+                    "objection_handling": "N/A",
+                    "conversation_turns": {"user_turns": 0, "bot_turns": 0},
+                    "response_rate": "0%",
+                    "avg_user_response_length": 0,
+                    "questions_asked_by_user": 0,
+                }, 
+                "stage_info": stage_detector.get_default_stage_info(),
+                "lead_info": None,
+                "lead_info_path": None,
+                "conversation_length": len(conversation_text),
+                "word_count": word_count,
+                "cost": zero_cost
+            }
+        else:
+            # ===== PARALLEL PHASE: Sentiment + Lead Info Extraction =====
+            # These two are independent and can run in parallel
+            logger.info("Step 1/7: Analyzing sentiment + Step 7/7: Extracting lead info (PARALLEL)...")
+            
+            async def extract_lead_info_safe():
+                """Wrapper for lead info extraction with error handling"""
+                logger.info(f"Lead extractor available: {self.lead_extractor is not None}")
+                logger.info(f"LEAD_EXTRACTOR_AVAILABLE: {LEAD_EXTRACTOR_AVAILABLE}")
+                if not self.lead_extractor:
+                    logger.debug("Lead extractor not available - skipping lead info extraction")
+                    return None, None
+                try:
+                    # Pass None for summary since we don't have it yet - lead extraction doesn't strictly need it
+                    logger.info("Starting lead information extraction...")
+                    lead_info = await self.lead_extractor.extract_lead_information(conversation_text, None)
+                    lead_info_path = None
+                    if lead_info:
+                        lead_info_path = self.lead_extractor.save_to_json(lead_info, call_id)
+                        logger.info(f"Lead info extracted: {len(lead_info)} fields, saved to: {lead_info_path}")
+                    else:
+                        logger.info("No lead information found in this call")
+                    return lead_info, lead_info_path
+                except Exception as e:
+                    logger.error(f"Lead info extraction failed: {e}", exc_info=True)
+                    return None, None
+            
+            # Run sentiment analysis and lead info extraction in parallel
+            sentiment, (lead_info, lead_info_path) = await asyncio.gather(
+                self.analyze_sentiment(conversation_text, duration=duration_seconds, word_count=word_count),
+                extract_lead_info_safe()
+            )
+            
+            # ===== SEQUENTIAL PHASE: Summary → Stages → Disposition (dependencies) =====
+            logger.info("Step 2/7: Generating summary...")
+            summary = await self.generate_summary(conversation_text, sentiment_data=sentiment, duration=duration_seconds)
+            
+            logger.info("Step 3/7: Extracting call stages...")
+            stage_info = self.extract_call_stages(conversation_text, summary, tenant_id)
+            
+            logger.info("Step 4/7: Determining lead disposition...")
+            lead_disposition = await self._determine_lead_disposition_llm(sentiment, summary, stage_info)
+            logger.info(f"Lead disposition: {lead_disposition.get('disposition', 'Unknown')} - Action: {lead_disposition.get('recommended_action', 'N/A')}")
+
         # ===== NON-LLM STEPS (fast, no API calls) =====
-        logger.info("Step 4/7: Calculating lead score from disposition...")
+        logger.info("Step 5/7: Calculating lead score from disposition...")
         lead_score = self._calculate_lead_score_from_disposition(lead_disposition)
         logger.info(f"Lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
-        
-        logger.info("Step 5/7: Calculating quality metrics...")
-        quality_metrics = self.calculate_conversation_quality(conversation_text, sentiment, duration_seconds)
-        
-        logger.info("Step 6/7: Extracting call stages...")
-        stage_info = self.extract_call_stages(conversation_text, summary)
-        
-        # Lead info already extracted in parallel phase above
 
+        logger.info("Step 6/7: Calculating quality metrics...")
+        quality_metrics = self.calculate_conversation_quality(conversation_text, sentiment, duration_seconds)
+
+        # Update lead category based on tenant-specific logic
+        GLINKS_TENANT_ID = os.getenv("GLINKS_TENANT_ID", "926070b5-189b-4682-9279-ea10ca090b84")
+        
+        if tenant_id == GLINKS_TENANT_ID:
+            # GLINKS: Use stage-based logic
+            lead_score = self._update_lead_category_based_on_stages(lead_score, stage_info, tenant_id)
+            logger.info(f"GLINKS updated lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
+        else:
+            # Non-GLINKS: Use sentiment + duration logic
+            lead_score = self._update_lead_category_for_non_glinks(lead_score, sentiment, duration_seconds)
+            logger.info(f"Non-GLINKS updated lead score: {lead_score.get('lead_score', 0)}/10 - Category: {lead_score.get('lead_category', 'Unknown')}")
+
+        # Lead info already extracted in parallel phase above
 
         # Enhance recommendations with complete analytics data
         if summary and 'recommendations' in summary and lead_score:
@@ -2374,97 +2552,74 @@ CONFIDENCE: [High/Medium/Low]"""
         except:
             return None
     
-    def save_to_database(self, analysis: Dict, call_log_id, db_config: Dict) -> bool:
+    async def save_to_database(
+        self,
+        analysis: Dict,
+        call_log_id: str,
+        db_config: Dict,
+    ) -> bool:
         """
-        DEPRECATED: This method uses the old voice_agent schema.
-        Use save_to_lad_dev() instead for the new lad_dev schema.
-        
-        This method is kept for backwards compatibility but will be removed in a future version.
+        Legacy method for backward compatibility - calls save_to_lad_dev
         
         Args:
             analysis: The complete analytics dictionary
-            call_log_id: ID from call_logs_voiceagent table (can be UUID, int, or None)
-                       If None, will extract from call_id string
-            db_config: Dict with db connection parameters
-        
+            call_log_id: UUID of the call log (from {SCHEMA}.voice_call_logs)
+            db_config: Database configuration dictionary (not used, tenant_id extracted from analysis)
+            
         Returns:
             bool: True if saved successfully
         """
-        import warnings
-        warnings.warn(
-            "save_to_database() is deprecated. Use save_to_lad_dev() instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        
-        if not DB_AVAILABLE:
-            logger.error("Database library not available. Install psycopg2-binary")
+        # Extract tenant_id from analysis for lad_dev save
+        tenant_id = analysis.get("tenant_id")
+        if not tenant_id:
+            logger.warning("No tenant_id found in analysis - cannot save to lad_dev")
             return False
+            
+        return await self.save_to_lad_dev(analysis, call_log_id, tenant_id)
+    
+    async def save_to_lad_dev(
+        self,
+        analysis: Dict,
+        call_log_id: str,
+        tenant_id: str,
+    ) -> bool:
+        """
+        Save analytics to {SCHEMA}.voice_call_analysis with full legacy-parity columns.
         
-        conn = None
-        cursor = None
-        
+        Args:
+            analysis: The complete analytics dictionary
+            call_log_id: UUID of the call log (from {SCHEMA}.voice_call_logs)
+            tenant_id: UUID of the tenant for multi-tenancy
+            
+        Returns:
+            bool: True if saved successfully
+        """
+        if not STORAGE_CLASSES_AVAILABLE:
+            logger.error("DB config helpers not available - cannot save to lad_dev")
+            return False
+
         try:
-            conn = psycopg2.connect(**db_config)
-            cursor = conn.cursor()
+            from db.db_config import get_db_config
+
+            db_config = get_db_config()
+            analysis = dict(analysis or {})
+            analysis["tenant_id"] = tenant_id
+
+            # Full-column persistence into {SCHEMA}.voice_call_analysis.
+            # This updates: disposition, lead_category, recommendations, key_phrases, cost, etc.
             
-            # Extract call_log_id from JSON call_id if not provided
-            if call_log_id is None:
-                call_id_str = analysis.get("call_id", "")
-                call_log_id = self._extract_call_log_id(call_id_str)
-                
-                if call_log_id is None:
-                    logger.warning(f"Cannot extract call_log_id from call_id: {call_id_str} - Skipping database save (only for DB calls)")
-                    return False
-            
-            # Ensure call_log_id is converted to string for UUID column
-            # If it's already a UUID object or UUID string, use it as-is
-            # If it's an integer, we need to get the actual UUID from the database
-            if isinstance(call_log_id, int):
-                # Integer provided - need to fetch actual UUID from database using ROW_NUMBER()
-                # Ordered by ctid (physical storage order, matches pgAdmin's default display)
-                cursor.execute("""
-                    SELECT id FROM (
-                        SELECT 
-                            id,
-                            ROW_NUMBER() OVER (ORDER BY ctid) as row_num
-                        FROM lad_dev.voice_call_logs
-                    ) ranked
-                    WHERE row_num = %s
-                """, (call_log_id,))
-                uuid_result = cursor.fetchone()
-                if uuid_result:
-                    call_log_id = uuid_result[0]
-                else:
-                    logger.error(f"Cannot find call with position {call_log_id}")
-                    return False
-            elif isinstance(call_log_id, str):
-                # String - check if it's a valid UUID format
-                import uuid as uuid_lib
-                try:
-                    # Validate UUID format and convert to UUID type
-                    uuid_lib.UUID(call_log_id)
-                    # Keep as string (PostgreSQL will handle the cast)
-                except ValueError:
-                    # Not a valid UUID string, try to extract from call_id
-                    call_log_id = self._extract_call_log_id(str(call_log_id))
-                    if call_log_id is None:
-                        logger.error(f"Invalid call_log_id format: {call_log_id}")
-                        return False
-            
-            # Extract data from analysis dictionary
-            sentiment = analysis.get("sentiment", {})
+            # Extract data for voice_call_analysis table
             summary = analysis.get("summary", {})
+            sentiment = analysis.get("sentiment", {})
             lead = analysis.get("lead_score", {})
             quality = analysis.get("quality_metrics", {})
             stage = analysis.get("stage_info", {})
             disposition = analysis.get("lead_disposition", {})
             cost_data = analysis.get("cost", {})
             
-            # Prepare INSERT query - matches FULL lad_dev.voice_call_analysis schema
-            # Includes ALL columns from old post_call_analysis_voiceagent + new columns
-            query = """
-                INSERT INTO lad_dev.voice_call_analysis (
+            # Prepare INSERT query - matches FULL {SCHEMA}.voice_call_analysis schema
+            query = f"""
+                INSERT INTO {SCHEMA}.voice_call_analysis (
                     call_log_id,
                     tenant_id,
                     summary,
@@ -2489,19 +2644,6 @@ CONFIDENCE: [High/Medium/Low]"""
                 )
             """
             
-            # Prepare call_log_id value
-            if call_log_id is None:
-                call_log_id_value = None
-            elif hasattr(call_log_id, '__str__'):
-                call_log_id_value = str(call_log_id)
-            else:
-                call_log_id_value = call_log_id
-            
-            # Extract tenant_id from analysis if available
-            tenant_id_value = analysis.get("tenant_id")
-            if tenant_id_value and hasattr(tenant_id_value, '__str__'):
-                tenant_id_value = str(tenant_id_value)
-            
             # Build key_points as JSONB from summary data
             key_points_data = summary.get("key_discussion_points", [])
             if isinstance(key_points_data, str):
@@ -2520,6 +2662,21 @@ CONFIDENCE: [High/Medium/Low]"""
                 "cost_full": cost_data,
             }
             
+            # Json() parameters
+            
+            # Ensure all Json() parameters are proper dicts
+            if not isinstance(key_points_data, (dict, list)):
+                logger.warning(f"key_points_data is not dict/list, converting: {type(key_points_data)}")
+                key_points_data = {"data": key_points_data}
+            
+            if not isinstance(lead_extraction_data, dict):
+                logger.warning(f"lead_extraction_data is not dict, converting: {type(lead_extraction_data)}")
+                lead_extraction_data = {"data": lead_extraction_data}
+                
+            if not isinstance(raw_analysis_data, dict):
+                logger.warning(f"raw_analysis_data is not dict, converting: {type(raw_analysis_data)}")
+                raw_analysis_data = {"data": raw_analysis_data}
+            
             # Extract cost values - use USD directly (INR conversion removed)
             # Default to 0.00 for no-user-speech calls (not NULL)
             cost_numeric = 0.0
@@ -2536,243 +2693,202 @@ CONFIDENCE: [High/Medium/Low]"""
                 if val is None:
                     return ""
                 if isinstance(val, (list, dict)):
-                    import json
-                    return json.dumps(val)
+                    return json.dumps(val, ensure_ascii=False)
                 return str(val)
             
-            # Build values tuple (19 columns)
+            # stages_reached value
+            stages_reached_value = stage.get("stages_reached", [])
+            
+            # Use detected stages_reached directly
+            
+            # Final stages_reached to save
+            
+            # Build values tuple for database INSERT
+            
+            # Create Json() objects
+            
+            try:
+                key_points_json = Json(key_points_data)
+            except Exception as json_error:
+                logger.error(f"ERROR creating Json(key_points_data): {json_error}")
+                raise json_error
+                
+            try:
+                lead_extraction_json = Json(lead_extraction_data)
+            except Exception as json_error:
+                logger.error(f"ERROR creating Json(lead_extraction_data): {json_error}")
+                raise json_error
+                
+            try:
+                raw_analysis_json = Json(raw_analysis_data)
+            except Exception as json_error:
+                logger.error(f"ERROR creating Json(raw_analysis_data): {json_error}")
+                raise json_error
+            
+            # All Json() objects created successfully
+            
             values = (
-                call_log_id_value,                                          # call_log_id
-                tenant_id_value,                                            # tenant_id (NEW)
-                summary.get("call_summary", ""),                            # summary
-                sentiment.get("sentiment_description", ""),                 # sentiment
-                to_text(sentiment.get("key_phrases", [])),                  # key_phrases (TEXT)
-                to_text(summary.get("key_discussion_points", [])),          # key_discussion_points (TEXT)
-                to_text(summary.get("prospect_questions", [])),             # prospect_questions (TEXT)
-                to_text(summary.get("prospect_concerns", [])),              # prospect_concerns (TEXT)
-                summary.get("recommendations", ""),                         # recommendations
-                lead.get("lead_category", ""),                              # lead_category (TEXT)
-                quality.get("engagement_level", ""),                        # engagement_level (TEXT)
-                to_text(stage.get("stages_reached", [])),                   # stages_reached (TEXT)
-                disposition.get("disposition", ""),                         # disposition (TEXT)
-                disposition.get("recommended_action", ""),                  # recommended_action
-                cost_numeric,                                               # cost (numeric)
-                Json(key_points_data),                                      # key_points (JSONB, NEW)
-                Json(lead_extraction_data),                                 # lead_extraction (JSONB, NEW)
-                Json(raw_analysis_data),                                    # raw_analysis (JSONB, NEW)
-                analysis_cost_value                                         # analysis_cost (numeric, NEW)
+                call_log_id,                                              # call_log_id
+                tenant_id,                                                # tenant_id (NEW)
+                summary.get("call_summary", ""),                          # summary
+                sentiment.get("sentiment_description", ""),               # sentiment
+                to_text(sentiment.get("key_phrases", [])),                # key_phrases (TEXT)
+                to_text(summary.get("key_discussion_points", [])),        # key_discussion_points (TEXT)
+                to_text(summary.get("prospect_questions", [])),           # prospect_questions (TEXT)
+                to_text(summary.get("prospect_concerns", [])),            # prospect_concerns (TEXT)
+                summary.get("recommendations", ""),                       # recommendations
+                lead.get("lead_category", ""),                            # lead_category (TEXT)
+                quality.get("engagement_level", ""),                      # engagement_level (TEXT)
+                to_text(stages_reached_value),                            # stages_reached (TEXT) - FIXED: Use corrected value
+                disposition.get("disposition", ""),                        # disposition (TEXT)
+                disposition.get("recommended_action", ""),                 # recommended_action
+                cost_numeric,                                             # cost (numeric)
+                key_points_json,                                          # key_points (JSONB, NEW)
+                lead_extraction_json,                                     # lead_extraction (JSONB, NEW)
+                raw_analysis_json,                                         # raw_analysis (JSONB, NEW)
+                analysis_cost_value                                      # analysis_cost (numeric, NEW)
             )
+            
+            # Values tuple created
+            
+            # Debug logging to check values before database operation
 
-            if call_log_id_value:
-                cursor.execute(
-                    "DELETE FROM lad_dev.voice_call_analysis WHERE call_log_id = %s::uuid",
-                    (call_log_id_value,),
-                )
-            
-            cursor.execute(query, values)
-            conn.commit()
-            
-            # Get lead_id from voice_call_logs for leads table update (independent of lead_category)
-            lead_id_from_call = None
-            if call_log_id_value:
-                try:
+            # Execute the INSERT
+            try:
+                conn = psycopg2.connect(**db_config)
+                cursor = conn.cursor()
+                
+                if call_log_id:
                     cursor.execute(
-                        "SELECT lead_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
-                        (call_log_id_value,)
+                        f"DELETE FROM {SCHEMA}.voice_call_analysis WHERE call_log_id = %s::uuid",
+                        (call_log_id,),
                     )
-                    lead_result = cursor.fetchone()
-                    if lead_result and lead_result[0]:
-                        lead_id_from_call = lead_result[0]
-                except Exception as lead_fetch_error:
-                    logger.warning(f"Failed to fetch lead_id: {lead_fetch_error}")
+                
+                cursor.execute(query, values)
+                conn.commit()
+                logger.info(f"DEBUG: Database INSERT executed successfully")
+                
+            except Exception as db_error:
+                logger.error(f"DATABASE INSERT ERROR: {db_error}")
+                logger.error(f"Error type: {type(db_error).__name__}")
+                
+                # Log each value with its type to identify the problematic one
+                for i, value in enumerate(values):
+                    logger.error(f"Value {i}: type={type(value)}, repr={repr(value)}")
+                
+                # Try to identify which value is causing the issue
+                for i, value in enumerate(values):
+                    if isinstance(value, dict):
+                        logger.error(f"FOUND DICT at position {i}: {value}")
+                    elif isinstance(value, list):
+                        logger.error(f"FOUND LIST at position {i}: {value}")
+                
+                raise db_error
+            
+            # Verify the data was actually saved
+            try:
+                cursor.execute(
+                    f"SELECT id, call_log_id, disposition, cost FROM {SCHEMA}.voice_call_analysis WHERE call_log_id = %s::uuid ORDER BY created_at DESC LIMIT 1",
+                    (call_log_id,)
+                )
+                saved_record = cursor.fetchone()
+                if saved_record:
+                    logger.info(f" VERIFIED: Data saved to voice_call_analysis - ID: {saved_record[0]}, Call Log: {saved_record[1]}, Disposition: {saved_record[2]}, Cost: {saved_record[3]}")
+                else:
+                    logger.warning(f"⚠️ WARNING: No record found in voice_call_analysis after save for call_log_id: {call_log_id}")
+            except Exception as verify_error:
+                logger.warning(f"Failed to verify save: {verify_error}")
+            
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Analytics saved to {SCHEMA}.voice_call_analysis table successfully!")
             
             # Update tags column in leads table with lead_category value
-            lead_category_value = lead.get("lead_category", "")
-            if lead_category_value and call_log_id_value and lead_id_from_call:
+            if analysis and "lead_score" in analysis:
+                from db.db_config import get_db_config
+                leads_db_config = get_db_config()
+                
                 try:
-                    import json
-                    # Update tags column in leads table as JSON array
-                    cursor.execute(
-                        "UPDATE lad_dev.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
-                        (json.dumps([lead_category_value]), datetime.now(timezone.utc), lead_id_from_call)
-                    )
-                    conn.commit()
-                    logger.info(f"Updated tags column in leads table (lead_id: {lead_id_from_call}, tags: {[lead_category_value]})")
+                    # Get lead_category from analysis
+                    lead_score_data = analysis.get("lead_score", {})
+                    lead_category_value = lead_score_data.get("lead_category", "")
+                    
+                    logger.info(f"DEBUG: lead_category_value type: {type(lead_category_value)}, value: {lead_category_value}")
+                    
+                    # Get lead_id from database using call_log_id
+                    if lead_category_value and call_log_id:
+                        conn = psycopg2.connect(**leads_db_config)
+                        cursor = conn.cursor()
+                        
+                        # Get lead_id from voice_call_logs table
+                        cursor.execute(f"""
+                            SELECT lead_id 
+                            FROM {SCHEMA}.voice_call_logs 
+                            WHERE id = %s::uuid
+                        """, (call_log_id,))
+                        result = cursor.fetchone()
+                        
+                        if result and result[0]:
+                            lead_id_from_call = result[0]
+                            
+                            # Ensure lead_category_value is a string, not a dict
+                            if isinstance(lead_category_value, dict):
+                                # Check for both 'category' and 'lead_category' keys
+                                lead_category_value = (
+                                    lead_category_value.get("category") or 
+                                    lead_category_value.get("lead_category") or 
+                                    str(lead_category_value)
+                                )
+                            elif not isinstance(lead_category_value, str):
+                                lead_category_value = str(lead_category_value)
+                            
+                            # Create tags array and ensure it's properly serialized
+                            tags_array = [lead_category_value]
+                            logger.info(f"DEBUG: tags_array before serialization: {tags_array}, type: {type(tags_array)}")
+                            
+                            try:
+                                tags_json = json.dumps(tags_array) if isinstance(tags_array, (list, dict)) else str(tags_array)
+                                logger.info(f"DEBUG: tags_json after serialization: {tags_json}, type: {type(tags_json)}")
+                            except Exception as json_error:
+                                logger.error(f"JSON serialization error: {json_error}")
+                                tags_json = str(tags_array)  # Fallback
+                            
+                            # Update tags column in leads table as JSON array
+                            try:
+                                cursor.execute(
+                                    f"UPDATE {SCHEMA}.leads SET tags = %s, updated_at = %s WHERE id = %s::uuid",
+                                    (tags_json, datetime.now(timezone.utc), lead_id_from_call)
+                                )
+                                conn.commit()  # Commit the tags update
+
+                            except Exception as db_error:
+                                logger.error(f"Database update error: {db_error}")
+                                logger.error(f"Parameters: tags_json={tags_json} (type: {type(tags_json)}), lead_id={lead_id_from_call}")
+                                raise db_error
+                        else:
+                            logger.warning(f"No lead_id found for call_log_id: {call_log_id}")
+                        
+                        cursor.close()
+                        conn.close()
+                        
                 except Exception as tag_update_error:
                     logger.warning(f"Failed to update tags in leads table: {tag_update_error}")
                     # Don't fail the whole operation if tag update fails
             
-            # Update leads table if user transcriptions are present
-            try:
-                if lead_id_from_call:
-                    self.update_leads_for_user_transcription(call_log_id_value, lead_id_from_call, db_config, conn, cursor, None)
-            except Exception as leads_update_error:
-                logger.warning(f"Failed to update leads table for user transcription: {leads_update_error}")
-                # Don't fail the whole operation if leads update fails
-            
-            logger.info(f"Analytics saved to database (call_log_id: {call_log_id})")
             return True
-            
         except Exception as e:
             logger.error(f"Database save failed: {e}", exc_info=True)
-            if conn:
-                conn.rollback()
             return False
-            
-        finally:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
-    
-    async def save_to_lad_dev(
-        self,
-        analysis: Dict,
-        call_log_id: str,
-        tenant_id: str,
-    ) -> bool:
-        """
-        Save analytics to lad_dev.voice_call_analysis with full legacy-parity columns.
-        
-        Args:
-            analysis: The complete analytics dictionary
-            call_log_id: UUID of the call log (from lad_dev.voice_call_logs)
-            tenant_id: UUID of the tenant for multi-tenancy
-            
-        Returns:
-            bool: True if saved successfully
-        """
-        if not STORAGE_CLASSES_AVAILABLE:
-            logger.error("DB config helpers not available - cannot save to lad_dev")
-            return False
-
-        try:
-            from db.db_config import get_db_config
-
-            db_config = get_db_config()
-            analysis = dict(analysis or {})
-            analysis["tenant_id"] = tenant_id
-
-            # Full-column persistence into lad_dev.voice_call_analysis.
-            # This updates: disposition, lead_category, recommendations, key_phrases, cost, etc.
-            return bool(
-                self.save_to_database(
-                    analysis=analysis,
-                    call_log_id=call_log_id,
-                    db_config=db_config,
-                )
-            )
-        except Exception as e:
-            logger.error(f"lad_dev save failed: {e}", exc_info=True)
-            return False
-    
-    
-    def print_analysis_report(self, analysis: Dict):
-        """Print a formatted analysis report"""
-        
-        print("\n" + "="*60)
-        print("CALL ANALYTICS REPORT")
-        print("="*60)
-        
-        print(f"Call ID: {analysis['call_id']}")
-        print(f"Duration: {analysis['duration_seconds']} seconds")
-        print(f"Conversation: {analysis['word_count']} words")
-        
-        # Lead Disposition - NEW! Clear decision
-        if 'lead_disposition' in analysis:
-            disposition = analysis['lead_disposition']
-            print(f"\n{'='*60}")
-            print(f"LEAD DISPOSITION: {disposition['disposition']}")
-            print(f"   Recommended Action: {disposition['recommended_action']}")
-            print(f"   Reasoning: {disposition['reasoning']}")
-            print(f"   Confidence: {disposition['decision_confidence']}")
-            print(f"{'='*60}")
-        
-        # Lead Score
-        if 'lead_score' in analysis:
-            lead_score = analysis['lead_score']
-            print(f"\nLEAD SCORE: {lead_score['lead_score']}/{lead_score['max_score']} - {lead_score['lead_category']}")
-            print(f"   Priority: {lead_score['priority']}")
-            print(f"   Scoring Breakdown:")
-            for metric, value in lead_score['scoring_breakdown'].items():
-                print(f"      • {metric.replace('_', ' ').title()}: {value}")
-        
-        # Quality Metrics
-        if 'quality_metrics' in analysis:
-            quality = analysis['quality_metrics']
-            print(f"\nCONVERSATION QUALITY: {quality['quality_rating']}")
-            print(f"   Engagement Level: {quality['engagement_level']}")
-            print(f"   Turns: User={quality['conversation_turns']['user_turns']}, Bot={quality['conversation_turns']['bot_turns']}")
-            print(f"   Response Rate: {quality['response_rate']}")
-            print(f"   Avg User Response: {quality['avg_user_response_length']} words")
-            print(f"   Questions Asked: {quality['questions_asked_by_user']}")
-        
-        # Stage Info
-        if 'stage_info' in analysis:
-            stage = analysis['stage_info']
-            print(f"\nCALL STAGES:")
-            print(f"   Final Stage: {stage['final_stage']}")
-            print(f"   Completion: {stage['stage_completion_percentage']}")
-            print(f"   Stages Reached: {', '.join(stage['stages_reached'])}")
-        
-        print(f"\nSENTIMENT ANALYSIS:")
-        print(f"   Description: {analysis['sentiment']['sentiment_description']}")
-        print(f"   Confidence Score: {analysis['sentiment']['confidence_score']}")
-        print(f"   Combined Score: {analysis['sentiment']['combined_score']}")
-        print(f"   Reasoning: {analysis['sentiment']['reasoning']}")
-        
-        if analysis['sentiment']['key_phrases']:
-            print(f"   Key Phrases: {', '.join(analysis['sentiment']['key_phrases'])}")
-        
-        if 'error' not in analysis['summary']:
-            summary = analysis['summary']
-            
-            print(f"\nCALL SUMMARY:")
-            
-            if summary.get('business_name'):
-                print(f"   Business: {summary['business_name']}")
-            if summary.get('contact_person'):
-                print(f"   Contact: {summary['contact_person']}")
-            if summary.get('phone_number'):
-                print(f"   Phone: {summary['phone_number']}")
-            
-            if summary.get('key_discussion_points'):
-                print(f"\n   Key Discussion Points:")
-                for point in summary['key_discussion_points']:
-                    print(f"   • {point}")
-            
-            if summary.get('prospect_questions'):
-                print(f"\n   Prospect Questions:")
-                for question in summary['prospect_questions']:
-                    print(f"   • {question}")
-            
-            if summary.get('prospect_concerns'):
-                print(f"\n   Prospect Concerns:")
-                for concern in summary['prospect_concerns']:
-                    print(f"   • {concern}")
-            
-            if summary.get('next_steps'):
-                print(f"\n   Next Steps:")
-                for step in summary['next_steps']:
-                    print(f"   • {step}")
-            
-            if summary.get('recommendations'):
-                print(f"\n   Recommendations: {summary['recommendations']}")
-        
-        else:
-            print(f"\nSummary Error: {analysis['summary']['error']}")
-        
-        print("="*60)
-
     def update_leads_for_user_transcription(self, call_log_id: str, lead_id: str, db_config: Dict, 
-                                           conn=None, cursor=None, transcripts=None) -> bool:
+                                           conn=None, cursor=None, transcripts=None, tenant_id: str = None) -> bool:
         """
         Update leads table when user transcriptions are present in voice_call_logs.
         
         Updates the leads table columns:
         - source: 'voice_agent' 
         - status: 'success'
-        - stage: 'contacted'
+        - stage: [highest stage reached from conversation analysis]
         
         Only updates if user transcriptions are present (not just agent transcriptions).
         Will override existing values for the same lead_id.
@@ -2787,12 +2903,8 @@ CONFIDENCE: [High/Medium/Low]"""
             
         Returns:
             bool: True if update was successful, False otherwise
-            
-        Note:
-            If conn/cursor are provided, this function will reuse the existing connection
-            and not create a new one. If transcripts are provided, it will use them directly
-            instead of querying the database again.
         """
+        
         if not DB_AVAILABLE:
             logger.warning("Database not available - cannot update leads table")
             return False
@@ -2801,22 +2913,21 @@ CONFIDENCE: [High/Medium/Low]"""
             logger.warning(f"No lead_id provided for call log: {call_log_id}")
             return False
         
+        logger.info(f"DEBUG: DB_AVAILABLE={DB_AVAILABLE}, lead_id={lead_id}")
+        
         # Validate call_log_id UUID format
         if isinstance(call_log_id, str):
             import uuid as uuid_lib
             try:
                 # Validate UUID format
                 uuid_lib.UUID(call_log_id)
+                logger.info(f"DEBUG: call_log_id {call_log_id} is valid UUID")
             except ValueError:
-                logger.error(f"Invalid call_log_id UUID format: {call_log_id}")
+                logger.error(f"Invalid call_log_id format: {call_log_id}")
                 return False
-        else:
-            logger.error(f"call_log_id must be a string UUID, got {type(call_log_id)}")
-            return False
         
-        # System messages to filter out (voicemail prompts, etc.)
+        # System messages to filter out
         SYSTEM_MESSAGES = [
-            "call has been forwarded to voice mail",
             "the person you're trying to reach is not available",
             "at the tone", "please record your message",
             "to leave a callback number", "press",
@@ -2829,128 +2940,230 @@ CONFIDENCE: [High/Medium/Low]"""
         local_cursor = None
         
         try:
+            
             # Use provided connection/cursor or create new ones
             if conn is not None and cursor is not None:
+                logger.info(f"DEBUG: Using provided connection and cursor")
                 local_conn = conn
                 local_cursor = cursor
                 should_close_connection = False
             else:
-                local_conn = psycopg2.connect(**db_config)
+                # Ensure all db_config values are strings (fix for JSON error)
+                cleaned_db_config = {}
+                for key, value in db_config.items():
+                    if isinstance(value, dict):
+                        cleaned_db_config[key] = json.dumps(value)
+                    else:
+                        cleaned_db_config[key] = str(value) if value is not None else value
+                local_conn = psycopg2.connect(**cleaned_db_config)
                 local_cursor = local_conn.cursor()
                 should_close_connection = True
                 
+            logger.info(f"DEBUG: Database connection established, cursor created: {local_cursor is not None}")
+            
             # Use provided transcripts or fetch from database
             if transcripts is not None:
-                # Use provided transcripts directly
-                pass
+                logger.info(f"DEBUG: Using provided transcripts, type: {type(transcripts)}")
+                # Handle transcripts that might be passed as dict instead of JSON string
+                if isinstance(transcripts, dict):
+                    logger.info(f"DEBUG: Converting transcripts dict to JSON string")
+                    transcripts = json.dumps(transcripts)
+                    logger.info(f"DEBUG: Transcripts converted to JSON string, length: {len(transcripts)}")
+                elif isinstance(transcripts, tuple):
+                    # Handle case where transcripts is returned as a tuple from database query
+                    logger.info(f"DEBUG: Converting transcripts tuple to JSON string")
+                    if len(transcripts) > 0 and isinstance(transcripts[0], dict):
+                        transcripts = json.dumps(transcripts[0])
+                    else:
+                        transcripts = json.dumps(transcripts)
             else:
                 # Get transcripts from voice_call_logs
-                local_cursor.execute("""
-                    SELECT transcripts 
-                    FROM lad_dev.voice_call_logs 
-                    WHERE id = %s::uuid
-                """, (call_log_id,))
-                
-                result = local_cursor.fetchone()
-                if not result:
-                    logger.warning(f"No voice call log found for ID: {call_log_id}")
-                    return False
+                try:
+                    local_cursor.execute(f"""
+                        SELECT transcripts 
+                        FROM {SCHEMA}.voice_call_logs 
+                        WHERE id = %s::uuid
+                    """, (call_log_id,))
+                    result = local_cursor.fetchone()
                     
-                transcripts = result[0]
-                
+                    if not result:
+                        logger.warning(f"No transcripts found for call log: {call_log_id}")
+                        return False
+                    
+                    transcripts = result[0]
+                    
+                    # Handle case where transcripts is a dict (from tuple result)
+                    if isinstance(transcripts, dict):
+                        transcripts = json.dumps(transcripts)
+                        
+                except Exception as db_query_error:
+                    logger.error(f"Database query error: {db_query_error}")
+                    raise db_query_error
+            
             # Check if user transcriptions are present
             has_user_transcription = False
+            conversation_text = ""
             
             if transcripts:
-                if isinstance(transcripts, dict) and 'segments' in transcripts:
-                    # VoiceAgent segments format
-                    for segment in transcripts['segments']:
-                        speaker = segment.get('speaker', '').lower()
-                        text = segment.get('text', '').strip()
-                        if speaker == 'user' and text:
-                            # Filter out system messages
-                            is_system = any(sys_msg in text.lower() for sys_msg in SYSTEM_MESSAGES)
-                            if not is_system:
-                                has_user_transcription = True
-                                break
-                elif isinstance(transcripts, list):
-                    # List format
-                    for item in transcripts:
-                        if isinstance(item, dict):
-                            speaker = item.get('speaker', '').lower()
-                            text = item.get('text', '').strip()
-                            if speaker == 'user' and text:
-                                has_user_transcription = True
-                                break
-                elif isinstance(transcripts, str):
-                    # String format - could be plain text or JSON string
-                    import json
-                    try:
-                        # Try to parse as JSON first
-                        parsed_transcripts = json.loads(transcripts)
-                        if isinstance(parsed_transcripts, dict) and 'segments' in parsed_transcripts:
-                            # JSON string with segments format
-                            for segment in parsed_transcripts['segments']:
-                                speaker = segment.get('speaker', '').lower()
-                                text = segment.get('text', '').strip()
-                                if speaker == 'user' and text:
-                                    # Filter out system messages
-                                    is_system = any(sys_msg in text.lower() for sys_msg in SYSTEM_MESSAGES)
-                                    if not is_system:
-                                        has_user_transcription = True
-                                        break
-                        elif isinstance(parsed_transcripts, list):
-                            # JSON string with list format
-                            for item in parsed_transcripts:
-                                if isinstance(item, dict):
-                                    speaker = item.get('speaker', '').lower()
-                                    text = item.get('text', '').strip()
-                                    if speaker == 'user' and text:
-                                        has_user_transcription = True
-                                        break
+                try:
+                    # Try to parse as JSON first
+                    parsed_transcripts = json.loads(transcripts)
+                    
+                    if isinstance(parsed_transcripts, dict):
+                        # JSON string with dict format - check if it has segments
+                        if 'segments' in parsed_transcripts and isinstance(parsed_transcripts['segments'], list):
+                            # Use the same parsing as main analysis
+                            conversation_text = self._parse_voiceagent_segments(parsed_transcripts['segments'])
+                            # Check if there are any user messages in the parsed conversation
+                            has_user_transcription = any(line.startswith("User:") for line in conversation_text.split('\n') if line.strip())
                         else:
-                            # JSON but not a recognized format, treat as plain text
-                            if parsed_transcripts and str(parsed_transcripts).strip():
-                                # Non-empty text content, assume it's user transcription
-                                # Filter out system messages
-                                text_content = str(parsed_transcripts).strip()
-                                is_system = any(sys_msg in text_content.lower() for sys_msg in SYSTEM_MESSAGES)
-                                if not is_system:
-                                    has_user_transcription = True
-                    except (json.JSONDecodeError, ValueError):
-                        # Not valid JSON, treat as plain text
-                        if transcripts.strip():
+                            # Fallback for other dict formats
+                            for key, value in parsed_transcripts.items():
+                                if isinstance(value, str):
+                                    # Check for user transcriptions
+                                    if key.lower() == 'user' and value.strip():
+                                        has_user_transcription = True
+                                    # Build conversation text for stage analysis
+                                    conversation_text += f"{key}: {value}\n"
+                                elif isinstance(value, list):
+                                    # Handle nested list of messages
+                                    for item in value:
+                                        if isinstance(item, dict):
+                                            speaker = item.get('speaker', '').lower()
+                                            text = item.get('text', '').strip()
+                                            if speaker == 'user' and text:
+                                                has_user_transcription = True
+                                            conversation_text += f"{speaker}: {text}\n"
+                    elif isinstance(parsed_transcripts, list):
+                        # JSON string with list format - use same parsing as main analysis
+                        conversation_text = self._parse_voiceagent_segments(parsed_transcripts)
+                        # Check if there are any user messages in the parsed conversation
+                        has_user_transcription = any(line.startswith("User:") for line in conversation_text.split('\n') if line.strip())
+                    else:
+                        # JSON but not a recognized format, treat as plain text
+                        if parsed_transcripts and str(parsed_transcripts).strip():
                             # Non-empty text content, assume it's user transcription
                             # Filter out system messages
-                            text_content = transcripts.strip()
+                            text_content = str(parsed_transcripts).strip()
                             is_system = any(sys_msg in text_content.lower() for sys_msg in SYSTEM_MESSAGES)
                             if not is_system:
                                 has_user_transcription = True
-            
+                                conversation_text = text_content
+                except (json.JSONDecodeError, ValueError) as json_error:
+                    logger.warning(f"Failed to parse transcripts as JSON: {json_error}")
+                    # Not valid JSON, treat as plain text
+                    if transcripts.strip():
+                        # Non-empty text content, assume it's user transcription
+                        # Filter out system messages
+                        text_content = transcripts.strip()
+                        is_system = any(sys_msg in text_content.lower() for sys_msg in SYSTEM_MESSAGES)
+                        if not is_system:
+                            has_user_transcription = True
+                            conversation_text = text_content
+            else:
+                logger.info(f"No transcripts provided")
+
+            logger.info(f"Final result - has_user_transcription: {has_user_transcription}, conversation_text length: {len(conversation_text)}")
+
             if not has_user_transcription:
-                logger.info(f"No user transcriptions found for call log: {call_log_id} - skipping leads update")
-                return False
+                logger.info("No user transcriptions found for call log: {call_log_id} - updating source and stage only")
+
+                try:
+                    stage_info = stage_detector.extract_call_stages(conversation_text, {}, tenant_id)
+                    stages_reached = stage_info.get('stages_reached', [])
+
+                    # For no user transcription, always set stage to followup and add 2_followup to stages_reached
+                    stage_value = 'followup'
+                    stages_reached.append("2_followup")  # Add followup stage for no user transcription
+
+                    logger.info(f"No user transcription - setting stage to followup and adding 2_followup to stages_reached")
+                    logger.info(f"Updated stages_reached: {stages_reached}")
+
+                    try:
+                        # Convert stages_reached to text for storage
+                        stages_reached_text = json.dumps(stages_reached) if isinstance(stages_reached, list) else str(stages_reached)
+
+                        local_cursor.execute(f"""
+                            UPDATE {SCHEMA}.voice_call_analysis 
+                            SET stages_reached = %s
+                            WHERE call_log_id = %s::uuid
+                        """, (
+                            stages_reached_text,
+                            call_log_id
+                        ))
+                        logger.info(f"DEBUG: Updated voice_call_analysis stages_reached with 2_followup")
+
+                        # Commit this update
+                        local_conn.commit()
+                        logger.info(f"DEBUG: Committed voice_call_analysis update")
+
+                    except Exception as analysis_update_error:
+                        logger.error(f"Error updating voice_call_analysis stages_reached: {analysis_update_error}")
+                        # Don't fail the whole operation if this update fails
+
+                    # Ensure lead_id is a string
+                    if not isinstance(lead_id, str):
+                        lead_id = str(lead_id)
+
+                    try:
+                        logger.info(f"DEBUG: Executing no-user-transcription UPDATE with parameters: source=voice_agent, stage={stage_value}, lead_id={lead_id}")
+                        logger.info(f"DEBUG: Parameter types - source: {type('voice_agent')}, stage: {type(stage_value)}, lead_id: {type(lead_id)}")
+
+                        local_cursor.execute(f"""
+                            UPDATE {SCHEMA}.leads 
+                            SET source = %s, 
+                                stage = %s,
+                                updated_at = %s
+                            WHERE id = %s::uuid
+                        """, (
+                            'voice_agent',  # Update source column
+                            stage_value,    # Set stage as 'followup' or 'followup_scheduled'
+                            datetime.now(timezone.utc),
+                            lead_id
+                        ))
+                        logger.info(f"DEBUG: No-user-transcription UPDATE executed successfully")
+
+                    except Exception as no_user_update_error:
+                        logger.error(f"Error executing no-user-transcription leads table update: {no_user_update_error}")
+                        logger.error(f"Parameters: source=voice_agent, stage={stage_value} (type: {type(stage_value)}), lead_id={lead_id} (type: {type(lead_id)})")
+                        raise no_user_update_error
+
+                except Exception as update_error:
+                    logger.error(f"Error executing leads table update: {update_error}")
+                    raise update_error
+
+            else:
+                # Has user transcriptions - process normally
+                try:
+                    # Process user transcription logic here
+                    readable_stage = stage_detector.extract_call_stages(conversation_text, {}, tenant_id).get('final_stage', 'contacted')
+                    stage_str = str(readable_stage) if readable_stage is not None else ""
+                    lead_id_str = str(lead_id) if lead_id is not None else ""
+                    
+                    local_cursor.execute(f"""
+                        UPDATE {SCHEMA}.leads 
+                        SET source = %s, 
+                            status = %s, 
+                            stage = %s,
+                            updated_at = %s
+                        WHERE id = %s::uuid
+                    """, ('voice_agent', 'success', stage_str, datetime.now(timezone.utc), lead_id_str))
+                    
+                    if should_close_connection:
+                        local_conn.commit()
+                    logger.info(f"Updated leads table for lead_id: {lead_id} (source=voice_agent, status=success, stage={readable_stage})")
+                    return True
+                    
+                except Exception as update_error:
+                    logger.error(f"Error executing leads table update: {update_error}")
+                    if local_conn and should_close_connection:
+                        local_conn.rollback()
+                    return False
             
-            # Update leads table
-            local_cursor.execute("""
-                UPDATE lad_dev.leads 
-                SET source = %s, 
-                    status = %s, 
-                    stage = %s, 
-                    updated_at = %s
-                WHERE id = %s::uuid
-            """, (
-                'voice_agent',
-                'success', 
-                'contacted',
-                datetime.now(timezone.utc),
-                lead_id
-            ))
-            
-            # Only commit if we created the connection ourselves
+            # Always commit the transaction
             if should_close_connection:
                 local_conn.commit()
-            logger.info(f"Updated leads table for lead_id: {lead_id} (source=voice_agent, status=success, stage=contacted)")
+            logger.info(f"Updated leads table for lead_id: {lead_id} (source=voice_agent, stage={stage_value})")
             return True
             
         except Exception as e:
@@ -2978,12 +3191,8 @@ async def analyze_call_complete(call_id: str, conversation_log, duration_seconds
         call_start_time: datetime when call started (optional, for real timestamps)
     """
     
-    print(f"\nStarting post-call analysis for {call_id}...")
-    
     analysis = await analytics.analyze_call(call_id, conversation_log, duration_seconds, call_start_time)
-    analytics.print_analysis_report(analysis)
     json_filename = analytics.save_analysis(analysis)
-    print(f"JSON Analysis saved to: {json_filename}")
     
     return analysis
 
@@ -3011,8 +3220,6 @@ try:
     DB_AVAILABLE = True
 except ImportError:
     DB_AVAILABLE = False
-    print("psycopg2 not installed. Database features disabled.")
-    print("   Install with: pip install psycopg2-binary")
 
 
 class StandaloneAnalytics:
@@ -3038,7 +3245,6 @@ class StandaloneAnalytics:
             raise ValueError("Database config not provided. Use --db-host, --db-name, --db-user, --db-pass or .env file")
         
         logger.info("Listing calls from database...")
-        print("=" * 80)
         
         conn = psycopg2.connect(**self.db_config)
         cursor = conn.cursor()
@@ -3046,7 +3252,7 @@ class StandaloneAnalytics:
         try:
             # Fetch calls in pgAdmin's default display order (physical storage order using ctid)
             # This matches exactly how pgAdmin shows rows when no ORDER BY is specified
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     ROW_NUMBER() OVER (ORDER BY ctid) as row_num,
                     id,
@@ -3056,7 +3262,7 @@ class StandaloneAnalytics:
                         WHEN transcripts IS NULL OR transcripts::text = '' THEN 'No transcript'
                         ELSE SUBSTRING(transcripts::text, 1, 50) || '...'
                     END as transcript_preview
-                FROM lad_dev.voice_call_logs
+                FROM {SCHEMA}.voice_call_logs
                 ORDER BY ctid
                 LIMIT 500000
             """)
@@ -3065,11 +3271,7 @@ class StandaloneAnalytics:
             
             if not calls:
                 logger.warning("No calls found in database.")
-                print("No calls found in database.")
                 return
-            
-            print(f"{'Row':<6} {'UUID':<40} {'Started At':<20} {'Duration':<10} {'Transcript Preview'}")
-            print("-" * 80)
             
             for row_num, call_id, started_at, ended_at, transcript_preview in calls:
                 duration = ""
@@ -3078,17 +3280,12 @@ class StandaloneAnalytics:
                     duration = f"{duration_seconds}s"
                 
                 started_str = started_at.strftime('%Y-%m-%d %H:%M:%S') if started_at else 'N/A'
-                print(f"{row_num:<6} {str(call_id):<40} {started_str:<20} {duration:<10} {transcript_preview}")
-            
-            print("-" * 80)
-            print(f"\nRow numbers match pgAdmin's default display order (physical storage order)")
-            print(f"To analyze a call, use: python merged_analytics.py --db-id <row_number>")
-            print(f"Or use UUID directly: python merged_analytics.py --db-id <uuid_string>")
+                print(f"{row_num}: {call_id} - {started_str} - {duration} - {transcript_preview}")
             
         finally:
             cursor.close()
             conn.close()
-    
+
     async def analyze_from_database(self, call_log_id) -> Dict:
         """
         Analyze call from database call_logs table
@@ -3127,7 +3324,7 @@ class StandaloneAnalytics:
             
             if isinstance(call_log_id, int):
                 # Integer ID: Use ROW_NUMBER() to find the Nth record (ordered by ctid)
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT id, transcripts, started_at, ended_at, duration_seconds, recording_url
                     FROM (
                         SELECT 
@@ -3138,23 +3335,23 @@ class StandaloneAnalytics:
                             duration_seconds,
                             recording_url,
                             ROW_NUMBER() OVER (ORDER BY ctid) as row_num
-                        FROM lad_dev.voice_call_logs
+                        FROM {SCHEMA}.voice_call_logs
                     ) ranked
                     WHERE row_num = %s
                 """, (call_log_id,))
             else:
                 # UUID string: Try direct UUID match or text match
                 try:
-                    cursor.execute("""
+                    cursor.execute(f"""
                         SELECT id, transcripts, started_at, ended_at, duration_seconds, recording_url
-                        FROM lad_dev.voice_call_logs
+                        FROM {SCHEMA}.voice_call_logs
                         WHERE id = %s::uuid
                     """, (str(call_log_id),))
                 except (psycopg2.errors.InvalidTextRepresentation, psycopg2.errors.UndefinedFunction):
                     # Fallback: try text match
-                    cursor.execute("""
+                    cursor.execute(f"""
                         SELECT id, transcripts, started_at, ended_at, duration_seconds, recording_url
-                        FROM lad_dev.voice_call_logs
+                        FROM {SCHEMA}.voice_call_logs
                         WHERE id::text = %s
                     """, (str(call_log_id),))
             
@@ -3167,10 +3364,7 @@ class StandaloneAnalytics:
             recording_url = call_data[5] if len(call_data) > 5 else None
             
             # Get tenant_id and lead_id in single query
-            cursor.execute(
-                "SELECT tenant_id, lead_id FROM lad_dev.voice_call_logs WHERE id = %s::uuid",
-                (str(db_call_id),)
-            )
+            cursor.execute(f"SELECT tenant_id, lead_id FROM {SCHEMA}.voice_call_logs WHERE id = '{db_call_id}'::uuid")
             result = cursor.fetchone()
             tenant_id = result[0] if result and result[0] else None
             lead_id = result[1] if result and result[1] else None
@@ -3217,7 +3411,8 @@ class StandaloneAnalytics:
                 call_id=call_id,
                 conversation_log=conversation_text,
                 duration_seconds=duration,
-                call_start_time=started_at
+                call_start_time=started_at,
+                tenant_id=str(tenant_id) if tenant_id else None
             )
             
             # Add tenant_id to result for tracking
@@ -3226,7 +3421,7 @@ class StandaloneAnalytics:
             
                 # Save to database
                 if tenant_id and STORAGE_CLASSES_AVAILABLE:
-                    logger.info("Saving analytics to lad_dev.voice_call_analysis table...")
+                    logger.info("Saving analytics to {SCHEMA}.voice_call_analysis table...")
                     success = await self.analytics.save_to_lad_dev(result, str(db_call_id), str(tenant_id))
                     # Use the same db_config for leads update
                     from db.db_config import get_db_config
@@ -3241,7 +3436,12 @@ class StandaloneAnalytics:
                     # Update leads table if user transcriptions are present
                     try:
                         if lead_id:
-                            self.analytics.update_leads_for_user_transcription(str(db_call_id), lead_id, leads_db_config, None, None, transcripts)
+                            # Get the original transcripts from database to pass to leads update
+                            cursor.execute(f"SELECT transcripts FROM {SCHEMA}.voice_call_logs WHERE id = %s::uuid", (str(db_call_id),))
+                            transcripts_result = cursor.fetchone()
+                            original_transcripts = transcripts_result[0] if transcripts_result else None
+                            
+                            self.analytics.update_leads_for_user_transcription(str(db_call_id), lead_id, leads_db_config, None, None, original_transcripts, str(tenant_id))
                     except Exception as leads_update_error:
                         logger.warning(f"Failed to update leads table for user transcription: {leads_update_error}")
                         # Don't fail the whole operation if leads update fails
@@ -3329,19 +3529,6 @@ Examples:
         
         if result:
             analytics.save_json(result, args.output)
-            
-            print("\n" + "="*60)
-            print("ANALYSIS SUMMARY")
-            print("="*60)
-            print(f"Call ID: {result['call_id']}")
-            print(f"Disposition: {result['lead_disposition']['disposition']}")
-            print(f"Action: {result['lead_disposition']['recommended_action']}")
-            print(f"Lead Score: {result['lead_score']['lead_score']}/10 ({result['lead_score']['lead_category']})")
-            print(f"Sentiment: {result['sentiment']['category']}")
-            print(f"Engagement: {result['quality_metrics']['engagement_level']}")
-            print(f"Duration: {result['duration_seconds']}s")
-            print("="*60)
-            print("Analysis complete!")
     
     except Exception as e:
         print(f"\nError: {e}")
