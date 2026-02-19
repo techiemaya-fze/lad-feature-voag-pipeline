@@ -61,7 +61,7 @@ class LiveKitConfigStorage:
         Returns:
             Dict with keys: id, name, description, livekit_url,
             livekit_api_key, livekit_api_secret (encrypted), trunk_id,
-            created_at, updated_at
+            worker_name, created_at, updated_at
             
             Returns None if not found.
         """
@@ -76,7 +76,7 @@ class LiveKitConfigStorage:
                         f"""
                         SELECT id, name, description, livekit_url,
                                livekit_api_key, livekit_api_secret, trunk_id,
-                               created_at, updated_at
+                               worker_name, created_at, updated_at
                         FROM {FULL_LIVEKIT_TABLE}
                         WHERE id = %s::uuid
                         LIMIT 1
@@ -117,7 +117,7 @@ class LiveKitConfigStorage:
                         f"""
                         SELECT id, name, description, livekit_url,
                                livekit_api_key, livekit_api_secret, trunk_id,
-                               created_at, updated_at
+                               worker_name, created_at, updated_at
                         FROM {FULL_LIVEKIT_TABLE}
                         WHERE name = %s
                         LIMIT 1
@@ -209,7 +209,8 @@ class LiveKitConfigStorage:
         # Build SET clause dynamically
         allowed_fields = {
             'name', 'description', 'livekit_url', 
-            'livekit_api_key', 'livekit_api_secret', 'trunk_id'
+            'livekit_api_key', 'livekit_api_secret', 'trunk_id',
+            'worker_name'
         }
         
         update_fields = {k: v for k, v in updates.items() if k in allowed_fields}
@@ -299,7 +300,7 @@ class LiveKitConfigStorage:
                         f"""
                         SELECT id, name, description, livekit_url,
                                livekit_api_key, livekit_api_secret, trunk_id,
-                               created_at, updated_at
+                               worker_name, created_at, updated_at
                         FROM {FULL_LIVEKIT_TABLE}
                         ORDER BY name
                         """
