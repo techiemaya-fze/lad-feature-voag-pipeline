@@ -3,11 +3,9 @@ Batch Routes Module (V2 API).
 
 Handles batch call operations with kebab-case naming:
 - POST /trigger-batch-call: Start batch call job
-- GET /batch-status/{batch_id}: Check batch job status (now uses /calls/status)
-- POST /batch-cancel/{batch_id}: Cancel batch job (now uses /calls/cancel)
+- POST /trigger-test-batch: Start test batch with simulated outcomes
 
-Note: Batch status and cancel are consolidated into calls.py for a unified API.
-This file provides the trigger-batch-call endpoint and forwards others.
+Note: Batch status and cancel are handled by calls.py (unified API).
 """
 
 import asyncio
@@ -72,10 +70,10 @@ def _get_voice_storage() -> VoiceStorage:
 # BATCH PACING CONFIGURATION
 # =============================================================================
 # Wave-based dispatch: process BATCH_WAVE_SIZE calls at a time, wait for completion
-BATCH_WAVE_SIZE = int(os.getenv("BATCH_WAVE_SIZE", "15"))
+BATCH_WAVE_SIZE = int(os.getenv("BATCH_WAVE_SIZE", "12"))
 BATCH_WAVE_POLL_INTERVAL = float(os.getenv("BATCH_WAVE_POLL_INTERVAL", "5.0"))  # seconds
 BATCH_WAVE_TIMEOUT = float(os.getenv("BATCH_WAVE_TIMEOUT", "1200.0"))  # 20 min max per wave
-BATCH_MAX_RETRIES = int(os.getenv("BATCH_MAX_RETRIES", "2"))  # Max retries for expired requests
+BATCH_MAX_RETRIES = int(os.getenv("BATCH_MAX_RETRIES", "1"))  # Max retries for stuck/dropped calls
 BATCH_ONGOING_TIMEOUT = int(os.getenv("BATCH_ONGOING_TIMEOUT", "15"))  # Minutes before ongoing call is considered stuck
 
 async def _resolve_tenant_id_from_user(user_id: str | None) -> str | None:
@@ -216,6 +214,9 @@ async def _wait_for_wave_completion(
         pending = await batch_storage.count_pending_entries(batch_id, entry_ids)
         
         if pending == 0:
+            # Sync batch_entries.status from call_logs (source of truth)
+            # This catches any entries where the entry-completed callback failed
+            await batch_storage.sync_entry_statuses_from_call_logs(batch_id, entry_ids)
             logger.info("Batch %s wave %d: All entries completed", job_id, wave_num)
             return {"completed": True, "timeout_results": None}
         
@@ -282,6 +283,295 @@ async def _wait_for_wave_completion(
 
 
 # =============================================================================
+# SHARED BATCH PIPELINE
+# =============================================================================
+
+async def _execute_batch_pipeline(
+    *,
+    entries: list[BatchCallEntry],
+    voice_id: str,
+    clean_from_number: str | None,
+    clean_context: str | None,
+    initiator_id,
+    assigned_agent_id: int | None,
+    llm_provider_override: str | None = None,
+    llm_model_override: str | None = None,
+    frontend_id: str | None = None,
+    worker_name_override: str | None = None,
+) -> dict:
+    """
+    Shared batch creation and processing pipeline.
+    
+    Used by both trigger-batch-call (production) and trigger-test-batch (testing).
+    For test batches, worker_name_override="batch-test-worker" is the only difference.
+    The same wave dispatch, status tracking, and report generation logic runs.
+    """
+    call_service = get_call_service()
+    batch_storage = _get_batch_storage()
+
+    if not entries:
+        raise HTTPException(status_code=400, detail="No valid entries found")
+
+    if not voice_id or not voice_id.strip():
+        raise HTTPException(status_code=400, detail="voice_id cannot be empty")
+
+    # Resolve voice
+    try:
+        resolved_voice_id, voice_context = await call_service.resolve_voice(voice_id, assigned_agent_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Resolve KB store IDs
+    batch_kb_store_ids: list[str] | None = None
+    if await call_service.should_use_glinks_kb(assigned_agent_id, frontend_id, batch_kb_store_ids):
+        batch_kb_store_ids = DEFAULT_GLINKS_KB_STORE_IDS
+        logger.info(
+            "Auto-assigned default Glinks KB for batch: agent_id=%s, frontend_id=%s",
+            assigned_agent_id, frontend_id,
+        )
+
+    if batch_kb_store_ids:
+        for entry in entries:
+            if not entry.knowledge_base_store_ids:
+                entry.knowledge_base_store_ids = batch_kb_store_ids
+
+    # Generate job_id with batch- prefix
+    job_id = f"batch-{uuid.uuid4().hex}"
+
+    # Resolve tenant_id from initiator's primary_tenant_id
+    tenant_id = await _resolve_tenant_id_from_user(initiator_id)
+    if not tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not resolve tenant_id for initiated_by user"
+        )
+
+    # Create batch record in database
+    batch_id = await batch_storage.create_batch(
+        tenant_id=tenant_id,
+        total_calls=len(entries),
+        job_id=job_id,
+        initiated_by_user_id=initiator_id,
+        agent_id=assigned_agent_id,
+        voice_id=voice_context.db_voice_id,
+        from_number_id=None,
+        base_context=clean_context,
+        llm_provider=llm_provider_override,
+        llm_model=llm_model_override,
+    )
+
+    if not batch_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create batch record in database"
+        )
+
+    logger.info("Created batch record: batch_id=%s, job_id=%s, total_calls=%d", batch_id, job_id, len(entries))
+
+    # Create batch entry records and track their IDs
+    entry_ids: list[str] = []
+    for i, entry in enumerate(entries):
+        entry_metadata = {"entry_index": i}
+        if entry.lead_name:
+            entry_metadata["lead_name"] = entry.lead_name
+        if entry.context:
+            entry_metadata["added_context"] = entry.context
+
+        entry_id = await batch_storage.create_batch_entry(
+            tenant_id=tenant_id,
+            batch_id=batch_id,
+            to_phone=entry.to_number,
+            lead_id=None,
+            call_log_id=None,
+            metadata=entry_metadata,
+        )
+        if entry_id:
+            entry_ids.append(entry_id)
+        else:
+            logger.warning("Failed to create batch entry %d", i)
+            entry_ids.append("")
+
+    # Fire and forget the batch processing with wave-based pacing
+    async def _process_batch():
+        """
+        Process batch in waves of BATCH_WAVE_SIZE calls.
+        
+        This prevents overwhelming the worker by waiting for each wave
+        to complete before starting the next.
+        """
+        call_service = get_call_service()
+        batch_storage = _get_batch_storage()
+        
+        total = len(entries)
+        wave_num = 0
+        
+        # Mark batch as running BEFORE dispatching
+        await batch_storage.update_batch_status(batch_id, "running")
+        
+        for wave_start in range(0, total, BATCH_WAVE_SIZE):
+            wave_num += 1
+            wave_end = min(wave_start + BATCH_WAVE_SIZE, total)
+            wave_entries = entries[wave_start:wave_end]
+            wave_entry_ids = entry_ids[wave_start:wave_end]
+            
+            logger.info(
+                "Batch %s: Starting wave %d (%d-%d of %d)", 
+                job_id, wave_num, wave_start + 1, wave_end, total
+            )
+            
+            # Dispatch all calls in this wave
+            dispatched_entry_ids = []
+            for i, (entry, entry_id) in enumerate(zip(wave_entries, wave_entry_ids)):
+                if not entry_id:
+                    logger.warning("Skipping entry %d - no entry_id", wave_start + i)
+                    continue
+                
+                try:
+                    await batch_storage.update_batch_entry_status(entry_id, "running")
+                    
+                    result = await call_service.dispatch_call(
+                        job_id=job_id,
+                        voice_id=resolved_voice_id,
+                        voice_context=voice_context,
+                        from_number=clean_from_number,
+                        to_number=entry.to_number,
+                        context=entry.context or clean_context,
+                        initiated_by=initiator_id,
+                        agent_id=assigned_agent_id,
+                        llm_provider=llm_provider_override,
+                        llm_model=llm_model_override,
+                        knowledge_base_store_ids=entry.knowledge_base_store_ids,
+                        lead_name=entry.lead_name,
+                        lead_id_override=entry.lead_id,
+                        batch_id=str(batch_id),
+                        entry_id=entry_id,
+                        worker_name_override=worker_name_override,
+                    )
+                    
+                    await batch_storage.update_batch_entry_call_log(batch_id, entry_id, result.call_log_id)
+                    await batch_storage.update_batch_entry_status(entry_id, "dispatched")
+                    dispatched_entry_ids.append(entry_id)
+                    
+                except Exception as exc:
+                    logger.exception("Batch entry %d failed: %s", wave_start + i, exc)
+                    await batch_storage.update_batch_entry_status(entry_id, "failed", error_message=str(exc)[:500])
+                    await batch_storage.increment_batch_counters(batch_id, failed_delta=1)
+            
+            # Wait for this wave to complete before starting next
+            if dispatched_entry_ids:
+                wave_result = await _wait_for_wave_completion(batch_id, dispatched_entry_ids, wave_num, job_id)
+                
+                # If wave was cancelled, trigger report if any calls completed and exit
+                if wave_result.get("cancelled"):
+                    logger.info("Batch %s: Wave %d cancelled, checking for partial report", job_id, wave_num)
+                    batch_record = await batch_storage.get_batch_by_id(str(batch_id))
+                    completed_calls = batch_record.get("completed_calls", 0) if batch_record else 0
+                    if completed_calls > 0:
+                        logger.info("Batch %s: %d completed calls — triggering partial report", job_id, completed_calls)
+                        asyncio.create_task(_generate_and_send_batch_report(str(batch_id)))
+                    return
+                
+                timeout_results = wave_result.get("timeout_results")
+                
+                if timeout_results:
+                    timeout_failed = (
+                        timeout_results.get("failed_max_retries", 0)
+                        + timeout_results.get("failed_ringing", 0)
+                        + timeout_results.get("failed_ongoing_stuck", 0)
+                        + timeout_results.get("recovered_failed", 0)
+                    )
+                    timeout_completed = timeout_results.get("recovered_completed", 0)
+                    if timeout_failed > 0:
+                        await batch_storage.increment_batch_counters(batch_id, failed_delta=timeout_failed)
+                        logger.info("Batch %s wave %d: Incremented failed_calls by %d (timeout failures)", job_id, wave_num, timeout_failed)
+                    if timeout_completed > 0:
+                        await batch_storage.increment_batch_counters(batch_id, completed_delta=timeout_completed)
+                        logger.info("Batch %s wave %d: Incremented completed_calls by %d (recovered from call_logs)", job_id, wave_num, timeout_completed)
+                
+                if timeout_results and timeout_results.get("reset_to_queued", 0) > 0:
+                    retry_entries = await batch_storage.get_queued_entries_for_wave(
+                        str(batch_id), wave_size=timeout_results["reset_to_queued"]
+                    )
+                    if retry_entries:
+                        logger.info(
+                            "Batch %s wave %d: Re-dispatching %d retried entries",
+                            job_id, wave_num, len(retry_entries)
+                        )
+                        retry_entry_ids = []
+                        for retry_entry in retry_entries:
+                            rid = str(retry_entry["id"])
+                            try:
+                                await batch_storage.update_batch_entry_status(rid, "running")
+                                result = await call_service.dispatch_call(
+                                    job_id=job_id,
+                                    voice_id=resolved_voice_id,
+                                    voice_context=voice_context,
+                                    from_number=clean_from_number,
+                                    to_number=retry_entry["to_phone"],
+                                    context=retry_entry.get("metadata", {}).get("context") or clean_context,
+                                    initiated_by=initiator_id,
+                                    agent_id=assigned_agent_id,
+                                    llm_provider=llm_provider_override,
+                                    llm_model=llm_model_override,
+                                    knowledge_base_store_ids=retry_entry.get("metadata", {}).get("knowledge_base_store_ids"),
+                                    lead_name=retry_entry.get("metadata", {}).get("lead_name"),
+                                    lead_id_override=retry_entry.get("lead_id"),
+                                    batch_id=str(batch_id),
+                                    entry_id=rid,
+                                    worker_name_override=worker_name_override,
+                                )
+                                await batch_storage.update_batch_entry_call_log(batch_id, rid, result.call_log_id)
+                                await batch_storage.update_batch_entry_status(rid, "dispatched")
+                                retry_entry_ids.append(rid)
+                            except Exception as exc:
+                                logger.exception("Retry dispatch failed for entry %s: %s", rid, exc)
+                                await batch_storage.update_batch_entry_status(rid, "failed", error_message=str(exc)[:500])
+                                await batch_storage.increment_batch_counters(batch_id, failed_delta=1)
+                        
+                        if retry_entry_ids:
+                            await _wait_for_wave_completion(batch_id, retry_entry_ids, wave_num, job_id)
+            
+            logger.info("Batch %s: Wave %d complete", job_id, wave_num)
+            
+            # Check between waves if batch was cancelled
+            if await batch_storage.is_batch_stopped(str(batch_id)):
+                logger.info("Batch %s: Stopped/cancelled between waves, checking for partial report", job_id)
+                batch_record = await batch_storage.get_batch_by_id(str(batch_id))
+                completed_calls = batch_record.get("completed_calls", 0) if batch_record else 0
+                if completed_calls > 0:
+                    logger.info("Batch %s: %d completed calls — triggering partial report", job_id, completed_calls)
+                    asyncio.create_task(_generate_and_send_batch_report(str(batch_id)))
+                return
+        
+        logger.info("Batch %s dispatched all %d calls in %d waves", job_id, total, wave_num)
+        
+        # Final safety net: check if batch is complete and trigger report
+        # This catches cases where entry_completed callbacks failed but
+        # sync_entry_statuses_from_call_logs already synced all entries
+        await asyncio.sleep(15)  # Allow any in-flight callbacks to land
+        
+        result = await batch_storage.check_and_complete_batch(str(batch_id))
+        if result.get("should_report") or result.get("completed"):
+            logger.info("Batch %s: All waves done, triggering report generation", job_id)
+            asyncio.create_task(_generate_and_send_batch_report(str(batch_id)))
+        else:
+            logger.info(
+                "Batch %s: All waves dispatched but batch not yet complete (report pending from callbacks)",
+                job_id,
+            )
+
+    asyncio.create_task(_process_batch())
+    
+    return {
+        "job_id": job_id,
+        "batch_id": str(batch_id),
+        "total_entries": len(entries),
+        "status": "accepted",
+        "message": f"Batch job started with {len(entries)} calls",
+    }
+
+
+# =============================================================================
 # POST /trigger-batch-call - Start batch call job
 # =============================================================================
 
@@ -296,9 +586,6 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
     
     Returns batch job ID for status tracking.
     """
-    call_service = get_call_service()
-    batch_storage = _get_batch_storage()
-    voice_storage = _get_voice_storage()
     
     content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
     entries: list[BatchCallEntry]
@@ -359,247 +646,18 @@ async def trigger_batch_call(request: Request) -> dict[str, Any]:
         file_bytes = await csv_upload.read()
         entries = _parse_batch_csv(file_bytes)
 
-    if not entries:
-        raise HTTPException(status_code=400, detail="No valid entries found")
-
-    if not voice_id or not voice_id.strip():
-        raise HTTPException(status_code=400, detail="voice_id cannot be empty")
-
-    # Resolve voice
-    try:
-        resolved_voice_id, voice_context = await call_service.resolve_voice(voice_id, assigned_agent_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Resolve KB store IDs
     frontend_id = request.headers.get("X-Frontend-ID")
-    batch_kb_store_ids: list[str] | None = None
-    
-    if await call_service.should_use_glinks_kb(assigned_agent_id, frontend_id, batch_kb_store_ids):
-        batch_kb_store_ids = DEFAULT_GLINKS_KB_STORE_IDS
-        logger.info(
-            "Auto-assigned default Glinks KB for batch: agent_id=%s, frontend_id=%s",
-            assigned_agent_id, frontend_id,
-        )
-    
-    # Apply resolved KB to entries without their own KB
-    if batch_kb_store_ids:
-        for entry in entries:
-            if not entry.knowledge_base_store_ids:
-                entry.knowledge_base_store_ids = batch_kb_store_ids
-
-    # Generate job_id with batch- prefix
-    job_id = f"batch-{uuid.uuid4().hex}"
-    
-    # Resolve tenant_id from initiator's primary_tenant_id
-    tenant_id = await _resolve_tenant_id_from_user(initiator_id)
-    if not tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Could not resolve tenant_id for initiated_by user"
-        )
-    
-    # Create batch record in database
-    batch_id = await batch_storage.create_batch(
-        tenant_id=tenant_id,
-        total_calls=len(entries),
-        job_id=job_id,
-        initiated_by_user_id=initiator_id,
-        agent_id=assigned_agent_id,
-        voice_id=voice_context.db_voice_id,
-        from_number_id=None,  # Would need _resolve_from_number_id helper
-        base_context=clean_context,
-        llm_provider=llm_provider_override,
-        llm_model=llm_model_override,
+    return await _execute_batch_pipeline(
+        entries=entries,
+        voice_id=voice_id,
+        clean_from_number=clean_from_number,
+        clean_context=clean_context,
+        initiator_id=initiator_id,
+        assigned_agent_id=assigned_agent_id,
+        llm_provider_override=llm_provider_override,
+        llm_model_override=llm_model_override,
+        frontend_id=frontend_id,
     )
-    
-    if not batch_id:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create batch record in database"
-        )
-    
-    logger.info("Created batch record: batch_id=%s, job_id=%s, total_calls=%d", batch_id, job_id, len(entries))
-    
-    # Create batch entry records and track their IDs
-    entry_ids: list[str] = []
-    for i, entry in enumerate(entries):
-        # Store lead_name in metadata since table uses lead_id (UUID FK)
-        entry_metadata = {"entry_index": i}
-        if entry.lead_name:
-            entry_metadata["lead_name"] = entry.lead_name
-        if entry.context:
-            entry_metadata["added_context"] = entry.context
-        
-        entry_id = await batch_storage.create_batch_entry(
-            tenant_id=tenant_id,
-            batch_id=batch_id,
-            to_phone=entry.to_number,
-            lead_id=None,  # Would need lead resolution
-            call_log_id=None,
-            metadata=entry_metadata,
-        )
-        if entry_id:
-            entry_ids.append(entry_id)
-        else:
-            logger.warning("Failed to create batch entry %d", i)
-            entry_ids.append("")  # Empty placeholder
-
-    # Fire and forget the batch processing with wave-based pacing
-    async def _process_batch():
-        """
-        Process batch in waves of BATCH_WAVE_SIZE calls.
-        
-        This prevents overwhelming the worker by waiting for each wave
-        to complete before starting the next.
-        """
-        call_service = get_call_service()
-        batch_storage = _get_batch_storage()
-        
-        total = len(entries)
-        wave_num = 0
-        
-        # Mark batch as running BEFORE dispatching (avoids race with entry_completed_callback
-        # which can mark batch 'completed' before this loop finishes)
-        await batch_storage.update_batch_status(batch_id, "running")
-        
-        for wave_start in range(0, total, BATCH_WAVE_SIZE):
-            wave_num += 1
-            wave_end = min(wave_start + BATCH_WAVE_SIZE, total)
-            wave_entries = entries[wave_start:wave_end]
-            wave_entry_ids = entry_ids[wave_start:wave_end]
-            
-            logger.info(
-                "Batch %s: Starting wave %d (%d-%d of %d)", 
-                job_id, wave_num, wave_start + 1, wave_end, total
-            )
-            
-            # Dispatch all calls in this wave
-            dispatched_entry_ids = []
-            for i, (entry, entry_id) in enumerate(zip(wave_entries, wave_entry_ids)):
-                if not entry_id:
-                    logger.warning("Skipping entry %d - no entry_id", wave_start + i)
-                    continue
-                
-                try:
-                    # Update entry status to running
-                    await batch_storage.update_batch_entry_status(entry_id, "running")
-                    
-                    # Dispatch call
-                    result = await call_service.dispatch_call(
-                        job_id=job_id,
-                        voice_id=resolved_voice_id,
-                        voice_context=voice_context,
-                        from_number=clean_from_number,
-                        to_number=entry.to_number,
-                        context=entry.context or clean_context,
-                        initiated_by=initiator_id,
-                        agent_id=assigned_agent_id,
-                        llm_provider=llm_provider_override,
-                        llm_model=llm_model_override,
-                        knowledge_base_store_ids=entry.knowledge_base_store_ids,
-                        lead_name=entry.lead_name,
-                        lead_id_override=entry.lead_id,
-                        batch_id=str(batch_id),
-                        entry_id=entry_id,
-                    )
-                    
-                    # Update entry with call log ID and status
-                    await batch_storage.update_batch_entry_call_log(batch_id, entry_id, result.call_log_id)
-                    await batch_storage.update_batch_entry_status(entry_id, "dispatched")
-                    dispatched_entry_ids.append(entry_id)
-                    
-                except Exception as exc:
-                    logger.exception("Batch entry %d failed: %s", wave_start + i, exc)
-                    await batch_storage.update_batch_entry_status(entry_id, "failed", error_message=str(exc)[:500])
-                    await batch_storage.increment_batch_counters(batch_id, failed_delta=1)
-            
-            # Wait for this wave to complete before starting next
-            if dispatched_entry_ids:
-                wave_result = await _wait_for_wave_completion(batch_id, dispatched_entry_ids, wave_num, job_id)
-                
-                # If timeout occurred and entries were reset to queued, re-dispatch them
-                timeout_results = wave_result.get("timeout_results")
-                
-                # Increment batch counters for entries resolved by timeout handler
-                if timeout_results:
-                    timeout_failed = (
-                        timeout_results.get("failed_max_retries", 0)
-                        + timeout_results.get("failed_ringing", 0)
-                        + timeout_results.get("failed_ongoing_stuck", 0)
-                        + timeout_results.get("recovered_failed", 0)
-                    )
-                    timeout_completed = timeout_results.get("recovered_completed", 0)
-                    if timeout_failed > 0:
-                        await batch_storage.increment_batch_counters(batch_id, failed_delta=timeout_failed)
-                        logger.info("Batch %s wave %d: Incremented failed_calls by %d (timeout failures)", job_id, wave_num, timeout_failed)
-                    if timeout_completed > 0:
-                        await batch_storage.increment_batch_counters(batch_id, completed_delta=timeout_completed)
-                        logger.info("Batch %s wave %d: Incremented completed_calls by %d (recovered from call_logs)", job_id, wave_num, timeout_completed)
-                
-                if timeout_results and timeout_results.get("reset_to_queued", 0) > 0:
-                    retry_entries = await batch_storage.get_queued_entries_for_wave(
-                        str(batch_id), wave_size=timeout_results["reset_to_queued"]
-                    )
-                    if retry_entries:
-                        logger.info(
-                            "Batch %s wave %d: Re-dispatching %d retried entries",
-                            job_id, wave_num, len(retry_entries)
-                        )
-                        retry_entry_ids = []
-                        for retry_entry in retry_entries:
-                            rid = str(retry_entry["id"])
-                            try:
-                                await batch_storage.update_batch_entry_status(rid, "running")
-                                result = await call_service.dispatch_call(
-                                    job_id=job_id,
-                                    voice_id=resolved_voice_id,
-                                    voice_context=voice_context,
-                                    from_number=clean_from_number,
-                                    to_number=retry_entry["to_phone"],
-                                    context=retry_entry.get("metadata", {}).get("context") or clean_context,
-                                    initiated_by=initiator_id,
-                                    agent_id=assigned_agent_id,
-                                    llm_provider=llm_provider_override,
-                                    llm_model=llm_model_override,
-                                    knowledge_base_store_ids=retry_entry.get("metadata", {}).get("knowledge_base_store_ids"),
-                                    lead_name=retry_entry.get("metadata", {}).get("lead_name"),
-                                    lead_id_override=retry_entry.get("lead_id"),
-                                    batch_id=str(batch_id),
-                                    entry_id=rid,
-                                )
-                                await batch_storage.update_batch_entry_call_log(batch_id, rid, result.call_log_id)
-                                await batch_storage.update_batch_entry_status(rid, "dispatched")
-                                retry_entry_ids.append(rid)
-                            except Exception as exc:
-                                logger.exception("Retry dispatch failed for entry %s: %s", rid, exc)
-                                await batch_storage.update_batch_entry_status(rid, "failed", error_message=str(exc)[:500])
-                                await batch_storage.increment_batch_counters(batch_id, failed_delta=1)
-                        
-                        # Wait for retried entries to complete
-                        if retry_entry_ids:
-                            await _wait_for_wave_completion(batch_id, retry_entry_ids, wave_num, job_id)
-            
-            logger.info("Batch %s: Wave %d complete", job_id, wave_num)
-            
-            # Check if batch was cancelled between waves
-            if await batch_storage.is_batch_stopped(str(batch_id)):
-                logger.info("Batch %s: Stopped/cancelled, halting dispatch", job_id)
-                return
-        
-        logger.info("Batch %s dispatched all %d calls in %d waves", job_id, total, wave_num)
-        
-        # NOTE: Batch report is triggered by cleanup_handler when last call completes
-
-    asyncio.create_task(_process_batch())
-    
-    return {
-        "job_id": job_id,
-        "batch_id": str(batch_id),
-        "total_entries": len(entries),
-        "status": "accepted",
-        "message": f"Batch job started with {len(entries)} calls",
-    }
 
 
 # =============================================================================
@@ -671,69 +729,71 @@ async def get_batch_status(batch_id: str) -> BatchStatusResponse:
     )
 
 
+
+
 # =============================================================================
-# POST /batch-cancel/{batch_id} - Cancel batch job
+# POST /batch/trigger-test-batch - Test batch with simulated outcomes
 # =============================================================================
 
-@router.post("/batch-cancel/{batch_id}", response_model=dict)
-async def cancel_batch(batch_id: str) -> dict[str, Any]:
+class TestBatchRequest(BaseModel):
+    """Request body for test batch endpoint."""
+    voice_id: str = Field(..., description="Voice ID (must exist in DB)")
+    initiated_by: str = Field(..., description="User UUID (initiator)")
+    agent_id: int | None = Field(None, description="Agent ID (optional)")
+    from_number: str | None = Field(None, description="From number (optional, no SIP for tests)")
+    total: int = Field(149, description="Total number of test calls")
+    fail_count: int = Field(100, description="Number of calls that should fail")
+    stuck_count: int = Field(15, description="Number of calls that get stuck (no status update)")
+    dropped_count: int = Field(10, description="Number of calls that are dropped (request lost)")
+
+
+@router.post("/trigger-test-batch", response_model=dict, status_code=status.HTTP_202_ACCEPTED)
+async def trigger_test_batch(body: TestBatchRequest) -> dict[str, Any]:
     """
-    Cancel a running batch job.
+    Start a test batch that uses batch-test-worker for simulated outcomes.
     
-    Stops processing and marks pending entries as cancelled.
-    Running calls will complete naturally.
+    Generates fake entries with test phone numbers and encodes the
+    probability distribution in added_context for the test worker.
+    The SAME batch pipeline runs — only the worker name is overridden.
+    
+    Defaults: 149 total, 100 fail, 15 stuck, 10 dropped, 24 success.
     """
-    batch_storage = _get_batch_storage()
-    
-    if batch_id.startswith("batch-"):
-        batch_record = await batch_storage.get_batch_by_job_id(batch_id)
-    else:
-        batch_record = await batch_storage.get_batch_by_id(batch_id)
-    
-    if not batch_record:
+    success_count = body.total - body.fail_count - body.stuck_count - body.dropped_count
+    if success_count < 0:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Batch not found: {batch_id}"
+            status_code=400,
+            detail=f"Sum of fail({body.fail_count})+stuck({body.stuck_count})+dropped({body.dropped_count})={body.fail_count + body.stuck_count + body.dropped_count} exceeds total({body.total})",
         )
     
-    current_status = batch_record.get("status")
-    if current_status in ("stopped", "completed", "cancelled"):
-        return {
-            "batch_id": batch_record["id"],
-            "status": current_status,
-            "cancelled_count": 0,
-            "message": f"Batch already in terminal state: {current_status}",
-        }
+    # Generate fake entries with test phone numbers
+    entries = [
+        BatchCallEntry(to_number=f"+1555000{i:04d}")
+        for i in range(body.total)
+    ]
     
-    # Mark batch as stopped
-    await batch_storage.update_batch_status(batch_record["id"], "stopped")
-    
-    # Mark pending entries as cancelled
-    cancelled_count = await batch_storage.mark_pending_entries_cancelled(batch_record["id"])
-    if cancelled_count > 0:
-        await batch_storage.increment_batch_counters(batch_record["id"], cancelled_delta=cancelled_count)
-    
-    logger.info("Batch %s cancelled: %d entries cancelled", batch_id, cancelled_count)
-    
-    # Check if all entries are done and trigger report if so
-    # This ensures report is generated even when batch is manually cancelled
-    result = await batch_storage.check_and_complete_batch(batch_record["id"])
-    report_triggered = False
-    if result.get("should_report") or result.get("completed"):
-        # Batch is fully done - trigger report generation
-        logger.info(f"Batch {batch_record['id']} fully done after cancellation - triggering report")
-        asyncio.create_task(_generate_and_send_batch_report(batch_record["id"]))
-        report_triggered = True
-    
-    return {
-        "batch_id": batch_record["id"],
-        "job_id": batch_record["job_id"],
-        "status": "stopped",
-        "cancelled_count": cancelled_count,
-        "report_triggered": report_triggered,
-        "message": f"Batch stopped. {cancelled_count} pending entries cancelled." + (" Report generation triggered." if report_triggered else ""),
+    # Encode probability distribution in added_context for test worker to read
+    probabilities = {
+        "completed": success_count,
+        "failed": body.fail_count,
+        "stuck": body.stuck_count,
+        "dropped": body.dropped_count,
     }
-
+    context = f"[TEST_BATCH_PROBABILITIES]{json.dumps(probabilities)}"
+    
+    logger.info(
+        "Starting test batch: total=%d, success=%d, fail=%d, stuck=%d, dropped=%d",
+        body.total, success_count, body.fail_count, body.stuck_count, body.dropped_count,
+    )
+    
+    return await _execute_batch_pipeline(
+        entries=entries,
+        voice_id=body.voice_id,
+        clean_from_number=body.from_number,
+        clean_context=context,
+        initiator_id=body.initiated_by,
+        assigned_agent_id=body.agent_id,
+        worker_name_override="batch-test-worker",
+    )
 
 
 # =============================================================================
@@ -818,4 +878,3 @@ async def _generate_and_send_batch_report(batch_id: str) -> None:
 
 
 __all__ = ["router"]
-
