@@ -1,0 +1,346 @@
+# Batch Call System — Architecture & Flow
+
+## Configuration Constants
+
+| Constant | Default | Description |
+|---|---|---|
+| `BATCH_WAVE_SIZE` | **15** | Calls dispatched per wave |
+| `BATCH_WAVE_POLL_INTERVAL` | **5s** | How often we check if wave is done |
+| `BATCH_WAVE_TIMEOUT` | **1200s (20 min)** | Max wait per wave before timeout handling |
+| `BATCH_MAX_RETRIES` | **2** | Max retries for entries that never connected |
+| `BATCH_ONGOING_TIMEOUT` | **15 min** | Max time an "ongoing" call can run before being force-failed |
+| Report delay | **15s** | Wait for last analysis to finish before generating report |
+| Callback retry | **3 attempts** | Worker → API callback with 2s/4s backoff |
+
+---
+
+## 1. Database Schema
+
+```mermaid
+erDiagram
+    voice_call_batches {
+        uuid id PK
+        string status "queued → running → completed/stopped"
+        int total_calls
+        int completed_calls
+        int failed_calls
+        jsonb metadata "job_id, base_context, llm_provider, llm_model"
+        timestamp created_at
+        timestamp finished_at
+    }
+    voice_call_batch_entries {
+        uuid id PK
+        uuid batch_id FK
+        string to_phone
+        string status "queued → running → dispatched → completed/failed/cancelled/declined"
+        uuid call_log_id FK "links to voice_call_logs"
+        string last_error "e.g. max_retries_exceeded, recovered_from_call_log:ended"
+        int retry_count "0, 1, 2"
+        jsonb metadata "lead_name, context, knowledge_base_store_ids"
+        timestamp updated_at
+    }
+    voice_call_logs {
+        uuid id PK
+        string status "in_queue → ringing → ongoing → ended/failed/declined/cancelled"
+        string from_number
+        string to_number
+        timestamp started_at
+        timestamp ended_at
+        float cost
+        jsonb metadata
+    }
+    voice_call_batches ||--o{ voice_call_batch_entries : "has many"
+    voice_call_batch_entries ||--o| voice_call_logs : "links to"
+```
+
+> [!IMPORTANT]
+> **Two-table model:** Worker writes real-time statuses (`ringing`, `ongoing`, `ended`, `failed`) to `voice_call_logs`. Batch entries only move from `dispatched` when: (a) worker callback arrives → main updates entry, or (b) timeout handler JOINs `call_logs` to recover status.
+
+---
+
+## 2. Full Batch Lifecycle
+
+```mermaid
+flowchart TD
+    subgraph API["POST /batch/trigger-batch-call"]
+        A1["Parse CSV/JSON entries"] --> A2["Create batch record<br/><code>status = 'queued'</code>"]
+        A2 --> A3["Create all entries<br/><code>status = 'queued'</code>"]
+        A3 --> A4["Return job_id + batch_id<br/><code>status: 'accepted'</code>"]
+        A4 --> A5["<code>asyncio.create_task(_process_batch())</code>"]
+    end
+
+    A5 --> PB
+
+    subgraph PB["_process_batch() — Background Task"]
+        PB1["Mark batch <code>status = 'running'</code><br/>⚡ Done FIRST to avoid race"] --> PB2{"More entries?"}
+        PB2 -->|Yes| PB3["Take next 15 entries<br/>(BATCH_WAVE_SIZE)"]
+        PB3 --> WAVE
+        WAVE --> PB4{"Batch stopped?"}
+        PB4 -->|Yes| PB5["Return — halt dispatch"]
+        PB4 -->|No| PB2
+        PB2 -->|No| PB6["Log: all waves dispatched"]
+    end
+
+    subgraph WAVE["Wave Dispatch"]
+        W1["For each entry in wave:"] --> W2["Set entry <code>status = 'running'</code>"]
+        W2 --> W3["<code>call_service.dispatch_call()</code><br/>→ Creates LiveKit room + SIP invite"]
+        W3 --> W4["Store call_log_id on entry"]
+        W4 --> W5["Set entry <code>status = 'dispatched'</code>"]
+        W5 --> W6["Add to dispatched_entry_ids"]
+        W3 -.->|Exception| W7["Set entry <code>status = 'failed'</code><br/>Increment failed_calls counter"]
+        W6 --> W8["<code>_wait_for_wave_completion()</code>"]
+        W8 --> W8a{"Timeout had failures?"}
+        W8a -->|Yes| W8b["Increment failed_calls counter<br/>(max_retries + ringing + stuck)"]
+        W8a -->|No| W9
+        W8b --> W9{"Timeout had retries?"}
+        W9 -->|"Yes: reset_to_queued > 0"| W10["Fetch queued entries from DB"]
+        W10 --> W11["Re-dispatch each retried entry"]
+        W11 --> W12["Wait for retried entries"]
+        W9 -->|No| W13["Wave complete"]
+        W12 --> W13
+    end
+
+    style A5 fill:#4a9eff,color:#fff
+    style PB1 fill:#2d8659,color:#fff
+    style W3 fill:#e67e22,color:#fff
+```
+
+---
+
+## 3. Wave Polling & Timeout Handling
+
+```mermaid
+flowchart TD
+    subgraph POLL["_wait_for_wave_completion() — Polling Loop"]
+        P1["Start timer"] --> P2["Query: count non-terminal entries<br/><code>status NOT IN (completed, failed,<br/>cancelled, declined, ended)</code>"]
+        P2 --> P3{"pending == 0?"}
+        P3 -->|Yes| P4["✅ Return: completed = true"]
+        P3 -->|No| PX{"is_batch_stopped()?"}
+        PX -->|Yes| PY["🛑 Return: cancelled = true"]
+        PX -->|No| P5{"elapsed > 1200s<br/>(20 min)?"}
+        P5 -->|No| P6{"elapsed % 30 == 0?"}
+        P6 -->|Yes| P7["Log progress<br/>(if < 5 pending: show details)"]
+        P6 -->|No| P8["sleep 5s<br/>(BATCH_WAVE_POLL_INTERVAL)"]
+        P7 --> P8
+        P8 --> P2
+    end
+
+    P5 -->|Yes| TH
+
+    subgraph TH["handle_wave_timeout() — Timeout Handler"]
+        direction TB
+        T1["Step 1: DISPATCHED + retry_count < 2<br/>→ Reset to <code>'queued'</code>, retry_count++"] 
+        T2["Step 2: DISPATCHED + retry_count >= 2<br/>→ Failed: <code>'max_retries_exceeded'</code>"]
+        T3["Step 3: Remaining DISPATCHED entries:<br/>JOIN voice_call_logs to check actual call status"]
+        T3 --> T3a{"call_log status?"}
+        T3a -->|"ended/completed"| T3b["Recover entry as <code>'completed'</code><br/>last_error = 'recovered_from_call_log:ended'"]
+        T3a -->|"failed/declined"| T3c["Recover entry as <code>'failed'/'declined'</code>"]
+        T3a -->|"ringing"| T3d["Failed: <code>'wave_timeout_ringing'</code><br/>Updates BOTH entry + call_log"]
+        T3a -->|"ongoing"| T4{"call_log.updated_at < 15 min ago?"}
+        T4 -->|"Yes (stuck)"| T6["Failed: <code>'ongoing_timeout'</code><br/>Updates BOTH entry + call_log"]
+        T4 -->|"No (still active)"| T7["Add to still_ongoing list"]
+        T1 --> T2 --> T3
+    end
+
+    T7 --> P9{"still_ongoing not empty?"}
+    P9 -->|Yes| P10["Reset timer, continue polling<br/>(extended wait for ongoing calls)"]
+    P10 --> P2
+    P9 -->|No| P11["Return: completed = false<br/>+ timeout_results"]
+
+    style P4 fill:#2d8659,color:#fff
+    style PY fill:#e74c3c,color:#fff
+    style T1 fill:#3498db,color:#fff
+    style T2 fill:#e74c3c,color:#fff
+    style T3 fill:#e74c3c,color:#fff
+    style T6 fill:#e74c3c,color:#fff
+    style T7 fill:#f39c12,color:#fff
+```
+
+---
+
+## 4. Entry Status Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: Entry created
+
+    queued --> running: _process_batch picks entry
+    running --> dispatched: dispatch_call() succeeds
+    running --> failed: dispatch_call() throws
+
+    dispatched --> queued: Wave timeout + retry_count < 2
+    dispatched --> completed: Worker callback (ended/completed)
+    dispatched --> failed: Worker callback (failed) or max retries
+    dispatched --> declined: Worker callback (declined/no_answer)
+    dispatched --> cancelled: Batch cancelled
+
+    queued --> cancelled: Batch cancelled
+
+    ended --> [*]
+    failed --> [*]
+    cancelled --> [*]
+    declined --> [*]
+
+    note right of dispatched
+        Entries stay at 'dispatched' until
+        worker callback OR timeout recovery.
+        Worker writes ringing/ongoing/ended
+        to call_logs. Timeout handler JOINs
+        call_logs to recover actual status.
+        Terminal-status guard prevents overwrites.
+    end note
+```
+
+---
+
+## 5. Worker Callback & Batch Completion
+
+```mermaid
+sequenceDiagram
+    participant W as Worker<br/>(cleanup_handler)
+    participant API as Main API<br/>(batch.py)
+    participant DB as PostgreSQL
+    participant Report as Report Generator
+
+    Note over W: Call ends → cleanup_and_save()
+
+    W->>W: 1. Stop recording, save to DB
+    W->>W: 2. Calculate cost
+    W->>W: 3. update_call_status()<br/>determine_final_status()
+    W->>W: 4. Submit analysis to Main API
+    W->>W: 5. Read actual final_status from call_log
+
+    rect rgb(50, 50, 80)
+    Note over W,API: HTTP Callback with 3 retries (2s, 4s backoff)
+    W->>API: POST /batch/entry-completed<br/>{batch_id, entry_id, call_status}
+    
+    alt Attempt fails
+        W-->>W: Wait 2s → retry
+        W->>API: Retry attempt 2
+        alt Attempt 2 fails
+            W-->>W: Wait 4s → retry
+            W->>API: Retry attempt 3
+        end
+    end
+    end
+
+    API->>DB: Map status: ended/completed → "completed"<br/>everything else → "failed"
+    API->>DB: Update entry status<br/>(guarded: skips if already terminal)
+    API->>DB: Increment batch counters<br/>(completed_delta or failed_delta)
+    
+    API->>DB: check_and_complete_batch()
+    DB-->>API: {done_count, total_calls}
+
+    alt done_count >= total_calls
+        API->>DB: SET batch status = 'completed'<br/>WHERE status IN ('queued', 'running')
+        Note over API: Guard prevents double-completion
+        
+        API->>API: asyncio.create_task()
+        
+        rect rgb(40, 70, 40)
+        Note over API,Report: Report Generation (fire-and-forget)
+        API-->>API: Wait 15 seconds<br/>(analysis completion delay)
+        API->>Report: generate_batch_report()
+        Report->>DB: Fetch all entries + call_logs
+        Report->>Report: Generate report + send email
+        end
+    end
+
+    API-->>W: {status: ok, batch_completed, report_triggered}
+```
+
+---
+
+## 6. Batch Cancellation Flow
+
+```mermaid
+flowchart TD
+    subgraph CANCEL["POST /batch/cancel/{batch_id}"]
+        C1["Look up batch by ID or job_id"] --> C2{"Batch status?"}
+        C2 -->|"completed/stopped"| C3["Return: already terminal"]
+        C2 -->|"queued/running"| C4["Set batch <code>status = 'stopped'</code>"]
+        C4 --> C5["Mark pending entries cancelled<br/><code>WHERE status IN ('pending', 'queued')</code>"]
+        C5 --> C6["Increment cancelled_delta counter"]
+        C6 --> C7["check_and_complete_batch()"]
+        C7 --> C8{"All entries terminal?"}
+        C8 -->|Yes| C9["Trigger report generation"]
+        C8 -->|No| C10["Return: batch stopped<br/>Running calls continue naturally"]
+    end
+
+    subgraph PROCESS["_process_batch() — Background Task"]
+        P1["Between waves:"] --> P2{"is_batch_stopped()?"}
+        P2 -->|Yes| P3["Halt dispatch immediately<br/>No more waves"]
+        P2 -->|No| P4["Continue next wave"]
+    end
+
+    C10 -.->|"Running calls finish naturally"| CB["Worker callbacks arrive<br/>→ entry_completed_callback"]
+    CB --> CC["check_and_complete_batch()"]
+    CC --> CD{"All done now?"}
+    CD -->|Yes| CE["Trigger report"]
+
+    style C4 fill:#e74c3c,color:#fff
+    style C5 fill:#e67e22,color:#fff
+    style P3 fill:#e74c3c,color:#fff
+```
+
+---
+
+## 7. End-to-End Timeline (Typical 30-Call Batch)
+
+```mermaid
+gantt
+    title Batch Lifecycle — 30 Calls, 2 Waves
+    dateFormat X
+    axisFormat %Ss
+
+    section Wave 1
+    Dispatch 15 calls (running → dispatched)     :w1d, 0, 15
+    Polling every 5s                              :w1p, 15, 1200
+    Calls completing (worker callbacks)           :w1c, 20, 600
+    Wave 1 complete                               :milestone, w1m, 600, 0
+
+    section Wave 2
+    Dispatch 15 calls                             :w2d, 600, 615
+    Polling every 5s                              :w2p, 615, 1800
+    Calls completing                              :w2c, 620, 1200
+    Wave 2 complete                               :milestone, w2m, 1200, 0
+
+    section Completion
+    All entries terminal                          :milestone, done, 1200, 0
+    Analysis wait (15s)                           :aw, 1200, 1215
+    Report generation                             :rg, 1215, 1230
+    Email sent                                    :milestone, email, 1230, 0
+```
+
+---
+
+## 8. Error Recovery Matrix
+
+| Scenario | Entry Status Before | Action Taken | Entry Status After | Counter Update |
+|---|---|---|---|---|
+| dispatch_call() throws | `running` | Immediate fail | `failed` | `failed_calls += 1` |
+| No worker picks up in 20min | `dispatched` (retry < 2) | Reset for retry | `queued` | — |
+| No worker picks up, max retries | `dispatched` (retry ≥ 2) | Permanent fail | `failed` (both entry + call_log) | `failed_calls += N` |
+| Call finished, callback lost | `dispatched` | Timeout: JOIN call_logs, recover status | `completed`/`failed`/`declined` (entry only, call_log already correct) | `completed += N` or `failed += N` |
+| Call stuck ringing at timeout | `dispatched` (call_log: `ringing`) | Timeout: fail via call_logs | `failed` (both entry + call_log) | `failed_calls += N` |
+| Call ongoing > 15 min | `dispatched` (call_log: `ongoing`) | Timeout: force-fail via call_logs | `failed` (both entry + call_log) | `failed_calls += N` |
+| Call ongoing < 15 min at timeout | `dispatched` (call_log: `ongoing`) | Wait extended | `dispatched` (still_ongoing) | — |
+| Worker callback HTTP fails | `dispatched` | 3 retries (2s, 4s) | Depends on retry success | — |
+| Late callback after timeout | `completed`/`failed` (already) | **Blocked by terminal guard** | Unchanged | No double-count |
+| Batch cancelled (mid-wave) | `queued` | Polling loop detects cancel | `cancelled` | `cancelled_delta` |
+| Batch cancelled (between waves) | `queued` | `is_batch_stopped()` check | `cancelled` | `cancelled_delta` |
+| API process crash mid-batch | Various | ⚠️ No recovery yet | Stuck forever | — |
+
+---
+
+## 9. Safety Guards
+
+| Guard | Location | Purpose |
+|---|---|---|
+| Terminal-status guard | `update_batch_entry_status()` | `WHERE status NOT IN (completed, failed, cancelled, declined, ended)` — prevents late callbacks from overwriting timeout failures |
+| Double-completion guard | `check_and_complete_batch()` | `WHERE status IN ('queued', 'running')` — only first completion wins |
+| Cancel in polling loop | `_wait_for_wave_completion()` | `is_batch_stopped()` check every 5s — exits wave wait promptly on cancel |
+| Cancel between waves | `_process_batch()` | `is_batch_stopped()` check — stops dispatching new waves |
+| Running race guard | `_process_batch()` | `update_batch_status('running')` at START, not end — can't overwrite 'completed' |
+| Callback retry | `update_batch_on_call_complete()` | 3 attempts with 2s/4s backoff — prevents lost callbacks |
+

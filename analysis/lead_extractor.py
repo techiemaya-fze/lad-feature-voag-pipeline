@@ -27,6 +27,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Schema configuration
+SCHEMA = os.getenv("DB_SCHEMA", "lad_dev")
+
 # Use existing logger from parent module or create new one
 logger = logging.getLogger(__name__)
 

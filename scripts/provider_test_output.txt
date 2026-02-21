@@ -1,0 +1,29 @@
+﻿==========================================================================================
+TEST: Provider Resolution for All Voice Agent Numbers
+==========================================================================================
+
+Available telephony pricing providers: {'sasya local vendor', 'sasya uae number', 'twilio', 'livekit', 'vonage'}
+
+Phone Number              DB Provider               Resolved                  In Pricing?  Fallback?
+----------------------------------------------------------------------------------------------------
+  +19513456728            Paras Oranization         vonage                    True         OK
+  +918634515070           Sasya Spaces              sasya local vendor        True         OK
+  +19513456728            TechieMaya FZE            vonage                    True         OK
+  +19513456728            TechieMaya FZE            vonage                    True         OK
+  +918634515070           TechieMaya FZE            sasya local vendor        True         OK
+  +19513456728            Vonage                    vonage                    True         OK
+  +918634515070           paras-india               sasya local vendor        True         OK
+  +19513456728            pluto travels usa         vonage                    True         OK
+  +971545335200           sasya UAE Number          sasya uae number          True         OK
+  +971545335200           sasya UAE Number          sasya uae number          True         OK
+  +971545335200           sasya UAE Number          sasya uae number          True         OK
+  +918634515070           sasya local vendor        sasya local vendor        True         OK
+  15550101                twilio                    vonage                    True         OK
+  15550102                twilio                    vonage                    True         OK
+
+==========================================================================================
+SUMMARY
+==========================================================================================
+  Total numbers: 14
+  Providers matched to pricing catalog: {'vonage', 'sasya local vendor', 'sasya uae number'}
+  Numbers needing fallback to vonage: 0

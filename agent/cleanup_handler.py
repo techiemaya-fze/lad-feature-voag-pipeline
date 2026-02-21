@@ -631,6 +631,8 @@ async def _submit_analysis_to_main_api(
     # Await the request to ensure it's sent before worker exits
     # This fixes the issue where single call analysis was never triggered
     # because the event loop exited before the fire-and-forget task ran
+    logger.info("Sending analysis request to endpoint: %s", endpoint)
+    
     await _fire_analysis_request(
         endpoint=endpoint,
         payload_json=json.dumps(payload, default=json_serial),
@@ -848,9 +850,16 @@ async def cleanup_and_save(ctx: CleanupContext) -> None:
     logger.info("Post-call analysis submitted to main API for call_log_id=%s", ctx.call_log_id)
     
     # 9. Update batch entry status and check for batch completion
-    # If cleanup_and_save is called, the call completed normally -> status is "ended"
-    # (call_details has the OLD status from before update_call_status was called)
-    await update_batch_on_call_complete(ctx, "ended")
+    # Use the same final_status that was written to the call log
+    call_final_status = "ended"  # default
+    if ctx.call_storage and ctx.call_log_id:
+        try:
+            updated_call = await ctx.call_storage.get_call_by_id(ctx.call_log_id)
+            if updated_call and updated_call.get('status'):
+                call_final_status = updated_call['status']
+        except Exception:
+            pass
+    await update_batch_on_call_complete(ctx, call_final_status)
 
 # =============================================================================
 # BATCH COMPLETION TRACKING
@@ -888,24 +897,40 @@ async def update_batch_on_call_complete(ctx: CleanupContext, final_status: str) 
         
         logger.info(f"Notifying main server of batch entry completion: batch={ctx.batch_id}, entry={ctx.entry_id}")
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(url, json=payload)
-            
-            if response.status_code == 200:
-                result = response.json()
-                logger.info(
-                    f"Batch entry {ctx.entry_id} completed. "
-                    f"Batch completed: {result.get('batch_completed')}, "
-                    f"Report triggered: {result.get('report_triggered')}"
-                )
-            else:
+        # Retry with exponential backoff (2s, 4s, 8s) to handle transient failures
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(url, json=payload)
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        logger.info(
+                            f"Batch entry {ctx.entry_id} completed. "
+                            f"Batch completed: {result.get('batch_completed')}, "
+                            f"Report triggered: {result.get('report_triggered')}"
+                        )
+                        return  # Success
+                    else:
+                        logger.error(
+                            f"Failed to notify main server of batch completion: "
+                            f"status={response.status_code}, body={response.text[:200]} "
+                            f"(attempt {attempt}/{max_retries})"
+                        )
+            except Exception as e:
                 logger.error(
-                    f"Failed to notify main server of batch completion: "
-                    f"status={response.status_code}, body={response.text[:200]}"
+                    f"Error notifying main server of batch completion (attempt {attempt}/{max_retries}): {e}",
+                    exc_info=(attempt == max_retries),
                 )
+            
+            if attempt < max_retries:
+                backoff = 2 ** attempt  # 2s, 4s
+                import asyncio
+                await asyncio.sleep(backoff)
     
     except Exception as e:
-        logger.error(f"Error notifying main server of batch completion: {e}", exc_info=True)
+        logger.error(f"Error in batch completion notification setup: {e}", exc_info=True)
 
 
 # =============================================================================

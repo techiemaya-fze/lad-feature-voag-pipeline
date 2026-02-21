@@ -1,0 +1,883 @@
+Feb 14 06:50:09 voag uv[798833]: 06:50:09 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=dc7390de-7fa4-41c5-93c5-4f68f8359f11; skipping analysis
+Feb 14 06:50:09 voag uv[798833]: 06:50:09 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=dc7390de-7fa4-41c5-93c5-4f68f8359f11
+Feb 14 06:50:09 voag uv[798833]: 06:50:09 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:50:09 voag uv[798833]: 06:50:09 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=dc7390de-7fa4-41c5-93c5-4f68f8359f11
+Feb 14 06:50:09 voag uv[798833]: 06:50:09 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call dc7390de-7fa4-41c5-93c5-4f68f8359f11 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 06:50:09 voag uv[798833]: 06:50:09 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 06:50:09 voag uv[798833]: 06:50:09 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 10:50:09+04:00
+Feb 14 06:50:09 voag uv[798833]: 06:50:09 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:50:09 voag uv[798833]: 06:50:09 | INFO    | db.storage.leads | Assigned lead 18818325-db97-4f19-9487-14e4dc92aa11 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:50:09 voag uv[798833]: 06:50:09 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=dc7390de-7fa4-41c5-93c5-4f68f8359f11
+Feb 14 06:50:09 voag uv[798833]: 06:50:09 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=dc7390de-7fa4-41c5-93c5-4f68f8359f11
+Feb 14 06:50:28 voag uv[798833]: 06:50:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 15 entries (30s elapsed)
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | INFO    | api.routes.batch | Updated batch entry fc7e95e5-f883-484a-9319-a8e16e23fabf to status=completed
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=863, failed=0, done_entries=863
+Feb 14 06:50:33 voag uv[798833]: INFO:     127.0.0.1:45106 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | INFO    | api.routes.analysis | Analysis request received for call_log_id=dc54f9fe-1aee-4642-a782-ff42a688786b
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.024s)
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=dc54f9fe-1aee-4642-a782-ff42a688786b
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=dc54f9fe-1aee-4642-a782-ff42a688786b
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=dc54f9fe-1aee-4642-a782-ff42a688786b; skipping analysis
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=dc54f9fe-1aee-4642-a782-ff42a688786b
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=dc54f9fe-1aee-4642-a782-ff42a688786b
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.025s)
+Feb 14 06:50:33 voag uv[798833]: INFO:     127.0.0.1:45114 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call dc54f9fe-1aee-4642-a782-ff42a688786b - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 10:50:33+04:00
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | INFO    | db.storage.leads | Assigned lead cf452291-f24c-4b7c-9082-99f2b634e88a to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=dc54f9fe-1aee-4642-a782-ff42a688786b
+Feb 14 06:50:33 voag uv[798833]: 06:50:33 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=dc54f9fe-1aee-4642-a782-ff42a688786b
+Feb 14 06:50:58 voag uv[798833]: 06:50:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 15 entries (60s elapsed)
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | INFO    | api.routes.batch | Updated batch entry 1a1be6eb-3e81-4f57-ad4d-d1fb1d07163a to status=completed
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=864, failed=0, done_entries=864
+Feb 14 06:51:13 voag uv[798833]: INFO:     127.0.0.1:58932 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | INFO    | api.routes.analysis | Analysis request received for call_log_id=b9a96f75-4c1d-48d9-8ce6-f0f4a98e5986
+Feb 14 06:51:13 voag uv[798833]: INFO:     127.0.0.1:58944 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.018s)
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.019s)
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=b9a96f75-4c1d-48d9-8ce6-f0f4a98e5986
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=b9a96f75-4c1d-48d9-8ce6-f0f4a98e5986
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=b9a96f75-4c1d-48d9-8ce6-f0f4a98e5986; skipping analysis
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=b9a96f75-4c1d-48d9-8ce6-f0f4a98e5986
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=b9a96f75-4c1d-48d9-8ce6-f0f4a98e5986
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call b9a96f75-4c1d-48d9-8ce6-f0f4a98e5986 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 10:51:13+04:00
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | INFO    | db.storage.leads | Assigned lead e3462f83-5875-4681-80e4-a07882689600 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=b9a96f75-4c1d-48d9-8ce6-f0f4a98e5986
+Feb 14 06:51:13 voag uv[798833]: 06:51:13 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=b9a96f75-4c1d-48d9-8ce6-f0f4a98e5986
+Feb 14 06:51:25 voag uv[798833]: 06:51:25 | INFO    | api.routes.batch | Updated batch entry cb591475-d489-4141-9dc3-7652841ae411 to status=completed
+Feb 14 06:51:25 voag uv[798833]: 06:51:25 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=865, failed=0, done_entries=865
+Feb 14 06:51:25 voag uv[798833]: INFO:     127.0.0.1:52994 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:51:25 voag uv[798833]: INFO:     127.0.0.1:53004 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:51:25 voag uv[798833]: 06:51:25 | INFO    | api.routes.analysis | Analysis request received for call_log_id=799f2900-1628-4e88-a6d3-8011fbba4281
+Feb 14 06:51:25 voag uv[798833]: 06:51:25 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.018s)
+Feb 14 06:51:25 voag uv[798833]: 06:51:25 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.018s)
+Feb 14 06:51:25 voag uv[798833]: 06:51:25 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=799f2900-1628-4e88-a6d3-8011fbba4281
+Feb 14 06:51:25 voag uv[798833]: 06:51:25 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=799f2900-1628-4e88-a6d3-8011fbba4281
+Feb 14 06:51:25 voag uv[798833]: 06:51:25 | WARNING | analysis.merged_analytics | Insufficient user text for sentiment analysis
+Feb 14 06:51:28 voag uv[798833]: 06:51:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 13 entries (90s elapsed)
+Feb 14 06:51:29 voag uv[798833]: 06:51:29 | INFO    | api.routes.batch | Updated batch entry 0538a896-2316-4902-a1c7-5d1f7d510f30 to status=completed
+Feb 14 06:51:29 voag uv[798833]: 06:51:29 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=866, failed=0, done_entries=866
+Feb 14 06:51:29 voag uv[798833]: INFO:     127.0.0.1:52752 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:51:29 voag uv[798833]: INFO:     127.0.0.1:52768 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:51:29 voag uv[798833]: 06:51:29 | INFO    | api.routes.analysis | Analysis request received for call_log_id=1976cc23-81ba-434b-acd8-a68ea55247b8
+Feb 14 06:51:29 voag uv[798833]: 06:51:29 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.023s)
+Feb 14 06:51:29 voag uv[798833]: 06:51:29 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.022s)
+Feb 14 06:51:29 voag uv[798833]: 06:51:29 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=1976cc23-81ba-434b-acd8-a68ea55247b8
+Feb 14 06:51:29 voag uv[798833]: 06:51:29 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=1976cc23-81ba-434b-acd8-a68ea55247b8
+Feb 14 06:51:29 voag uv[798833]: 06:51:29 | WARNING | analysis.merged_analytics | Insufficient user text for sentiment analysis
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | INFO    | api.routes.batch | Updated batch entry a34c957b-4921-461a-b005-a2fa809f8ceb to status=completed
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=867, failed=0, done_entries=867
+Feb 14 06:51:42 voag uv[798833]: INFO:     127.0.0.1:38404 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.015s)
+Feb 14 06:51:42 voag uv[798833]: INFO:     127.0.0.1:38414 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | INFO    | api.routes.analysis | Analysis request received for call_log_id=017fecaf-60c1-4dac-b7da-cd9b13fe4842
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.003s)
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=017fecaf-60c1-4dac-b7da-cd9b13fe4842
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=017fecaf-60c1-4dac-b7da-cd9b13fe4842
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=017fecaf-60c1-4dac-b7da-cd9b13fe4842; skipping analysis
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=017fecaf-60c1-4dac-b7da-cd9b13fe4842
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=017fecaf-60c1-4dac-b7da-cd9b13fe4842
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 017fecaf-60c1-4dac-b7da-cd9b13fe4842 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 10:51:42+04:00
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | INFO    | db.storage.leads | Assigned lead 54b6136b-d03e-4180-afcb-1c741435ea6c to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=017fecaf-60c1-4dac-b7da-cd9b13fe4842
+Feb 14 06:51:42 voag uv[798833]: 06:51:42 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=017fecaf-60c1-4dac-b7da-cd9b13fe4842
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | INFO    | api.routes.batch | Updated batch entry 6c93ad8f-01e4-4884-976b-ec5769220a2d to status=completed
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=868, failed=0, done_entries=868
+Feb 14 06:51:43 voag uv[798833]: INFO:     127.0.0.1:38424 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:51:43 voag uv[798833]: INFO:     127.0.0.1:38436 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | INFO    | api.routes.analysis | Analysis request received for call_log_id=93c8aeef-5b05-449a-8208-332f6e17b603
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.014s)
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=93c8aeef-5b05-449a-8208-332f6e17b603
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=93c8aeef-5b05-449a-8208-332f6e17b603
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=93c8aeef-5b05-449a-8208-332f6e17b603; skipping analysis
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=93c8aeef-5b05-449a-8208-332f6e17b603
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=93c8aeef-5b05-449a-8208-332f6e17b603
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.015s)
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 93c8aeef-5b05-449a-8208-332f6e17b603 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 10:51:43+04:00
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | INFO    | db.storage.leads | Assigned lead 066c9875-3f86-470d-98bb-bc63b1c9516f to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=93c8aeef-5b05-449a-8208-332f6e17b603
+Feb 14 06:51:43 voag uv[798833]: 06:51:43 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=93c8aeef-5b05-449a-8208-332f6e17b603
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | INFO    | api.routes.batch | Updated batch entry a1499eea-e60d-4c5b-9afa-eac9ff780c66 to status=completed
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=869, failed=0, done_entries=869
+Feb 14 06:51:44 voag uv[798833]: INFO:     127.0.0.1:38446 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:51:44 voag uv[798833]: INFO:     127.0.0.1:38456 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | INFO    | api.routes.analysis | Analysis request received for call_log_id=a383eec5-4487-4f72-9040-6f2908ed94f2
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.019s)
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.019s)
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=a383eec5-4487-4f72-9040-6f2908ed94f2
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=a383eec5-4487-4f72-9040-6f2908ed94f2
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=a383eec5-4487-4f72-9040-6f2908ed94f2; skipping analysis
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=a383eec5-4487-4f72-9040-6f2908ed94f2
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=a383eec5-4487-4f72-9040-6f2908ed94f2
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call a383eec5-4487-4f72-9040-6f2908ed94f2 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 10:51:44+04:00
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | INFO    | db.storage.leads | Assigned lead 7e6168f5-cc0c-4aef-8d94-eb17462e8e48 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=a383eec5-4487-4f72-9040-6f2908ed94f2
+Feb 14 06:51:44 voag uv[798833]: 06:51:44 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=a383eec5-4487-4f72-9040-6f2908ed94f2
+Feb 14 06:51:45 voag uv[798833]: 06:51:45 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:45 voag uv[798833]: 06:51:45 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:45 voag uv[798833]: 06:51:45 | INFO    | utils.vertical_routing | Vertical routing: tenant_id=734cd516-e252-4728-9c52-4663ee552653, vertical=realestate
+Feb 14 06:51:45 voag uv[798833]: 06:51:45 | INFO    | utils.vertical_routing | Realestate vertical detected but not yet implemented
+Feb 14 06:51:45 voag uv[798833]: 06:51:45 | DEBUG   | post_call_analysis.runner | Vertical routing: call_log_id=1976cc23-81ba-434b-acd8-a68ea55247b8 not routed (vertical=realestate, reason=Realestate vertical not yet implemented)
+Feb 14 06:51:45 voag uv[798833]: 06:51:45 | DEBUG   | api.routes.analysis | Post-call analysis completed successfully for call_log_id=1976cc23-81ba-434b-acd8-a68ea55247b8
+Feb 14 06:51:45 voag uv[798833]: 06:51:45 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:45 voag uv[798833]: 06:51:45 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=1976cc23-81ba-434b-acd8-a68ea55247b8
+Feb 14 06:51:46 voag uv[798833]: 06:51:46 | WARNING | analysis.lead_bookings_extractor | No explicit confirmed time found after all extraction attempts for call 1976cc23-81ba-434b-acd8-a68ea55247b8
+Feb 14 06:51:46 voag uv[798833]: 06:51:46 | WARNING | analysis.schedule_calculator | Callback requested but no callback_time provided - will use Stage 2 grade-based schedule
+Feb 14 06:51:46 voag uv[798833]: 06:51:46 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:47 voag uv[798833]: 06:51:47 | INFO    | db.storage.leads | Assigned lead 404bc6e1-afd7-463a-9ec7-c9964c1600a3 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:51:47 voag uv[798833]: 06:51:47 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=1976cc23-81ba-434b-acd8-a68ea55247b8
+Feb 14 06:51:47 voag uv[798833]: 06:51:47 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=1976cc23-81ba-434b-acd8-a68ea55247b8
+Feb 14 06:51:47 voag uv[798833]: 06:51:47 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:47 voag uv[798833]: 06:51:47 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:47 voag uv[798833]: 06:51:47 | INFO    | utils.vertical_routing | Vertical routing: tenant_id=734cd516-e252-4728-9c52-4663ee552653, vertical=realestate
+Feb 14 06:51:47 voag uv[798833]: 06:51:47 | INFO    | utils.vertical_routing | Realestate vertical detected but not yet implemented
+Feb 14 06:51:47 voag uv[798833]: 06:51:47 | DEBUG   | post_call_analysis.runner | Vertical routing: call_log_id=799f2900-1628-4e88-a6d3-8011fbba4281 not routed (vertical=realestate, reason=Realestate vertical not yet implemented)
+Feb 14 06:51:47 voag uv[798833]: 06:51:47 | DEBUG   | api.routes.analysis | Post-call analysis completed successfully for call_log_id=799f2900-1628-4e88-a6d3-8011fbba4281
+Feb 14 06:51:47 voag uv[798833]: 06:51:47 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:47 voag uv[798833]: 06:51:47 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=799f2900-1628-4e88-a6d3-8011fbba4281
+Feb 14 06:51:48 voag uv[798833]: 06:51:48 | WARNING | analysis.lead_bookings_extractor | No explicit confirmed time found after all extraction attempts for call 799f2900-1628-4e88-a6d3-8011fbba4281
+Feb 14 06:51:48 voag uv[798833]: 06:51:48 | WARNING | analysis.schedule_calculator | Callback requested but no callback_time provided - will use Stage 2 grade-based schedule
+Feb 14 06:51:48 voag uv[798833]: 06:51:48 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:51:48 voag uv[798833]: 06:51:48 | INFO    | db.storage.leads | Assigned lead e2685b7c-d4d5-4bbe-931e-a33966365c4b to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:51:48 voag uv[798833]: 06:51:48 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=799f2900-1628-4e88-a6d3-8011fbba4281
+Feb 14 06:51:48 voag uv[798833]: 06:51:48 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=799f2900-1628-4e88-a6d3-8011fbba4281
+Feb 14 06:51:58 voag uv[798833]: 06:51:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 9 entries (120s elapsed)
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | INFO    | api.routes.batch | Updated batch entry 5d1a5dfb-ff05-437d-83c3-ed3a39772560 to status=completed
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=870, failed=0, done_entries=870
+Feb 14 06:52:16 voag uv[798833]: INFO:     127.0.0.1:53270 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | INFO    | api.routes.analysis | Analysis request received for call_log_id=c090b6da-e9d3-487e-8c49-a4a38de8724c
+Feb 14 06:52:16 voag uv[798833]: INFO:     127.0.0.1:53274 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.032s)
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=c090b6da-e9d3-487e-8c49-a4a38de8724c
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=c090b6da-e9d3-487e-8c49-a4a38de8724c
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=c090b6da-e9d3-487e-8c49-a4a38de8724c; skipping analysis
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=c090b6da-e9d3-487e-8c49-a4a38de8724c
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=c090b6da-e9d3-487e-8c49-a4a38de8724c
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.035s)
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call c090b6da-e9d3-487e-8c49-a4a38de8724c - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 10:52:16+04:00
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | INFO    | db.storage.leads | Assigned lead 4de2a0fd-b61a-4b2e-b482-c64733717d2c to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=c090b6da-e9d3-487e-8c49-a4a38de8724c
+Feb 14 06:52:16 voag uv[798833]: 06:52:16 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=c090b6da-e9d3-487e-8c49-a4a38de8724c
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | INFO    | api.routes.batch | Updated batch entry d06336fd-f107-4219-8fc3-e49dd90c6002 to status=completed
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=871, failed=0, done_entries=871
+Feb 14 06:52:23 voag uv[798833]: INFO:     127.0.0.1:40254 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:52:23 voag uv[798833]: INFO:     127.0.0.1:40260 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.052s)
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | INFO    | api.routes.analysis | Analysis request received for call_log_id=85c5cccb-e14d-4c04-9fcd-06191c49fd8d
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.053s)
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=85c5cccb-e14d-4c04-9fcd-06191c49fd8d
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=85c5cccb-e14d-4c04-9fcd-06191c49fd8d
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=85c5cccb-e14d-4c04-9fcd-06191c49fd8d; skipping analysis
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=85c5cccb-e14d-4c04-9fcd-06191c49fd8d
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=85c5cccb-e14d-4c04-9fcd-06191c49fd8d
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 85c5cccb-e14d-4c04-9fcd-06191c49fd8d - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 10:52:23+04:00
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | INFO    | db.storage.leads | Assigned lead 5d567258-c57d-4f41-8fa2-d817d385a0d2 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=85c5cccb-e14d-4c04-9fcd-06191c49fd8d
+Feb 14 06:52:23 voag uv[798833]: 06:52:23 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=85c5cccb-e14d-4c04-9fcd-06191c49fd8d
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | INFO    | api.routes.batch | Updated batch entry 229c5668-9786-4db1-8f0b-4ed3166c72f8 to status=completed
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=872, failed=0, done_entries=872
+Feb 14 06:52:25 voag uv[798833]: INFO:     127.0.0.1:40264 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.017s)
+Feb 14 06:52:25 voag uv[798833]: INFO:     127.0.0.1:40266 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | INFO    | api.routes.analysis | Analysis request received for call_log_id=9ce94317-21f4-405c-94ff-c297cdefba65
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.003s)
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=9ce94317-21f4-405c-94ff-c297cdefba65
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=9ce94317-21f4-405c-94ff-c297cdefba65
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=9ce94317-21f4-405c-94ff-c297cdefba65; skipping analysis
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=9ce94317-21f4-405c-94ff-c297cdefba65
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=9ce94317-21f4-405c-94ff-c297cdefba65
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 9ce94317-21f4-405c-94ff-c297cdefba65 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 10:52:25+04:00
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | INFO    | db.storage.leads | Assigned lead dcd91d2a-1df7-41b7-958d-f3b62d7dd53d to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=9ce94317-21f4-405c-94ff-c297cdefba65
+Feb 14 06:52:25 voag uv[798833]: 06:52:25 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=9ce94317-21f4-405c-94ff-c297cdefba65
+Feb 14 06:52:28 voag uv[798833]: 06:52:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 6 entries (150s elapsed)
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | INFO    | api.routes.batch | Updated batch entry 1690ab2e-cc14-4066-9966-f0f6a634479e to status=completed
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=873, failed=0, done_entries=873
+Feb 14 06:52:35 voag uv[798833]: INFO:     127.0.0.1:43066 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:52:35 voag uv[798833]: INFO:     127.0.0.1:43078 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | INFO    | api.routes.analysis | Analysis request received for call_log_id=e3c41295-ce55-4794-8e55-926b426a7d10
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.018s)
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.017s)
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=e3c41295-ce55-4794-8e55-926b426a7d10
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=e3c41295-ce55-4794-8e55-926b426a7d10
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=e3c41295-ce55-4794-8e55-926b426a7d10; skipping analysis
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=e3c41295-ce55-4794-8e55-926b426a7d10
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=e3c41295-ce55-4794-8e55-926b426a7d10
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call e3c41295-ce55-4794-8e55-926b426a7d10 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 10:52:35+04:00
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | INFO    | db.storage.leads | Assigned lead 0704476a-f840-40a4-b9e5-8a6d92bde879 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=e3c41295-ce55-4794-8e55-926b426a7d10
+Feb 14 06:52:35 voag uv[798833]: 06:52:35 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=e3c41295-ce55-4794-8e55-926b426a7d10
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | INFO    | api.routes.batch | Updated batch entry bc3fc582-6646-4f2e-92fc-9a2fd8f8a89c to status=completed
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=874, failed=0, done_entries=874
+Feb 14 06:52:55 voag uv[798833]: INFO:     127.0.0.1:46404 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:52:55 voag uv[798833]: INFO:     127.0.0.1:46408 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.022s)
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | INFO    | api.routes.analysis | Analysis request received for call_log_id=4b49e9a2-27eb-435b-9db9-97e085d2a339
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.004s)
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=4b49e9a2-27eb-435b-9db9-97e085d2a339
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=4b49e9a2-27eb-435b-9db9-97e085d2a339
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=4b49e9a2-27eb-435b-9db9-97e085d2a339; skipping analysis
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=4b49e9a2-27eb-435b-9db9-97e085d2a339
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=4b49e9a2-27eb-435b-9db9-97e085d2a339
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 4b49e9a2-27eb-435b-9db9-97e085d2a339 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 10:52:55+04:00
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | INFO    | db.storage.leads | Assigned lead 45590b42-dee7-4edf-b3b3-98a95682a90a to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=4b49e9a2-27eb-435b-9db9-97e085d2a339
+Feb 14 06:52:55 voag uv[798833]: 06:52:55 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=4b49e9a2-27eb-435b-9db9-97e085d2a339
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | INFO    | api.routes.batch | Updated batch entry 754abe20-171d-45f7-8c0b-f2339ece83b4 to status=completed
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=875, failed=0, done_entries=875
+Feb 14 06:52:56 voag uv[798833]: INFO:     127.0.0.1:46416 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | INFO    | api.routes.analysis | Analysis request received for call_log_id=cf046c4f-843b-4319-a4b3-edac4535fb25
+Feb 14 06:52:56 voag uv[798833]: INFO:     127.0.0.1:46420 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.032s)
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.032s)
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=cf046c4f-843b-4319-a4b3-edac4535fb25
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=cf046c4f-843b-4319-a4b3-edac4535fb25
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=cf046c4f-843b-4319-a4b3-edac4535fb25; skipping analysis
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=cf046c4f-843b-4319-a4b3-edac4535fb25
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=cf046c4f-843b-4319-a4b3-edac4535fb25
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call cf046c4f-843b-4319-a4b3-edac4535fb25 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 10:52:56+04:00
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | INFO    | db.storage.leads | Assigned lead 260c5518-c2a8-47a7-9bcd-f486b63cf32a to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=cf046c4f-843b-4319-a4b3-edac4535fb25
+Feb 14 06:52:56 voag uv[798833]: 06:52:56 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=cf046c4f-843b-4319-a4b3-edac4535fb25
+Feb 14 06:52:58 voag uv[798833]: 06:52:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 3 entries (180s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched), ? (call:77b35734, status:dispatched)
+Feb 14 06:53:13 voag uv[798833]: 06:53:13 | INFO    | api.routes.batch | Updated batch entry fbed0984-9bf5-411f-b74c-e25776c0288d to status=completed
+Feb 14 06:53:13 voag uv[798833]: 06:53:13 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=876, failed=0, done_entries=876
+Feb 14 06:53:13 voag uv[798833]: INFO:     127.0.0.1:56852 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 06:53:13 voag uv[798833]: INFO:     127.0.0.1:56864 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 06:53:13 voag uv[798833]: 06:53:13 | INFO    | api.routes.analysis | Analysis request received for call_log_id=77b35734-ff52-43b5-847b-37d63a8f54d2
+Feb 14 06:53:13 voag uv[798833]: 06:53:13 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.017s)
+Feb 14 06:53:13 voag uv[798833]: 06:53:13 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.017s)
+Feb 14 06:53:13 voag uv[798833]: 06:53:13 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=77b35734-ff52-43b5-847b-37d63a8f54d2
+Feb 14 06:53:13 voag uv[798833]: 06:53:13 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=77b35734-ff52-43b5-847b-37d63a8f54d2
+Feb 14 06:53:28 voag uv[798833]: 06:53:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (210s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:53:37 voag uv[798833]: 06:53:37 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:53:37 voag uv[798833]: 06:53:37 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:53:37 voag uv[798833]: 06:53:37 | INFO    | utils.vertical_routing | Vertical routing: tenant_id=734cd516-e252-4728-9c52-4663ee552653, vertical=realestate
+Feb 14 06:53:37 voag uv[798833]: 06:53:37 | INFO    | utils.vertical_routing | Realestate vertical detected but not yet implemented
+Feb 14 06:53:37 voag uv[798833]: 06:53:37 | DEBUG   | post_call_analysis.runner | Vertical routing: call_log_id=77b35734-ff52-43b5-847b-37d63a8f54d2 not routed (vertical=realestate, reason=Realestate vertical not yet implemented)
+Feb 14 06:53:37 voag uv[798833]: 06:53:37 | DEBUG   | api.routes.analysis | Post-call analysis completed successfully for call_log_id=77b35734-ff52-43b5-847b-37d63a8f54d2
+Feb 14 06:53:37 voag uv[798833]: 06:53:37 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:53:37 voag uv[798833]: 06:53:37 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=77b35734-ff52-43b5-847b-37d63a8f54d2
+Feb 14 06:53:39 voag uv[798833]: 06:53:39 | WARNING | analysis.lead_bookings_extractor | No explicit confirmed time found after all extraction attempts for call 77b35734-ff52-43b5-847b-37d63a8f54d2
+Feb 14 06:53:39 voag uv[798833]: 06:53:39 | WARNING | analysis.schedule_calculator | Callback requested but no callback_time provided - will use Stage 2 grade-based schedule
+Feb 14 06:53:39 voag uv[798833]: 06:53:39 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 06:53:39 voag uv[798833]: 06:53:39 | INFO    | db.storage.leads | Assigned lead 8718ae8e-a72a-4276-842a-4caa50fea6fd to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 06:53:39 voag uv[798833]: 06:53:39 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=77b35734-ff52-43b5-847b-37d63a8f54d2
+Feb 14 06:53:39 voag uv[798833]: 06:53:39 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=77b35734-ff52-43b5-847b-37d63a8f54d2
+Feb 14 06:53:58 voag uv[798833]: 06:53:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (240s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:54:28 voag uv[798833]: 06:54:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (270s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:54:58 voag uv[798833]: 06:54:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (300s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:55:28 voag uv[798833]: 06:55:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (330s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:55:58 voag uv[798833]: 06:55:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (360s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:56:28 voag uv[798833]: 06:56:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (390s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:56:58 voag uv[798833]: 06:56:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (420s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:57:28 voag uv[798833]: 06:57:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (450s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:57:58 voag uv[798833]: 06:57:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (480s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:58:28 voag uv[798833]: 06:58:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (510s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:58:58 voag uv[798833]: 06:58:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (540s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:59:28 voag uv[798833]: 06:59:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (571s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 06:59:58 voag uv[798833]: 06:59:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (601s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 07:00:28 voag uv[798833]: 07:00:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (631s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 07:00:58 voag uv[798833]: 07:00:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (661s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 07:01:28 voag uv[798833]: 07:01:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (691s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 07:01:58 voag uv[798833]: 07:01:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (721s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 07:02:28 voag uv[798833]: 07:02:28 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (751s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 07:02:58 voag uv[798833]: 07:02:58 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (781s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 07:03:29 voag uv[798833]: 07:03:29 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (811s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 07:03:59 voag uv[798833]: 07:03:59 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (841s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 07:04:29 voag uv[798833]: 07:04:29 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (871s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 07:04:59 voag uv[798833]: 07:04:59 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Waiting for 2 entries (901s elapsed): ? (call:830741e7, status:dispatched), ? (call:a6aab95a, status:dispatched)
+Feb 14 07:06:43 voag uv[798833]: INFO:     87.120.191.67:0 - "POST / HTTP/1.1" 405 Method Not Allowed
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | WARNING | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 60: Timeout after 1201.3s, 2 entries still pending
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | ERROR   | db.storage.batches | Failed to handle wave timeout: column "error_message" of relation "voice_call_batch_entries" does not exist
+Feb 14 07:09:59 voag uv[798833]: LINE 4:                             error_message = 'max_retries_exc...
+Feb 14 07:09:59 voag uv[798833]:                                     ^
+Feb 14 07:09:59 voag uv[798833]: Traceback (most recent call last):
+Feb 14 07:09:59 voag uv[798833]:   File "/home/sahil/vonage-agent/db/storage/batches.py", line 1284, in handle_wave_timeout
+Feb 14 07:09:59 voag uv[798833]:     cur.execute(
+Feb 14 07:09:59 voag uv[798833]:   File "/home/sahil/vonage-agent/.venv/lib/python3.12/site-packages/psycopg2/extras.py", line 236, in execute
+Feb 14 07:09:59 voag uv[798833]:     return super().execute(query, vars)
+Feb 14 07:09:59 voag uv[798833]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Feb 14 07:09:59 voag uv[798833]: psycopg2.errors.UndefinedColumn: column "error_message" of relation "voice_call_batch_entries" does not exist
+Feb 14 07:09:59 voag uv[798833]: LINE 4:                             error_message = 'max_retries_exc...
+Feb 14 07:09:59 voag uv[798833]:                                     ^
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62: Wave 60 complete
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62: Starting wave 61 (901-915 of 983)
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | DEBUG   | db.storage.leads | No lead found for phone: +919391004288
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | INFO    | db.storage.leads | Creating new lead for phone: +919391004288
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | INFO    | db.storage.leads | Created new lead: id=a249e946-b7db-452e-a229-391d65973beb, phone=+919391004288
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919391004288, formatted=09391004288, country=india        
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | INFO    | api.services.call_service | Call routing: +919391004288 -> 09391004288 (carrier: Sasya Spaces IN)
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:09:59 voag uv[798833]: 07:09:59 | INFO    | db.storage.calls | Created call log: id=56486a39-43ab-46fb-91e0-56bdb78307d5, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-d05d360c, dispatch_id=AD_EXXen9mkBDW3, call_log_id=56486a39-43ab-46fb-91e0-56bdb78307d5, to=+919391004288
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | DEBUG   | db.storage.leads | No lead found for phone: +919393033250
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | INFO    | db.storage.leads | Creating new lead for phone: +919393033250
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | INFO    | db.storage.leads | Created new lead: id=8517d93d-95d5-43e2-8f11-2fa9606174e2, phone=+919393033250
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919393033250, formatted=09393033250, country=india        
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | INFO    | api.services.call_service | Call routing: +919393033250 -> 09393033250 (carrier: Sasya Spaces IN)
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:01 voag uv[798833]: 07:10:01 | INFO    | db.storage.calls | Created call log: id=7909c862-b746-4402-803a-966c009e221f, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-f53201c2, dispatch_id=AD_TRGUvcwNhyMp, call_log_id=7909c862-b746-4402-803a-966c009e221f, to=+919393033250
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | DEBUG   | db.storage.leads | No lead found for phone: +919399973041
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | INFO    | db.storage.leads | Creating new lead for phone: +919399973041
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | INFO    | db.storage.leads | Created new lead: id=627dd8e9-f85b-466f-971e-623c3785e2fc, phone=+919399973041
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919399973041, formatted=09399973041, country=india        
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | INFO    | api.services.call_service | Call routing: +919399973041 -> 09399973041 (carrier: Sasya Spaces IN)
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:02 voag uv[798833]: 07:10:02 | INFO    | db.storage.calls | Created call log: id=88e7c78b-0936-4834-a93b-6535ee427772, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-55774550, dispatch_id=AD_bzEZTQB9jYge, call_log_id=88e7c78b-0936-4834-a93b-6535ee427772, to=+919399973041
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | DEBUG   | db.storage.leads | No lead found for phone: +919247774229
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | INFO    | db.storage.leads | Creating new lead for phone: +919247774229
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | INFO    | db.storage.leads | Created new lead: id=769e2862-5e00-477f-816b-b300040c1982, phone=+919247774229
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919247774229, formatted=09247774229, country=india        
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | INFO    | api.services.call_service | Call routing: +919247774229 -> 09247774229 (carrier: Sasya Spaces IN)
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:04 voag uv[798833]: 07:10:04 | INFO    | db.storage.calls | Created call log: id=1f942f6e-2e49-4a68-ac1b-ed3b9d533896, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-abb601fc, dispatch_id=AD_MpcdkJ7GsCwS, call_log_id=1f942f6e-2e49-4a68-ac1b-ed3b9d533896, to=+919247774229
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | DEBUG   | db.storage.leads | No lead found for phone: +919440057444
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | INFO    | db.storage.leads | Creating new lead for phone: +919440057444
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | INFO    | db.storage.leads | Created new lead: id=a37cda43-0b0a-47e2-a565-35ecc4a795fb, phone=+919440057444
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919440057444, formatted=09440057444, country=india        
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | INFO    | api.services.call_service | Call routing: +919440057444 -> 09440057444 (carrier: Sasya Spaces IN)
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:07 voag uv[798833]: 07:10:07 | INFO    | db.storage.calls | Created call log: id=0f9b1e4b-2fd4-4a3c-bd79-0e827e707353, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-37c59003, dispatch_id=AD_UQwAYwuzNoZc, call_log_id=0f9b1e4b-2fd4-4a3c-bd79-0e827e707353, to=+919440057444
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | DEBUG   | db.storage.leads | No lead found for phone: +919290832385
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | INFO    | db.storage.leads | Creating new lead for phone: +919290832385
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | INFO    | db.storage.leads | Created new lead: id=c8308644-b33c-4ce9-9ee7-85b2d3aba829, phone=+919290832385
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919290832385, formatted=09290832385, country=india        
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | INFO    | api.services.call_service | Call routing: +919290832385 -> 09290832385 (carrier: Sasya Spaces IN)
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:10 voag uv[798833]: 07:10:10 | INFO    | db.storage.calls | Created call log: id=93ec1d31-ae71-43d0-95ef-b04629228acf, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-b03bb49b, dispatch_id=AD_Y3uQfC87ohSN, call_log_id=93ec1d31-ae71-43d0-95ef-b04629228acf, to=+919290832385
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | DEBUG   | db.storage.leads | No lead found for phone: +919398628548
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | INFO    | db.storage.leads | Creating new lead for phone: +919398628548
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | INFO    | db.storage.leads | Created new lead: id=fea9a0cd-2946-4b95-873a-aa29ebd4d715, phone=+919398628548
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919398628548, formatted=09398628548, country=india        
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | INFO    | api.services.call_service | Call routing: +919398628548 -> 09398628548 (carrier: Sasya Spaces IN)
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:11 voag uv[798833]: 07:10:11 | INFO    | db.storage.calls | Created call log: id=29cfa2b7-dd00-48f0-96d0-3635250a65d8, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-29590dd8, dispatch_id=AD_e95YAKKQP3q3, call_log_id=29cfa2b7-dd00-48f0-96d0-3635250a65d8, to=+919398628548
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | DEBUG   | db.storage.leads | No lead found for phone: +919246537027
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | INFO    | db.storage.leads | Creating new lead for phone: +919246537027
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | INFO    | db.storage.leads | Created new lead: id=711a694e-c5dd-4227-b11b-f1cab930e999, phone=+919246537027
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919246537027, formatted=09246537027, country=india        
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | INFO    | api.services.call_service | Call routing: +919246537027 -> 09246537027 (carrier: Sasya Spaces IN)
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:14 voag uv[798833]: 07:10:14 | INFO    | db.storage.calls | Created call log: id=260b3a45-d5bb-41e7-a4dc-9826528fac78, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-9760ceec, dispatch_id=AD_hA24GjpmACfq, call_log_id=260b3a45-d5bb-41e7-a4dc-9826528fac78, to=+919246537027
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | DEBUG   | db.storage.leads | No lead found for phone: +919440679715
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | INFO    | db.storage.leads | Creating new lead for phone: +919440679715
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | INFO    | db.storage.leads | Created new lead: id=431d504b-3499-4ef5-99f8-635b4e50909d, phone=+919440679715
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919440679715, formatted=09440679715, country=india        
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | INFO    | api.services.call_service | Call routing: +919440679715 -> 09440679715 (carrier: Sasya Spaces IN)
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:16 voag uv[798833]: 07:10:16 | INFO    | db.storage.calls | Created call log: id=fcca0df2-c7dc-4789-b256-b45d4eef892e, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-a4eca8c2, dispatch_id=AD_AfuzDpNk6FK5, call_log_id=fcca0df2-c7dc-4789-b256-b45d4eef892e, to=+919440679715
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | DEBUG   | db.storage.leads | No lead found for phone: +919391048140
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | INFO    | db.storage.leads | Creating new lead for phone: +919391048140
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | INFO    | db.storage.leads | Created new lead: id=e775085b-bfce-4c05-a8ba-e54933c195db, phone=+919391048140
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919391048140, formatted=09391048140, country=india        
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | INFO    | api.services.call_service | Call routing: +919391048140 -> 09391048140 (carrier: Sasya Spaces IN)
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:18 voag uv[798833]: 07:10:18 | INFO    | db.storage.calls | Created call log: id=0d73921e-2afa-473b-a0e0-0f5fe4c1f5e8, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-773e7f43, dispatch_id=AD_nBDn5NKEfUkd, call_log_id=0d73921e-2afa-473b-a0e0-0f5fe4c1f5e8, to=+919391048140
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | DEBUG   | db.storage.leads | No lead found for phone: +919133481107
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | INFO    | db.storage.leads | Creating new lead for phone: +919133481107
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | INFO    | db.storage.leads | Created new lead: id=b11fc600-9e95-4b66-9577-83a541e89160, phone=+919133481107
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919133481107, formatted=09133481107, country=india        
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | INFO    | api.services.call_service | Call routing: +919133481107 -> 09133481107 (carrier: Sasya Spaces IN)
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:20 voag uv[798833]: 07:10:20 | INFO    | db.storage.calls | Created call log: id=9a1a5baf-b8aa-43c4-a158-766bf786301b, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-07944df1, dispatch_id=AD_A4T7XRBrqxJ3, call_log_id=9a1a5baf-b8aa-43c4-a158-766bf786301b, to=+919133481107
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | DEBUG   | db.storage.leads | No lead found for phone: +919246342767
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | INFO    | db.storage.leads | Creating new lead for phone: +919246342767
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | INFO    | db.storage.leads | Created new lead: id=fc28c3cc-c194-47d1-a0fd-6790234674a1, phone=+919246342767
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919246342767, formatted=09246342767, country=india        
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | INFO    | api.services.call_service | Call routing: +919246342767 -> 09246342767 (carrier: Sasya Spaces IN)
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:23 voag uv[798833]: 07:10:23 | INFO    | db.storage.calls | Created call log: id=799ec896-ee0a-499e-a7bf-cd0a0e684935, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-c7e23a62, dispatch_id=AD_mDuR9ik8FSzY, call_log_id=799ec896-ee0a-499e-a7bf-cd0a0e684935, to=+919246342767
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | DEBUG   | db.storage.leads | No lead found for phone: +919490266644
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | INFO    | db.storage.leads | Creating new lead for phone: +919490266644
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | INFO    | db.storage.leads | Created new lead: id=6ea32611-3e7f-42ee-a361-e63784807d53, phone=+919490266644
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919490266644, formatted=09490266644, country=india        
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | INFO    | api.services.call_service | Call routing: +919490266644 -> 09490266644 (carrier: Sasya Spaces IN)
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:25 voag uv[798833]: 07:10:25 | INFO    | db.storage.calls | Created call log: id=4e35f4a3-49c0-4c23-a148-453e7b6883ad, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-0215e4df, dispatch_id=AD_vY7nP6cLsKYT, call_log_id=4e35f4a3-49c0-4c23-a148-453e7b6883ad, to=+919490266644
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | DEBUG   | db.storage.leads | No lead found for phone: +919490594649
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | INFO    | db.storage.leads | Creating new lead for phone: +919490594649
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | INFO    | db.storage.leads | Created new lead: id=5be0cf2b-2947-4eea-9f96-030991fc85e7, phone=+919490594649
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919490594649, formatted=09490594649, country=india        
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | INFO    | api.services.call_service | Call routing: +919490594649 -> 09490594649 (carrier: Sasya Spaces IN)
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:28 voag uv[798833]: 07:10:28 | INFO    | db.storage.calls | Created call log: id=751e7ea3-bac2-43c3-a285-df4698da69c5, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-5a8502be, dispatch_id=AD_DWxyvgDPzAQc, call_log_id=751e7ea3-bac2-43c3-a285-df4698da69c5, to=+919490594649
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | DEBUG   | db.storage.leads | No lead found for phone: +919440753502
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | INFO    | db.storage.leads | Creating new lead for phone: +919440753502
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | INFO    | db.storage.leads | Created new lead: id=0dcd3400-2d2d-4169-8eb8-41098019b8b5, phone=+919440753502
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | INFO    | api.services.call_service | [Education] Vertical check: tenant_id=734cd516..., is_education=False
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | INFO    | utils.call_routing | Call routing: carrier=Sasya Spaces IN, original=+919440753502, formatted=09440753502, country=india        
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | INFO    | api.services.call_service | Call routing: +919440753502 -> 09440753502 (carrier: Sasya Spaces IN)
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | INFO    | db.storage.numbers | Found number: id=2d494b22-3534-47e1-9943-b64aeefda83a, phone=+918634515070
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | DEBUG   | api.services.call_service | Resolved from_number +918634515070 to from_number_id=2d494b22-3534-47e1-9943-b64aeefda83a
+Feb 14 07:10:30 voag uv[798833]: 07:10:30 | INFO    | db.storage.calls | Created call log: id=a4b13ca4-e96e-4a24-bf27-f7682fd49936, tenant=734cd516-e252-4728-9c52-4663ee552653, direction=outbound
+Feb 14 07:10:32 voag uv[798833]: 07:10:32 | INFO    | api.services.call_service | Dispatched call: room=call-batch-55e24eb1e1ab4ae2ba1d560d62ff8c62-70739cab, dispatch_id=AD_sWffxum2FM8G, call_log_id=a4b13ca4-e96e-4a24-bf27-f7682fd49936, to=+919440753502
+Feb 14 07:11:02 voag uv[798833]: 07:11:02 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 15 entries (30s elapsed)
+Feb 14 07:11:14 voag uv[798833]: 07:11:14 | INFO    | api.routes.batch | Updated batch entry 91fd6273-6a79-4458-8037-3a365fe5ffa6 to status=completed
+Feb 14 07:11:14 voag uv[798833]: 07:11:14 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=877, failed=0, done_entries=877
+Feb 14 07:11:14 voag uv[798833]: INFO:     127.0.0.1:43154 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:11:14 voag uv[798833]: 07:11:14 | INFO    | api.routes.analysis | Analysis request received for call_log_id=a6aab95a-5dcf-4073-9aa9-4daab3a42b87
+Feb 14 07:11:14 voag uv[798833]: 07:11:14 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.029s)
+Feb 14 07:11:14 voag uv[798833]: 07:11:14 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=a6aab95a-5dcf-4073-9aa9-4daab3a42b87
+Feb 14 07:11:14 voag uv[798833]: 07:11:14 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=a6aab95a-5dcf-4073-9aa9-4daab3a42b87
+Feb 14 07:11:14 voag uv[798833]: 07:11:14 | WARNING | analysis.merged_analytics | Insufficient user text for sentiment analysis
+Feb 14 07:11:14 voag uv[798833]: INFO:     127.0.0.1:43160 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:11:14 voag uv[798833]: 07:11:14 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.038s)
+Feb 14 07:11:29 voag uv[798833]: 07:11:29 | WARNING | analysis.merged_analytics | JSON parsing failed - using hybrid fallback to extract data from text
+Feb 14 07:11:32 voag uv[798833]: 07:11:32 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 15 entries (60s elapsed)
+Feb 14 07:11:34 voag uv[798833]: 07:11:34 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:11:34 voag uv[798833]: 07:11:34 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:11:34 voag uv[798833]: 07:11:34 | INFO    | utils.vertical_routing | Vertical routing: tenant_id=734cd516-e252-4728-9c52-4663ee552653, vertical=realestate
+Feb 14 07:11:34 voag uv[798833]: 07:11:34 | INFO    | utils.vertical_routing | Realestate vertical detected but not yet implemented
+Feb 14 07:11:34 voag uv[798833]: 07:11:34 | DEBUG   | post_call_analysis.runner | Vertical routing: call_log_id=a6aab95a-5dcf-4073-9aa9-4daab3a42b87 not routed (vertical=realestate, reason=Realestate vertical not yet implemented)
+Feb 14 07:11:34 voag uv[798833]: 07:11:34 | DEBUG   | api.routes.analysis | Post-call analysis completed successfully for call_log_id=a6aab95a-5dcf-4073-9aa9-4daab3a42b87
+Feb 14 07:11:34 voag uv[798833]: 07:11:34 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:11:34 voag uv[798833]: 07:11:34 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=a6aab95a-5dcf-4073-9aa9-4daab3a42b87
+Feb 14 07:11:36 voag uv[798833]: 07:11:36 | WARNING | analysis.lead_bookings_extractor | No explicit confirmed time found after all extraction attempts for call a6aab95a-5dcf-4073-9aa9-4daab3a42b87
+Feb 14 07:11:36 voag uv[798833]: 07:11:36 | WARNING | analysis.schedule_calculator | Callback requested but no callback_time provided - will use Stage 2 grade-based schedule
+Feb 14 07:11:36 voag uv[798833]: 07:11:36 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:11:36 voag uv[798833]: 07:11:36 | INFO    | db.storage.leads | Assigned lead 2783f403-a391-45bb-9a19-3c360876b6b4 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:11:36 voag uv[798833]: 07:11:36 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=a6aab95a-5dcf-4073-9aa9-4daab3a42b87
+Feb 14 07:11:36 voag uv[798833]: 07:11:36 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=a6aab95a-5dcf-4073-9aa9-4daab3a42b87
+Feb 14 07:12:02 voag uv[798833]: 07:12:02 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 15 entries (90s elapsed)
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | INFO    | api.routes.batch | Updated batch entry 0726852c-649c-4530-a6be-8a9cb6facafb to status=completed
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=878, failed=0, done_entries=878
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | INFO    | api.routes.analysis | Analysis request received for call_log_id=1f942f6e-2e49-4a68-ac1b-ed3b9d533896
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=1f942f6e-2e49-4a68-ac1b-ed3b9d533896
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=1f942f6e-2e49-4a68-ac1b-ed3b9d533896
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=1f942f6e-2e49-4a68-ac1b-ed3b9d533896; skipping analysis
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=1f942f6e-2e49-4a68-ac1b-ed3b9d533896
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=1f942f6e-2e49-4a68-ac1b-ed3b9d533896
+Feb 14 07:12:03 voag uv[798833]: INFO:     127.0.0.1:45452 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:12:03 voag uv[798833]: INFO:     127.0.0.1:45464 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.030s)
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.032s)
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 1f942f6e-2e49-4a68-ac1b-ed3b9d533896 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 11:12:03+04:00
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | INFO    | db.storage.leads | Assigned lead 769e2862-5e00-477f-816b-b300040c1982 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=1f942f6e-2e49-4a68-ac1b-ed3b9d533896
+Feb 14 07:12:03 voag uv[798833]: 07:12:03 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=1f942f6e-2e49-4a68-ac1b-ed3b9d533896
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | INFO    | api.routes.batch | Updated batch entry df54857f-77da-4112-9fc4-d4793a4ac953 to status=completed
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=879, failed=0, done_entries=879
+Feb 14 07:12:08 voag uv[798833]: INFO:     127.0.0.1:58234 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:12:08 voag uv[798833]: INFO:     127.0.0.1:58242 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.031s)
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | INFO    | api.routes.analysis | Analysis request received for call_log_id=7909c862-b746-4402-803a-966c009e221f
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.007s)
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=7909c862-b746-4402-803a-966c009e221f
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=7909c862-b746-4402-803a-966c009e221f
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=7909c862-b746-4402-803a-966c009e221f; skipping analysis
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=7909c862-b746-4402-803a-966c009e221f
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=7909c862-b746-4402-803a-966c009e221f
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 7909c862-b746-4402-803a-966c009e221f - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 11:12:08+04:00
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | INFO    | db.storage.leads | Assigned lead 8517d93d-95d5-43e2-8f11-2fa9606174e2 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=7909c862-b746-4402-803a-966c009e221f
+Feb 14 07:12:08 voag uv[798833]: 07:12:08 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=7909c862-b746-4402-803a-966c009e221f
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | INFO    | api.routes.batch | Updated batch entry be53aa25-4c94-45c7-9cdc-458c427de1e8 to status=completed
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=880, failed=0, done_entries=880
+Feb 14 07:12:17 voag uv[798833]: INFO:     127.0.0.1:40296 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | INFO    | api.routes.analysis | Analysis request received for call_log_id=56486a39-43ab-46fb-91e0-56bdb78307d5
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=56486a39-43ab-46fb-91e0-56bdb78307d5
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=56486a39-43ab-46fb-91e0-56bdb78307d5
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=56486a39-43ab-46fb-91e0-56bdb78307d5; skipping analysis
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=56486a39-43ab-46fb-91e0-56bdb78307d5
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=56486a39-43ab-46fb-91e0-56bdb78307d5
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.354s)
+Feb 14 07:12:17 voag uv[798833]: INFO:     127.0.0.1:40308 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.355s)
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 56486a39-43ab-46fb-91e0-56bdb78307d5 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 11:12:17+04:00
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | INFO    | db.storage.leads | Assigned lead a249e946-b7db-452e-a229-391d65973beb to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=56486a39-43ab-46fb-91e0-56bdb78307d5
+Feb 14 07:12:17 voag uv[798833]: 07:12:17 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=56486a39-43ab-46fb-91e0-56bdb78307d5
+Feb 14 07:12:18 voag uv[798833]: 07:12:18 | INFO    | api.routes.batch | Updated batch entry 41bce86d-96b0-46fa-9703-dd1d93e896e9 to status=completed
+Feb 14 07:12:18 voag uv[798833]: 07:12:18 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=881, failed=0, done_entries=881
+Feb 14 07:12:18 voag uv[798833]: INFO:     127.0.0.1:40316 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:12:18 voag uv[798833]: 07:12:18 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.121s)
+Feb 14 07:12:18 voag uv[798833]: 07:12:18 | INFO    | api.routes.analysis | Analysis request received for call_log_id=830741e7-e1cd-4bf5-a410-fc2264e6d386
+Feb 14 07:12:18 voag uv[798833]: 07:12:18 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=830741e7-e1cd-4bf5-a410-fc2264e6d386
+Feb 14 07:12:18 voag uv[798833]: 07:12:18 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=830741e7-e1cd-4bf5-a410-fc2264e6d386
+Feb 14 07:12:18 voag uv[798833]: 07:12:18 | WARNING | analysis.merged_analytics | Insufficient user text for sentiment analysis
+Feb 14 07:12:18 voag uv[798833]: INFO:     127.0.0.1:40332 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:12:18 voag uv[798833]: 07:12:18 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.012s)
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | INFO    | api.routes.analysis | Analysis request received for call_log_id=4e35f4a3-49c0-4c23-a148-453e7b6883ad
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=4e35f4a3-49c0-4c23-a148-453e7b6883ad
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=4e35f4a3-49c0-4c23-a148-453e7b6883ad
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=4e35f4a3-49c0-4c23-a148-453e7b6883ad; skipping analysis
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=4e35f4a3-49c0-4c23-a148-453e7b6883ad
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=4e35f4a3-49c0-4c23-a148-453e7b6883ad
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | INFO    | api.routes.batch | Updated batch entry 36a89260-b63c-445f-a187-58b484a2028f to status=completed
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 4e35f4a3-49c0-4c23-a148-453e7b6883ad - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=882, failed=0, done_entries=882
+Feb 14 07:12:21 voag uv[798833]: INFO:     127.0.0.1:40338 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.048s)
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.049s)
+Feb 14 07:12:21 voag uv[798833]: INFO:     127.0.0.1:40352 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 11:12:21+04:00
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | INFO    | db.storage.leads | Assigned lead 6ea32611-3e7f-42ee-a361-e63784807d53 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=4e35f4a3-49c0-4c23-a148-453e7b6883ad
+Feb 14 07:12:21 voag uv[798833]: 07:12:21 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=4e35f4a3-49c0-4c23-a148-453e7b6883ad
+Feb 14 07:12:32 voag uv[798833]: 07:12:32 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 11 entries (120s elapsed)
+Feb 14 07:12:33 voag uv[798833]: 07:12:33 | WARNING | analysis.merged_analytics | JSON parsing failed - using hybrid fallback to extract data from text
+Feb 14 07:12:40 voag uv[798833]: 07:12:40 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:12:40 voag uv[798833]: 07:12:40 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:12:40 voag uv[798833]: 07:12:40 | INFO    | utils.vertical_routing | Vertical routing: tenant_id=734cd516-e252-4728-9c52-4663ee552653, vertical=realestate
+Feb 14 07:12:40 voag uv[798833]: 07:12:40 | INFO    | utils.vertical_routing | Realestate vertical detected but not yet implemented
+Feb 14 07:12:40 voag uv[798833]: 07:12:40 | DEBUG   | post_call_analysis.runner | Vertical routing: call_log_id=830741e7-e1cd-4bf5-a410-fc2264e6d386 not routed (vertical=realestate, reason=Realestate vertical not yet implemented)
+Feb 14 07:12:40 voag uv[798833]: 07:12:40 | DEBUG   | api.routes.analysis | Post-call analysis completed successfully for call_log_id=830741e7-e1cd-4bf5-a410-fc2264e6d386
+Feb 14 07:12:40 voag uv[798833]: 07:12:40 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:12:40 voag uv[798833]: 07:12:40 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=830741e7-e1cd-4bf5-a410-fc2264e6d386
+Feb 14 07:12:41 voag uv[798833]: 07:12:41 | WARNING | analysis.lead_bookings_extractor | No explicit confirmed time found after all extraction attempts for call 830741e7-e1cd-4bf5-a410-fc2264e6d386
+Feb 14 07:12:41 voag uv[798833]: 07:12:41 | WARNING | analysis.schedule_calculator | Callback requested but no callback_time provided - will use Stage 2 grade-based schedule
+Feb 14 07:12:41 voag uv[798833]: 07:12:41 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:12:41 voag uv[798833]: 07:12:41 | INFO    | db.storage.leads | Assigned lead 3525545d-f3aa-4fe7-8642-39796b44b277 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:12:41 voag uv[798833]: 07:12:41 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=830741e7-e1cd-4bf5-a410-fc2264e6d386
+Feb 14 07:12:41 voag uv[798833]: 07:12:41 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=830741e7-e1cd-4bf5-a410-fc2264e6d386
+Feb 14 07:13:02 voag uv[798833]: 07:13:02 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 11 entries (150s elapsed)
+Feb 14 07:13:05 voag uv[798833]: 07:13:05 | INFO    | api.routes.batch | Updated batch entry 26f6a338-0e5d-43cd-acce-e68753b3c889 to status=completed
+Feb 14 07:13:05 voag uv[798833]: 07:13:05 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=883, failed=0, done_entries=883
+Feb 14 07:13:05 voag uv[798833]: INFO:     127.0.0.1:46054 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:13:05 voag uv[798833]: INFO:     127.0.0.1:46070 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:13:05 voag uv[798833]: 07:13:05 | INFO    | api.routes.analysis | Analysis request received for call_log_id=a4b13ca4-e96e-4a24-bf27-f7682fd49936
+Feb 14 07:13:05 voag uv[798833]: 07:13:05 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.022s)
+Feb 14 07:13:05 voag uv[798833]: 07:13:05 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.021s)
+Feb 14 07:13:05 voag uv[798833]: 07:13:05 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=a4b13ca4-e96e-4a24-bf27-f7682fd49936
+Feb 14 07:13:05 voag uv[798833]: 07:13:05 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=a4b13ca4-e96e-4a24-bf27-f7682fd49936
+Feb 14 07:13:08 voag uv[798833]: INFO:     35.203.210.228:0 - "GET / HTTP/1.1" 200 OK
+Feb 14 07:13:32 voag uv[798833]: 07:13:32 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 10 entries (180s elapsed)
+Feb 14 07:13:39 voag uv[798833]: 07:13:39 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:13:39 voag uv[798833]: 07:13:39 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:13:39 voag uv[798833]: 07:13:39 | INFO    | utils.vertical_routing | Vertical routing: tenant_id=734cd516-e252-4728-9c52-4663ee552653, vertical=realestate
+Feb 14 07:13:39 voag uv[798833]: 07:13:39 | INFO    | utils.vertical_routing | Realestate vertical detected but not yet implemented
+Feb 14 07:13:39 voag uv[798833]: 07:13:39 | DEBUG   | post_call_analysis.runner | Vertical routing: call_log_id=a4b13ca4-e96e-4a24-bf27-f7682fd49936 not routed (vertical=realestate, reason=Realestate vertical not yet implemented)
+Feb 14 07:13:39 voag uv[798833]: 07:13:39 | DEBUG   | api.routes.analysis | Post-call analysis completed successfully for call_log_id=a4b13ca4-e96e-4a24-bf27-f7682fd49936
+Feb 14 07:13:39 voag uv[798833]: 07:13:39 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:13:39 voag uv[798833]: 07:13:39 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=a4b13ca4-e96e-4a24-bf27-f7682fd49936
+Feb 14 07:13:41 voag uv[798833]: 07:13:41 | WARNING | analysis.lead_bookings_extractor | No explicit confirmed time found after all extraction attempts for call a4b13ca4-e96e-4a24-bf27-f7682fd49936
+Feb 14 07:13:41 voag uv[798833]: 07:13:41 | WARNING | analysis.schedule_calculator | Callback requested but no callback_time provided - will use Stage 2 grade-based schedule
+Feb 14 07:13:41 voag uv[798833]: 07:13:41 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:13:41 voag uv[798833]: 07:13:41 | INFO    | db.storage.leads | Assigned lead 0dcd3400-2d2d-4169-8eb8-41098019b8b5 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:13:41 voag uv[798833]: 07:13:41 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=a4b13ca4-e96e-4a24-bf27-f7682fd49936
+Feb 14 07:13:41 voag uv[798833]: 07:13:41 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=a4b13ca4-e96e-4a24-bf27-f7682fd49936
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | INFO    | api.routes.analysis | Analysis request received for call_log_id=29cfa2b7-dd00-48f0-96d0-3635250a65d8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=29cfa2b7-dd00-48f0-96d0-3635250a65d8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=29cfa2b7-dd00-48f0-96d0-3635250a65d8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=29cfa2b7-dd00-48f0-96d0-3635250a65d8; skipping analysis
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=29cfa2b7-dd00-48f0-96d0-3635250a65d8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=29cfa2b7-dd00-48f0-96d0-3635250a65d8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | INFO    | api.routes.batch | Updated batch entry 23e6c46f-a4a7-4e08-851e-6b89ec353d50 to status=completed
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 29cfa2b7-dd00-48f0-96d0-3635250a65d8 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=884, failed=0, done_entries=884
+Feb 14 07:13:43 voag uv[798833]: INFO:     127.0.0.1:43610 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.063s)
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 11:13:43+04:00
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.065s)
+Feb 14 07:13:43 voag uv[798833]: INFO:     127.0.0.1:43612 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | INFO    | db.storage.leads | Assigned lead fea9a0cd-2946-4b95-873a-aa29ebd4d715 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=29cfa2b7-dd00-48f0-96d0-3635250a65d8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=29cfa2b7-dd00-48f0-96d0-3635250a65d8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | INFO    | api.routes.batch | Updated batch entry 4ce2d299-5aea-4913-9188-ba575251389b to status=completed
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=885, failed=0, done_entries=885
+Feb 14 07:13:43 voag uv[798833]: INFO:     127.0.0.1:43626 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.028s)
+Feb 14 07:13:43 voag uv[798833]: INFO:     127.0.0.1:43632 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | INFO    | api.routes.analysis | Analysis request received for call_log_id=0d73921e-2afa-473b-a0e0-0f5fe4c1f5e8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.031s)
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=0d73921e-2afa-473b-a0e0-0f5fe4c1f5e8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=0d73921e-2afa-473b-a0e0-0f5fe4c1f5e8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=0d73921e-2afa-473b-a0e0-0f5fe4c1f5e8; skipping analysis
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=0d73921e-2afa-473b-a0e0-0f5fe4c1f5e8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=0d73921e-2afa-473b-a0e0-0f5fe4c1f5e8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 0d73921e-2afa-473b-a0e0-0f5fe4c1f5e8 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 11:13:43+04:00
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | INFO    | db.storage.leads | Assigned lead e775085b-bfce-4c05-a8ba-e54933c195db to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=0d73921e-2afa-473b-a0e0-0f5fe4c1f5e8
+Feb 14 07:13:43 voag uv[798833]: 07:13:43 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=0d73921e-2afa-473b-a0e0-0f5fe4c1f5e8
+Feb 14 07:14:02 voag uv[798833]: 07:14:02 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 8 entries (210s elapsed)
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | INFO    | api.routes.batch | Updated batch entry 32558c7e-2525-435e-9005-531c32ae02aa to status=completed
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=886, failed=0, done_entries=886
+Feb 14 07:14:12 voag uv[798833]: INFO:     127.0.0.1:58700 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.019s)
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | INFO    | api.routes.analysis | Analysis request received for call_log_id=751e7ea3-bac2-43c3-a285-df4698da69c5
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.005s)
+Feb 14 07:14:12 voag uv[798833]: INFO:     127.0.0.1:58708 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=751e7ea3-bac2-43c3-a285-df4698da69c5
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=751e7ea3-bac2-43c3-a285-df4698da69c5
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=751e7ea3-bac2-43c3-a285-df4698da69c5; skipping analysis
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=751e7ea3-bac2-43c3-a285-df4698da69c5
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=751e7ea3-bac2-43c3-a285-df4698da69c5
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 751e7ea3-bac2-43c3-a285-df4698da69c5 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 11:14:12+04:00
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | INFO    | db.storage.leads | Assigned lead 5be0cf2b-2947-4eea-9f96-030991fc85e7 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=751e7ea3-bac2-43c3-a285-df4698da69c5
+Feb 14 07:14:12 voag uv[798833]: 07:14:12 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=751e7ea3-bac2-43c3-a285-df4698da69c5
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | INFO    | api.routes.analysis | Analysis request received for call_log_id=9a1a5baf-b8aa-43c4-a158-766bf786301b
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=9a1a5baf-b8aa-43c4-a158-766bf786301b
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=9a1a5baf-b8aa-43c4-a158-766bf786301b
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=9a1a5baf-b8aa-43c4-a158-766bf786301b; skipping analysis
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=9a1a5baf-b8aa-43c4-a158-766bf786301b
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=9a1a5baf-b8aa-43c4-a158-766bf786301b
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.005s)
+Feb 14 07:14:14 voag uv[798833]: INFO:     127.0.0.1:58716 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 9a1a5baf-b8aa-43c4-a158-766bf786301b - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | INFO    | api.routes.batch | Updated batch entry a003df47-8217-40b6-8e29-2a0ffe0fbd79 to status=completed
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=887, failed=0, done_entries=887
+Feb 14 07:14:14 voag uv[798833]: INFO:     127.0.0.1:58730 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.062s)
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 11:14:14+04:00
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | INFO    | db.storage.leads | Assigned lead b11fc600-9e95-4b66-9577-83a541e89160 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=9a1a5baf-b8aa-43c4-a158-766bf786301b
+Feb 14 07:14:14 voag uv[798833]: 07:14:14 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=9a1a5baf-b8aa-43c4-a158-766bf786301b
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | INFO    | api.routes.analysis | Analysis request received for call_log_id=88e7c78b-0936-4834-a93b-6535ee427772
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=88e7c78b-0936-4834-a93b-6535ee427772
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=88e7c78b-0936-4834-a93b-6535ee427772
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | INFO    | post_call_analysis.runner | Empty conversation for call_log_id=88e7c78b-0936-4834-a93b-6535ee427772; skipping analysis
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | WARNING | api.routes.analysis | Post-call analysis returned False for call_log_id=88e7c78b-0936-4834-a93b-6535ee427772
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=88e7c78b-0936-4834-a93b-6535ee427772
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | INFO    | api.routes.batch | Updated batch entry b52ffce2-e2e8-4674-b8b0-ac335b9b58d7 to status=completed
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | WARNING | analysis.lead_bookings_extractor | Special handling for failed call (status: failed) in call 88e7c78b-0936-4834-a93b-6535ee427772 - using auto_followup, grade 12 timeline, and started_at time
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=888, failed=0, done_entries=888
+Feb 14 07:14:17 voag uv[798833]: INFO:     127.0.0.1:46650 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.045s)
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.046s)
+Feb 14 07:14:17 voag uv[798833]: INFO:     127.0.0.1:46666 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | WARNING | analysis.lead_bookings_extractor | No messages/segments list found in transcriptions. Type: <class 'dict'>
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | WARNING | analysis.lead_bookings_extractor | No timestamp found in transcriptions, using current time as reference_time: 2026-02-14 11:14:17+04:00
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | INFO    | db.storage.leads | Assigned lead 627dd8e9-f85b-466f-971e-623c3785e2fc to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=88e7c78b-0936-4834-a93b-6535ee427772
+Feb 14 07:14:17 voag uv[798833]: 07:14:17 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=88e7c78b-0936-4834-a93b-6535ee427772
+Feb 14 07:14:19 voag uv[798833]: 07:14:19 | INFO    | api.routes.batch | Updated batch entry 9e6ac976-c2ec-4431-833b-652c55f3e644 to status=completed
+Feb 14 07:14:19 voag uv[798833]: 07:14:19 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=889, failed=0, done_entries=889
+Feb 14 07:14:19 voag uv[798833]: INFO:     127.0.0.1:46672 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:14:19 voag uv[798833]: 07:14:19 | INFO    | api.routes.analysis | Analysis request received for call_log_id=fcca0df2-c7dc-4789-b256-b45d4eef892e
+Feb 14 07:14:19 voag uv[798833]: INFO:     127.0.0.1:46678 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:14:19 voag uv[798833]: 07:14:19 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.021s)
+Feb 14 07:14:19 voag uv[798833]: 07:14:19 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.022s)
+Feb 14 07:14:19 voag uv[798833]: 07:14:19 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=fcca0df2-c7dc-4789-b256-b45d4eef892e
+Feb 14 07:14:19 voag uv[798833]: 07:14:19 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=fcca0df2-c7dc-4789-b256-b45d4eef892e
+Feb 14 07:14:19 voag uv[798833]: 07:14:19 | WARNING | analysis.merged_analytics | Insufficient user text for sentiment analysis
+Feb 14 07:14:32 voag uv[798833]: 07:14:32 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 4 entries (240s elapsed): ? (call:0f9b1e4b, status:dispatched), ? (call:93ec1d31, status:dispatched), ? (call:260b3a45, status:dispatched), ? (call:799ec896, status:dispatched)
+Feb 14 07:14:40 voag uv[798833]: 07:14:40 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:14:40 voag uv[798833]: 07:14:40 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:14:40 voag uv[798833]: 07:14:40 | INFO    | utils.vertical_routing | Vertical routing: tenant_id=734cd516-e252-4728-9c52-4663ee552653, vertical=realestate
+Feb 14 07:14:40 voag uv[798833]: 07:14:40 | INFO    | utils.vertical_routing | Realestate vertical detected but not yet implemented
+Feb 14 07:14:40 voag uv[798833]: 07:14:40 | DEBUG   | post_call_analysis.runner | Vertical routing: call_log_id=fcca0df2-c7dc-4789-b256-b45d4eef892e not routed (vertical=realestate, reason=Realestate vertical not yet implemented)
+Feb 14 07:14:40 voag uv[798833]: 07:14:40 | DEBUG   | api.routes.analysis | Post-call analysis completed successfully for call_log_id=fcca0df2-c7dc-4789-b256-b45d4eef892e
+Feb 14 07:14:40 voag uv[798833]: 07:14:40 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:14:40 voag uv[798833]: 07:14:40 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=fcca0df2-c7dc-4789-b256-b45d4eef892e
+Feb 14 07:14:42 voag uv[798833]: 07:14:42 | WARNING | analysis.lead_bookings_extractor | No explicit confirmed time found after all extraction attempts for call fcca0df2-c7dc-4789-b256-b45d4eef892e
+Feb 14 07:14:42 voag uv[798833]: 07:14:42 | WARNING | analysis.schedule_calculator | Callback requested but no callback_time provided - will use Stage 2 grade-based schedule
+Feb 14 07:14:42 voag uv[798833]: 07:14:42 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:14:42 voag uv[798833]: 07:14:42 | INFO    | db.storage.leads | Assigned lead 431d504b-3499-4ef5-99f8-635b4e50909d to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:14:42 voag uv[798833]: 07:14:42 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=fcca0df2-c7dc-4789-b256-b45d4eef892e
+Feb 14 07:14:42 voag uv[798833]: 07:14:42 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=fcca0df2-c7dc-4789-b256-b45d4eef892e
+Feb 14 07:14:54 voag uv[798833]: 07:14:54 | INFO    | api.routes.batch | Updated batch entry 79030d93-792d-4402-8533-2fd10bbc84a9 to status=completed
+Feb 14 07:14:54 voag uv[798833]: 07:14:54 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=890, failed=0, done_entries=890
+Feb 14 07:14:54 voag uv[798833]: INFO:     127.0.0.1:38444 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:14:54 voag uv[798833]: INFO:     127.0.0.1:38452 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:14:54 voag uv[798833]: 07:14:54 | INFO    | api.routes.analysis | Analysis request received for call_log_id=0f9b1e4b-2fd4-4a3c-bd79-0e827e707353
+Feb 14 07:14:54 voag uv[798833]: 07:14:54 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.014s)
+Feb 14 07:14:54 voag uv[798833]: 07:14:54 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.014s)
+Feb 14 07:14:54 voag uv[798833]: 07:14:54 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=0f9b1e4b-2fd4-4a3c-bd79-0e827e707353
+Feb 14 07:14:54 voag uv[798833]: 07:14:54 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=0f9b1e4b-2fd4-4a3c-bd79-0e827e707353
+Feb 14 07:15:02 voag uv[798833]: 07:15:02 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 3 entries (270s elapsed): ? (call:93ec1d31, status:dispatched), ? (call:260b3a45, status:dispatched), ? (call:799ec896, status:dispatched)
+Feb 14 07:15:14 voag uv[798833]: 07:15:14 | INFO    | api.routes.batch | Updated batch entry 1e877c79-e9bc-47b9-8105-1505c94f5fdd to status=completed
+Feb 14 07:15:14 voag uv[798833]: 07:15:14 | DEBUG   | db.storage.batches | Batch 9e689462-5a77-4614-9d54-c711fb367781: status=queued, total=983, completed=891, failed=0, done_entries=891
+Feb 14 07:15:14 voag uv[798833]: INFO:     127.0.0.1:45286 - "POST /batch/entry-completed HTTP/1.1" 200 OK
+Feb 14 07:15:14 voag uv[798833]: INFO:     127.0.0.1:45296 - "POST /analysis/run-background-analysis HTTP/1.1" 200 OK
+Feb 14 07:15:14 voag uv[798833]: 07:15:14 | INFO    | api.routes.analysis | Analysis request received for call_log_id=799ec896-ee0a-499e-a7bf-cd0a0e684935
+Feb 14 07:15:14 voag uv[798833]: 07:15:14 | DEBUG   | vonage.api_security | POST /batch/entry-completed - 200 (0.018s)
+Feb 14 07:15:14 voag uv[798833]: 07:15:14 | DEBUG   | api.routes.analysis | Starting background analysis for call_log_id=799ec896-ee0a-499e-a7bf-cd0a0e684935
+Feb 14 07:15:14 voag uv[798833]: 07:15:14 | DEBUG   | api.routes.analysis | Running post-call analysis for call_log_id=799ec896-ee0a-499e-a7bf-cd0a0e684935
+Feb 14 07:15:14 voag uv[798833]: 07:15:14 | DEBUG   | vonage.api_security | POST /analysis/run-background-analysis - 200 (0.022s)
+Feb 14 07:15:26 voag uv[798833]: 07:15:26 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:15:26 voag uv[798833]: 07:15:26 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:15:26 voag uv[798833]: 07:15:26 | INFO    | utils.vertical_routing | Vertical routing: tenant_id=734cd516-e252-4728-9c52-4663ee552653, vertical=realestate
+Feb 14 07:15:26 voag uv[798833]: 07:15:26 | INFO    | utils.vertical_routing | Realestate vertical detected but not yet implemented
+Feb 14 07:15:26 voag uv[798833]: 07:15:26 | DEBUG   | post_call_analysis.runner | Vertical routing: call_log_id=0f9b1e4b-2fd4-4a3c-bd79-0e827e707353 not routed (vertical=realestate, reason=Realestate vertical not yet implemented)
+Feb 14 07:15:26 voag uv[798833]: 07:15:26 | DEBUG   | api.routes.analysis | Post-call analysis completed successfully for call_log_id=0f9b1e4b-2fd4-4a3c-bd79-0e827e707353
+Feb 14 07:15:26 voag uv[798833]: 07:15:26 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:15:26 voag uv[798833]: 07:15:26 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=0f9b1e4b-2fd4-4a3c-bd79-0e827e707353
+Feb 14 07:15:28 voag uv[798833]: 07:15:28 | WARNING | analysis.lead_bookings_extractor | No explicit confirmed time found after all extraction attempts for call 0f9b1e4b-2fd4-4a3c-bd79-0e827e707353
+Feb 14 07:15:28 voag uv[798833]: 07:15:28 | WARNING | analysis.schedule_calculator | Callback requested but no callback_time provided - will use Stage 2 grade-based schedule
+Feb 14 07:15:28 voag uv[798833]: 07:15:28 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:15:28 voag uv[798833]: 07:15:28 | INFO    | db.storage.leads | Assigned lead a37cda43-0b0a-47e2-a565-35ecc4a795fb to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:15:28 voag uv[798833]: 07:15:28 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=0f9b1e4b-2fd4-4a3c-bd79-0e827e707353
+Feb 14 07:15:28 voag uv[798833]: 07:15:28 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=0f9b1e4b-2fd4-4a3c-bd79-0e827e707353
+Feb 14 07:15:32 voag uv[798833]: 07:15:32 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 2 entries (300s elapsed): ? (call:93ec1d31, status:dispatched), ? (call:260b3a45, status:dispatched)
+Feb 14 07:15:45 voag uv[798833]: 07:15:45 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:15:45 voag uv[798833]: 07:15:45 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:15:45 voag uv[798833]: 07:15:45 | INFO    | utils.vertical_routing | Vertical routing: tenant_id=734cd516-e252-4728-9c52-4663ee552653, vertical=realestate
+Feb 14 07:15:45 voag uv[798833]: 07:15:45 | INFO    | utils.vertical_routing | Realestate vertical detected but not yet implemented
+Feb 14 07:15:45 voag uv[798833]: 07:15:45 | DEBUG   | post_call_analysis.runner | Vertical routing: call_log_id=799ec896-ee0a-499e-a7bf-cd0a0e684935 not routed (vertical=realestate, reason=Realestate vertical not yet implemented)
+Feb 14 07:15:45 voag uv[798833]: 07:15:45 | DEBUG   | api.routes.analysis | Post-call analysis completed successfully for call_log_id=799ec896-ee0a-499e-a7bf-cd0a0e684935
+Feb 14 07:15:45 voag uv[798833]: 07:15:45 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:15:45 voag uv[798833]: 07:15:45 | DEBUG   | api.routes.analysis | Running lead bookings extraction for call_log_id=799ec896-ee0a-499e-a7bf-cd0a0e684935
+Feb 14 07:15:47 voag uv[798833]: 07:15:47 | WARNING | analysis.lead_bookings_extractor | No explicit confirmed time found after all extraction attempts for call 799ec896-ee0a-499e-a7bf-cd0a0e684935
+Feb 14 07:15:47 voag uv[798833]: 07:15:47 | WARNING | analysis.schedule_calculator | Callback requested but no callback_time provided - will use Stage 2 grade-based schedule
+Feb 14 07:15:47 voag uv[798833]: 07:15:47 | DEBUG   | db.db_config | Using PRODUCTION database: 165.22.221.77:5432/salesmaya_agent
+Feb 14 07:15:47 voag uv[798833]: 07:15:47 | INFO    | db.storage.leads | Assigned lead fc28c3cc-c194-47d1-a0fd-6790234674a1 to user c1cfc12e-3185-476b-9e90-930e402dd93a
+Feb 14 07:15:47 voag uv[798833]: 07:15:47 | DEBUG   | api.routes.analysis | Lead booking extracted and saved for call_log_id=799ec896-ee0a-499e-a7bf-cd0a0e684935
+Feb 14 07:15:47 voag uv[798833]: 07:15:47 | INFO    | api.routes.analysis | Analysis completed and saved to DB for call_log_id=799ec896-ee0a-499e-a7bf-cd0a0e684935
+Feb 14 07:16:02 voag uv[798833]: 07:16:02 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 2 entries (330s elapsed): ? (call:93ec1d31, status:dispatched), ? (call:260b3a45, status:dispatched)
+Feb 14 07:16:32 voag uv[798833]: 07:16:32 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 2 entries (360s elapsed): ? (call:93ec1d31, status:dispatched), ? (call:260b3a45, status:dispatched)
+Feb 14 07:17:03 voag uv[798833]: 07:17:02 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 2 entries (391s elapsed): ? (call:93ec1d31, status:dispatched), ? (call:260b3a45, status:dispatched)
+Feb 14 07:17:33 voag uv[798833]: 07:17:33 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 2 entries (421s elapsed): ? (call:93ec1d31, status:dispatched), ? (call:260b3a45, status:dispatched)
+Feb 14 07:18:03 voag uv[798833]: 07:18:03 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 2 entries (451s elapsed): ? (call:93ec1d31, status:dispatched), ? (call:260b3a45, status:dispatched)
+Feb 14 07:18:33 voag uv[798833]: 07:18:33 | INFO    | api.routes.batch | Batch batch-55e24eb1e1ab4ae2ba1d560d62ff8c62 wave 61: Waiting for 2 entries (481s elapsed): ? (call:93ec1d31, status:dispatched), ? (call:260b3a45, status:dispatched)

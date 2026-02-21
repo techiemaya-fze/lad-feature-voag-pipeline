@@ -128,7 +128,7 @@ async def run_post_call_analysis(
         analysis["tenant_id"] = tenant_id
     
     try:
-        saved = analytics.save_to_database(analysis, call_log_id, dict(db_config))
+        saved = await analytics.save_to_database(analysis, call_log_id, dict(db_config))
     except Exception as exc:  # noqa: BLE001
         logger.error("Saving analytics failed for call_log_id=%s: %s", call_log_id, exc, exc_info=True)
         return False

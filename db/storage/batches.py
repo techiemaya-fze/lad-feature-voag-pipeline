@@ -646,7 +646,7 @@ class BatchStorage:
                             c.status as call_status
                         FROM {FULL_ENTRY_TABLE} e
                         LEFT JOIN {FULL_CALL_TABLE} c ON e.call_log_id = c.id
-                        WHERE e.batch_id = %s AND e.status = 'running'
+                        WHERE e.batch_id = %s AND e.status IN ('running', 'dispatched')
                         """,
                         (batch_id,)
                     )
@@ -698,6 +698,9 @@ class BatchStorage:
         """
         Check if all entries in the batch are done. If so, mark batch completed.
         
+        Uses call_logs.status as source of truth (worker writes there).
+        Falls back to batch_entries.status for entries with no call_log yet.
+        
         Args:
             batch_id: UUID of the batch
         
@@ -708,7 +711,10 @@ class BatchStorage:
             conn = self._get_connection()
             try:
                 with conn.cursor() as cur:
-                    # Get batch status and entry counts
+                    # Count entries that are DONE by checking call_logs (source of truth)
+                    # An entry is done if:
+                    #   - It has a call_log with terminal status, OR
+                    #   - It has no call_log but batch_entries.status is terminal
                     cur.execute(
                         f"""
                         SELECT 
@@ -716,8 +722,48 @@ class BatchStorage:
                             b.total_calls,
                             COALESCE(b.completed_calls, 0),
                             COALESCE(b.failed_calls, 0),
-                            (SELECT COUNT(*) FROM {FULL_ENTRY_TABLE} 
-                             WHERE batch_id = b.id AND status IN ('completed', 'failed', 'cancelled', 'declined', 'ended')) as done_count
+                            (
+                                SELECT COUNT(*) FROM {FULL_ENTRY_TABLE} e
+                                LEFT JOIN {FULL_CALL_TABLE} c ON e.call_log_id = c.id
+                                WHERE e.batch_id = b.id
+                                AND (
+                                    -- Has call_log with terminal status
+                                    (c.id IS NOT NULL AND c.status IN (
+                                        'ended', 'completed', 'failed', 'declined', 'cancelled',
+                                        'error', 'not_reachable', 'no_answer', 'busy', 'rejected'
+                                    ))
+                                    OR
+                                    -- No call_log: check batch_entries.status
+                                    (c.id IS NULL AND e.status IN (
+                                        'completed', 'failed', 'cancelled', 'declined', 'ended'
+                                    ))
+                                )
+                            ) as done_count,
+                            -- Count successful entries (ended/completed in call_logs or batch_entries)
+                            (
+                                SELECT COUNT(*) FROM {FULL_ENTRY_TABLE} e
+                                LEFT JOIN {FULL_CALL_TABLE} c ON e.call_log_id = c.id
+                                WHERE e.batch_id = b.id
+                                AND (
+                                    (c.id IS NOT NULL AND c.status IN ('ended', 'completed'))
+                                    OR
+                                    (c.id IS NULL AND e.status IN ('completed', 'ended'))
+                                )
+                            ) as success_count,
+                            -- Count failed entries (everything terminal that isn't success)
+                            (
+                                SELECT COUNT(*) FROM {FULL_ENTRY_TABLE} e
+                                LEFT JOIN {FULL_CALL_TABLE} c ON e.call_log_id = c.id
+                                WHERE e.batch_id = b.id
+                                AND (
+                                    (c.id IS NOT NULL AND c.status IN (
+                                        'failed', 'declined', 'cancelled', 'error',
+                                        'not_reachable', 'no_answer', 'busy', 'rejected'
+                                    ))
+                                    OR
+                                    (c.id IS NULL AND e.status IN ('failed', 'cancelled', 'declined'))
+                                )
+                            ) as fail_count
                         FROM {FULL_BATCH_TABLE} b
                         WHERE b.id = %s
                         """,
@@ -728,11 +774,12 @@ class BatchStorage:
                         logger.warning(f"Batch {batch_id} not found")
                         return {"completed": False, "should_report": False}
                     
-                    status, total_calls, completed_calls, failed_calls, done_count = row
+                    status, total_calls, completed_calls, failed_calls, done_count, success_count, fail_count = row
                     
                     logger.debug(
                         f"Batch {batch_id}: status={status}, total={total_calls}, "
-                        f"completed={completed_calls}, failed={failed_calls}, done_entries={done_count}"
+                        f"completed={completed_calls}, failed={failed_calls}, "
+                        f"done_entries={done_count}, success={success_count}, fail={fail_count}"
                     )
                     
                     # Already completed?
@@ -743,27 +790,34 @@ class BatchStorage:
                     all_done = done_count >= total_calls if total_calls > 0 else False
                     
                     if all_done:
-                        # Mark batch as completed
+                        # Mark batch as completed AND reconcile counters from actual entry data
                         cur.execute(
                             f"""
                             UPDATE {FULL_BATCH_TABLE}
-                            SET status = 'completed', finished_at = NOW(), updated_at = NOW()
-                            WHERE id = %s AND status IN ('queued', 'running')
+                            SET status = 'completed',
+                                completed_calls = %s,
+                                failed_calls = %s,
+                                finished_at = NOW(),
+                                updated_at = NOW()
+                            WHERE id = %s AND status IN ('queued', 'running', 'cancelled')
                             RETURNING id
                             """,
-                            (batch_id,)
+                            (success_count, fail_count, batch_id)
                         )
                         updated = cur.fetchone()
                         conn.commit()
                         
                         if updated:
-                            logger.info(f"Batch {batch_id} marked completed (all {total_calls} entries done)")
+                            logger.info(
+                                f"Batch {batch_id} marked completed "
+                                f"(total={total_calls}, success={success_count}, failed={fail_count})"
+                            )
                             return {
                                 "completed": True,
                                 "should_report": True,
                                 "total_calls": total_calls,
-                                "completed_calls": completed_calls,
-                                "failed_calls": failed_calls,
+                                "completed_calls": success_count,
+                                "failed_calls": fail_count,
                             }
                         else:
                             # Already updated by another worker
@@ -787,16 +841,17 @@ class BatchStorage:
 
     async def count_pending_entries(self, batch_id: str, entry_ids: list[str]) -> int:
         """
-        Count how many of the given entries are still pending (not completed/failed).
+        Count how many of the given entries are still pending (not in terminal state).
         
-        Used by wave-based dispatch to wait for a wave to complete.
+        JOINs call_logs to check the REAL call status (worker writes to call_logs,
+        not to batch_entries). Falls back to batch_entries.status for entries
+        that don't have a call_log yet (freshly dispatched).
         
-        Args:
-            batch_id: UUID of the batch
-            entry_ids: List of entry UUIDs to check
+        Terminal call_logs statuses: ended, completed, failed, declined, cancelled,
+        error, not_reachable, no_answer, busy, rejected
         
-        Returns:
-            Number of entries still in non-terminal state (pending, running, dispatched)
+        Terminal batch_entries statuses (no call_log): completed, failed, cancelled, 
+        declined, ended
         """
         if not entry_ids:
             return 0
@@ -805,14 +860,25 @@ class BatchStorage:
             conn = self._get_connection()
             try:
                 with conn.cursor() as cur:
-                    # Count entries that are NOT in terminal state (completed, failed, cancelled)
                     cur.execute(
                         f"""
-                        SELECT COUNT(*) 
-                        FROM {FULL_ENTRY_TABLE}
-                        WHERE batch_id = %s 
-                        AND id = ANY(%s::uuid[])
-                        AND status NOT IN ('completed', 'failed', 'cancelled', 'declined', 'ended')
+                        SELECT COUNT(*)
+                        FROM {FULL_ENTRY_TABLE} e
+                        LEFT JOIN {FULL_CALL_TABLE} c ON e.call_log_id = c.id
+                        WHERE e.batch_id = %s
+                          AND e.id = ANY(%s::uuid[])
+                          AND (
+                            -- Has call_log: check call_logs.status (source of truth)
+                            (c.id IS NOT NULL AND COALESCE(c.status, 'in_queue') NOT IN (
+                                'ended', 'completed', 'failed', 'declined', 'cancelled',
+                                'error', 'not_reachable', 'no_answer', 'busy', 'rejected'
+                            ))
+                            OR
+                            -- No call_log yet: check batch_entries.status
+                            (c.id IS NULL AND e.status NOT IN (
+                                'completed', 'failed', 'cancelled', 'declined', 'ended'
+                            ))
+                          )
                         """,
                         (batch_id, entry_ids)
                     )
@@ -828,6 +894,56 @@ class BatchStorage:
                 exc_info=True
             )
             return len(entry_ids)  # Assume all pending on error to avoid infinite loop
+
+    async def get_pending_entry_details(self, batch_id: str, entry_ids: list[str]) -> list[dict]:
+        """
+        Get details of pending entries for debug logging.
+        
+        JOINs call_logs to show the real call status alongside batch entry info.
+        """
+        if not entry_ids:
+            return []
+        
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        f"""
+                        SELECT e.id, e.to_phone as to_number, e.call_log_id,
+                               e.status as entry_status,
+                               COALESCE(c.status, 'no_call_log') as call_status
+                        FROM {FULL_ENTRY_TABLE} e
+                        LEFT JOIN {FULL_CALL_TABLE} c ON e.call_log_id = c.id
+                        WHERE e.batch_id = %s
+                          AND e.id = ANY(%s::uuid[])
+                          AND (
+                            (c.id IS NOT NULL AND COALESCE(c.status, 'in_queue') NOT IN (
+                                'ended', 'completed', 'failed', 'declined', 'cancelled',
+                                'error', 'not_reachable', 'no_answer', 'busy', 'rejected'
+                            ))
+                            OR
+                            (c.id IS NULL AND e.status NOT IN (
+                                'completed', 'failed', 'cancelled', 'declined', 'ended'
+                            ))
+                          )
+                        """,
+                        (batch_id, entry_ids)
+                    )
+                    rows = cur.fetchall()
+                    return [
+                        {
+                            "to_number": r.get("to_number"),
+                            "call_log_id": str(r["call_log_id"]) if r.get("call_log_id") else None,
+                            "status": r.get("call_status", r.get("entry_status", "?")),
+                        }
+                        for r in rows
+                    ]
+            finally:
+                self._return_connection(conn)
+        except Exception as exc:
+            logger.error("Failed to get pending entry details: %s", exc, exc_info=True)
+            return []
 
     async def mark_pending_entries_failed(
         self, 
@@ -1086,6 +1202,70 @@ class BatchStorage:
         except Exception as exc:
             logger.error("Failed to get wave entries by status: %s", exc, exc_info=True)
             return []
+
+    async def sync_entry_statuses_from_call_logs(self, batch_id: str, entry_ids: list[str]) -> int:
+        """
+        Reconcile batch_entries.status from call_logs.status in one UPDATE.
+        
+        Called after each wave completes to keep batch_entries accurate for 
+        display/reporting, regardless of whether the entry-completed callback
+        arrived. Only updates entries whose batch_entries.status is stale
+        (still non-terminal while call_logs shows terminal).
+        
+        Returns:
+            Number of entries synced
+        """
+        if not entry_ids:
+            return 0
+        
+        try:
+            conn = self._get_connection()
+            try:
+                now = datetime.now(timezone.utc)
+                
+                # Map call_log terminal statuses to batch_entry statuses
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        UPDATE {FULL_ENTRY_TABLE} e
+                        SET status = CASE
+                                WHEN c.status IN ('ended', 'completed') THEN 'completed'
+                                WHEN c.status IN ('failed', 'error', 'not_reachable') THEN 'failed'
+                                WHEN c.status IN ('declined', 'rejected', 'no_answer', 'busy') THEN 'declined'
+                                WHEN c.status IN ('cancelled', 'canceled') THEN 'cancelled'
+                                ELSE 'failed'
+                            END,
+                            last_error = CASE
+                                WHEN e.status != 'completed' THEN 'synced_from_call_log:' || c.status
+                                ELSE e.last_error
+                            END,
+                            updated_at = %s
+                        FROM {FULL_CALL_TABLE} c
+                        WHERE e.call_log_id = c.id
+                          AND e.batch_id = %s
+                          AND e.id = ANY(%s::uuid[])
+                          AND e.status NOT IN ('completed', 'failed', 'cancelled', 'declined', 'ended')
+                          AND c.status IN (
+                              'ended', 'completed', 'failed', 'declined', 'cancelled',
+                              'error', 'not_reachable', 'no_answer', 'busy', 'rejected'
+                          )
+                        """,
+                        (now, batch_id, entry_ids)
+                    )
+                    synced = cur.rowcount
+                    conn.commit()
+                    
+                    if synced > 0:
+                        logger.info(
+                            "Synced %d batch_entries statuses from call_logs for batch %s",
+                            synced, batch_id
+                        )
+                    return synced
+            finally:
+                self._return_connection(conn)
+        except Exception as exc:
+            logger.error("Failed to sync entry statuses: %s", exc, exc_info=True)
+            return 0
 
     async def handle_wave_timeout(
         self, 

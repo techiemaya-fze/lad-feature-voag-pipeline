@@ -66,6 +66,7 @@ class CallRoutingResult:
     carrier_name: Optional[str] = None
     detected_country: Optional[str] = None
     outbound_trunk_id: Optional[str] = None  # SIP trunk ID from rules
+    livekit_config_id: Optional[str] = None  # LiveKit config UUID from rules
     
 
 @dataclass
@@ -386,6 +387,7 @@ def validate_and_format_call(
     carrier_name = carrier_info['carrier_name']
     rules = carrier_info['rules'] or {}
     outbound_trunk_id = rules.get('outbound_trunk_id')  # Get trunk ID from rules
+    livekit_config_id = rules.get('livekit_config')  # Get LiveKit config UUID from rules
     
     # Check if outbound is allowed
     if not rules.get('outbound', True):
@@ -462,7 +464,8 @@ def validate_and_format_call(
         formatted_to_number=formatted_number,
         carrier_name=carrier_name,
         detected_country=detected_country,
-        outbound_trunk_id=outbound_trunk_id
+        outbound_trunk_id=outbound_trunk_id,
+        livekit_config_id=livekit_config_id,
     )
 
 
