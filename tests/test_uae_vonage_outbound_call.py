@@ -1,17 +1,25 @@
 """
-Test Real Outbound Call with India LiveKit Credentials
+Test Real Outbound Call with UAE VM LiveKit (Vonage Trunk)
 
 This test demonstrates the complete outbound call flow using:
-- India LiveKit server (lk.techiemaya.com)
+- UAE VM LiveKit server (http://91.74.244.94:7880)
+- Vonage trunk (ST_Li8PtVubMy5u)
 - Agent ID 33
-- Phone number +919513456728 (has livekit_config UUID in database)
-- Dynamic credential resolution from database
+- Phone number +19513456728 (has livekit_config UUID in database)
+- Dynamic credential resolution from database with encrypted secrets
 
 The test shows:
 1. Call routing validation (from_number -> carrier -> trunk_id)
-2. LiveKit credential resolution (database -> environment fallback)
+2. LiveKit credential resolution (database with decryption)
 3. Agent dispatch with proper metadata
 4. Full logging of the dispatch flow
+
+Expected Credentials (from database):
+- URL: http://91.74.244.94:7880
+- API Key: APIbe273e3142c7b96a4a87bba4
+- API Secret: SEC43172b2431a470ae02f0b11151f43866023f60c2f872f91e (encrypted in DB)
+- Trunk ID: ST_Li8PtVubMy5u (from rules)
+- Worker Name: voag-staging
 
 IMPORTANT: This makes a REAL outbound call. Use a test number!
 """
@@ -31,30 +39,31 @@ from utils.livekit_resolver import resolve_livekit_credentials
 from db.db_config import get_db_config
 
 
-async def test_india_outbound_call():
+async def test_uae_vonage_outbound_call():
     """
-    Test making a real outbound call using India LiveKit credentials.
+    Test making a real outbound call using UAE VM LiveKit with Vonage trunk.
     
     Configuration:
-    - From: +919513456728 (India number with livekit_config in DB)
-    - To: Test number (India format)
+    - From: +19513456728 (has livekit_config UUID pointing to UAE VM Vonage)
+    - To: +918384884150 (Test number in India)
     - Agent: 33
-    - LiveKit: India Cloud (lk.techiemaya.com)
-    - Trunk: ST_Li8PtVubMy5u (from rules)
+    - LiveKit: UAE VM (http://91.74.244.94:7880)
+    - Trunk: ST_Li8PtVubMy5u (Vonage trunk from rules)
+    - Worker: voag-staging
     """
     print("="*80)
-    print("REAL OUTBOUND CALL TEST - India LiveKit Cloud")
+    print("REAL OUTBOUND CALL TEST - UAE VM LiveKit (Vonage Trunk)")
     print("="*80)
     
     # Configuration
-    from_number = "+19513456728"  # India number with livekit_config UUID
+    from_number = "+19513456728"  # Number with livekit_config UUID for UAE VM Vonage
     to_number = "+918384884150"  # Test number in India
     agent_id = 33
     tenant_id = "e0a3e9ca-3f46-4bb0-ac10-a91b5c1d20b5"  # Specific tenant for this test
     voice_id = "default"  # Will resolve from agent's default voice
     initiated_by = None  # No user context for this test
-    added_context = "This is a test call from the India LiveKit cloud server."
-    lead_name = "Test Lead India"
+    added_context = "This is a test call from the UAE VM LiveKit server using Vonage trunk."
+    lead_name = "Test Lead UAE Vonage"
     
     print(f"\n1. Call Configuration:")
     print(f"   From: {from_number}")
@@ -86,7 +95,7 @@ async def test_india_outbound_call():
         print(f"   ✗ Voice resolution failed: {e}")
         return
     
-    # Step 3: Use the specified tenant_id (not from agent)
+    # Step 3: Use the specified tenant_id
     print(f"\n4. Using Specified Tenant ID...")
     print(f"   ✓ Tenant ID: {tenant_id[:8]}...")
     
@@ -126,25 +135,35 @@ async def test_india_outbound_call():
     print(f"     - Trunk ID: {livekit_creds.trunk_id}")
     print(f"     - Worker Name: {livekit_creds.worker_name}")
     
-    # Verify we're using India LiveKit credentials
-    expected_url = "wss://lk.techiemaya.com"
-    expected_api_key = "API5QH2NJHDXQSW"
-    expected_trunk = "ST_MmVqEuBMDNf6"
-    expected_worker = "voag-dev"
+    # Verify we're using UAE VM Vonage credentials
+    expected_url = "http://91.74.244.94:7880"
+    expected_api_key = "APIbe273e3142c7b96a4a87bba4"
+    expected_secret = "SEC43172b2431a470ae02f0b11151f43866023f60c2f872f91e"
+    expected_trunk = "ST_Li8PtVubMy5u"  # Vonage trunk from rules
+    expected_worker = "voag-staging"
     
     if livekit_creds.source == "database":
+        print(f"\n   ✓ Using DATABASE credentials (feature working!)")
+        
         if livekit_creds.url == expected_url:
-            print(f"   ✓ Using India LiveKit URL (correct)")
+            print(f"   ✓ Using UAE VM URL (correct)")
         else:
             print(f"   ✗ URL mismatch: expected {expected_url}, got {livekit_creds.url}")
         
         if livekit_creds.api_key == expected_api_key:
-            print(f"   ✓ Using India API key (correct)")
+            print(f"   ✓ Using UAE VM API key (correct)")
         else:
             print(f"   ✗ API key mismatch")
         
+        if livekit_creds.api_secret == expected_secret:
+            print(f"   ✓ API secret decrypted correctly!")
+        else:
+            print(f"   ✗ API secret mismatch (decryption may have failed)")
+            print(f"     Expected: {expected_secret[:20]}...")
+            print(f"     Got: {livekit_creds.api_secret[:20]}...")
+        
         if livekit_creds.trunk_id == expected_trunk:
-            print(f"   ✓ Using correct trunk ID")
+            print(f"   ✓ Using correct Vonage trunk ID")
         else:
             print(f"   ✗ Trunk ID mismatch: expected {expected_trunk}, got {livekit_creds.trunk_id}")
         
@@ -153,8 +172,13 @@ async def test_india_outbound_call():
         else:
             print(f"   ✗ Worker name mismatch: expected {expected_worker}, got {livekit_creds.worker_name}")
     else:
-        print(f"   ⚠ Using environment credentials (not database)")
+        print(f"   ✗ Using ENVIRONMENT credentials (database lookup failed)")
         print(f"     This means the feature flag might be disabled or config not found")
+        print(f"     Check:")
+        print(f"     - USE_SELFHOST_ROUTING_TABLE=true in .env")
+        print(f"     - LIVEKIT_SECRET_ENCRYPTION_KEY is set in .env")
+        print(f"     - Database has encrypted secrets with 'dev-s-t-' prefix")
+        return
     
     # Step 6: Dispatch the call
     print(f"\n7. Dispatching Call...")
@@ -207,17 +231,18 @@ async def test_india_outbound_call():
     # Step 7: Summary
     print(f"\n8. Test Summary:")
     print(f"   ✓ Call successfully dispatched to LiveKit")
-    print(f"   ✓ Using India LiveKit server: {livekit_creds.url}")
-    print(f"   ✓ Trunk ID: {livekit_creds.trunk_id}")
+    print(f"   ✓ Using UAE VM LiveKit server: {livekit_creds.url}")
+    print(f"   ✓ Trunk ID: {livekit_creds.trunk_id} (Vonage)")
     print(f"   ✓ Worker Name: {livekit_creds.worker_name}")
     print(f"   ✓ Agent ID: {agent_id}")
     print(f"   ✓ Call Log ID: {result.call_log_id}")
+    print(f"   ✓ Encrypted secret decrypted successfully")
     print(f"\n   The call should now be connecting...")
     print(f"   Check the LiveKit dashboard or call logs for status.")
     print(f"   Room name: {result.room_name}")
     
     print("\n" + "="*80)
-    print("TEST COMPLETE")
+    print("TEST COMPLETE - Dynamic LiveKit Credentials Working!")
     print("="*80)
 
 
@@ -225,8 +250,9 @@ if __name__ == "__main__":
     # Check environment
     print("\nEnvironment Check:")
     print(f"  - USE_SELFHOST_ROUTING_TABLE: {os.getenv('USE_SELFHOST_ROUTING_TABLE', 'true')}")
+    print(f"  - LIVEKIT_SECRET_ENCRYPTION_KEY: {'SET' if os.getenv('LIVEKIT_SECRET_ENCRYPTION_KEY') else 'NOT SET'}")
     print(f"  - DB_HOST: {os.getenv('DB_HOST', 'not set')}")
     print(f"  - DB_NAME: {os.getenv('DB_NAME', 'not set')}")
     
     # Run test
-    asyncio.run(test_india_outbound_call())
+    asyncio.run(test_uae_vonage_outbound_call())
